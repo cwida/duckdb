@@ -1,0 +1,137 @@
+# name: test/sql/join/inner/adaptive_minmax_native_cache.test
+# description: Cached native filters measure row frequency and preserve mandatory predicates
+# group: [inner]
+
+# Exact adaptive scan counts below assume 2048-row batches.
+require exact_vector_size 2048
+
+statement ok
+SET VARIABLE initial_database = current_database();
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_native_cache.db' AS native_cache (BLOCK_SIZE 16384, STORAGE_VERSION 'v1.3.0');
+
+statement ok
+USE native_cache;
+
+statement ok
+SET force_compression='rle';
+
+statement ok
+CREATE TABLE numeric_build AS SELECT 1::BIGINT w,1::BIGINT d,k,k>=2700 keep FROM range(1,3001)t(k);
+
+statement ok
+CREATE TABLE rle_frequency AS SELECT 1::BIGINT w,1::BIGINT d,CASE WHEN i%2048=0 THEN 1 ELSE 3000 END::BIGINT k,1::BIGINT n FROM range(122880)t(i);
+
+statement ok
+CREATE TABLE rle_recovery AS SELECT 1::BIGINT w,1::BIGINT d,CASE WHEN i<12288 THEN 3000 ELSE 1 END::BIGINT k,1::BIGINT n FROM range(122880)t(i);
+
+statement ok
+CREATE TABLE rle_segments AS SELECT 1::BIGINT w,1::BIGINT d,CASE WHEN i%2048=0 THEN 1 WHEN (i//16)%2=0 THEN 2900 ELSE 3000 END::BIGINT k,1::BIGINT n FROM range(122880)t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET force_compression='dict_fsst';
+
+statement ok
+CREATE TABLE string_build AS SELECT w,d,lpad(k::VARCHAR,4,'0')||repeat('x',40) k,keep FROM numeric_build;
+
+statement ok
+CREATE TABLE dict_frequency AS SELECT w,d,lpad(k::VARCHAR,4,'0')||repeat('x',40) k,n FROM rle_frequency;
+
+statement ok
+CREATE TABLE dict_recovery AS SELECT w,d,lpad(k::VARCHAR,4,'0')||repeat('x',40) k,n FROM rle_recovery;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET schema = getvariable('initial_database');
+
+statement ok
+DETACH native_cache;
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_native_cache.db' AS native_cache;
+
+statement ok
+USE native_cache;
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('rle_segments') WHERE column_name='k' AND segment_type<>'VALIDITY';
+----
+RLE
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('dict_frequency') WHERE column_name='k' AND segment_type<>'VALIDITY';
+----
+DICT_FSST
+
+query II
+SELECT count(*),sum(p.n) FROM rle_frequency p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+122820	122820
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_frequency p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*rle_frequency[^}]*},\s*"intermediate_rows": 122880,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_recovery p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*rle_recovery[^}]*},\s*"intermediate_rows": 20480,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_segments p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*rle_segments[^}]*},\s*"intermediate_rows": 122880,.*
+
+query II
+SELECT count(*),sum(p.n) FROM rle_segments p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep AND p.k<>2900;
+----
+61440	61440
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_segments p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep AND p.k<>2900;
+----
+analyzed_plan	<REGEX>:(?s).*rle_segments[^}]*},\s*"intermediate_rows": 61482,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_frequency p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*dict_frequency[^}]*},\s*"intermediate_rows": 122880,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_recovery p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*dict_recovery[^}]*},\s*"intermediate_rows": 20480,.*
+
+statement ok
+SET schema = getvariable('initial_database');
+
+statement ok
+DETACH native_cache;
+
+statement ok
+RESET force_compression;
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;
+
+statement ok
+RESET VARIABLE initial_database;

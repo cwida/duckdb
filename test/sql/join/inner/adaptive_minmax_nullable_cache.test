@@ -1,0 +1,142 @@
+# name: test/sql/join/inner/adaptive_minmax_nullable_cache.test
+# description: Cached adaptive predicates preserve NULL rows while paused
+# group: [inner]
+
+require parquet
+
+# Exact adaptive scan counts below assume 2048-row batches.
+require exact_vector_size 2048
+
+statement ok
+SET VARIABLE initial_database = current_database();
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+SET parquet_use_page_index=false;
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_nullable_cache.db' AS nullable_cache (STORAGE_VERSION 'v1.3.0');
+
+statement ok
+USE nullable_cache;
+
+statement ok
+SET force_compression='rle';
+
+statement ok
+CREATE TABLE numeric_build AS SELECT 1::BIGINT w,1::BIGINT d,k,k>=2700 keep FROM range(1,3001)t(k);
+
+statement ok
+CREATE TABLE rle_nullable AS SELECT 1::BIGINT w,1::BIGINT d,CASE WHEN i<12288 THEN 3000 WHEN i<20480 THEN NULL ELSE 1 END::BIGINT k,1::BIGINT n FROM range(122880)t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+SET force_compression='dict_fsst';
+
+statement ok
+CREATE TABLE string_build AS SELECT w,d,lpad(k::VARCHAR,4,'0')||repeat('x',40) k,keep FROM numeric_build;
+
+statement ok
+CREATE TABLE dict_nullable AS SELECT w,d,lpad(k::VARCHAR,4,'0')||repeat('x',40) k,n FROM rle_nullable;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+COPY rle_nullable TO '{TEST_DIR}/adaptive_nullable_numeric.parquet' (FORMAT PARQUET,ROW_GROUP_SIZE 122880);
+
+statement ok
+COPY dict_nullable TO '{TEST_DIR}/adaptive_nullable_string.parquet' (FORMAT PARQUET,ROW_GROUP_SIZE 122880);
+
+statement ok
+SET schema = getvariable('initial_database');
+
+statement ok
+DETACH nullable_cache;
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_nullable_cache.db' AS nullable_cache;
+
+statement ok
+USE nullable_cache;
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('dict_nullable') WHERE column_name='k' AND segment_type<>'VALIDITY';
+----
+DICT_FSST
+
+query I
+SELECT count(*) FROM rle_nullable WHERE k IS NULL;
+----
+8192
+
+query I
+SELECT count(*) FROM dict_nullable WHERE k IS NULL;
+----
+8192
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/adaptive_nullable_string.parquet') WHERE k IS NULL;
+----
+8192
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/adaptive_nullable_string.parquet') WHERE k IS NULL OR k='3000'||repeat('x',40);
+----
+20480
+
+query II
+SELECT count(*),sum(p.n) FROM dict_nullable p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+12288	12288
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM dict_nullable p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*dict_nullable[^}]*},\s*"intermediate_rows": 20480,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM rle_nullable p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*rle_nullable[^}]*},\s*"intermediate_rows": 20480,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM read_parquet('{TEST_DIR}/adaptive_nullable_numeric.parquet') p JOIN numeric_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*adaptive_nullable_numeric.parquet[^}]*},\s*"intermediate_rows": 20480,.*
+
+query II
+EXPLAIN (ANALYZE,FORMAT JSON) SELECT count(*),sum(p.n) FROM read_parquet('{TEST_DIR}/adaptive_nullable_string.parquet') p JOIN string_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*adaptive_nullable_string.parquet[^}]*},\s*"intermediate_rows": 20480,.*
+
+statement ok
+SET schema = getvariable('initial_database');
+
+statement ok
+DETACH nullable_cache;
+
+statement ok
+RESET force_compression;
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;
+
+statement ok
+RESET parquet_use_page_index;
+
+statement ok
+RESET VARIABLE initial_database;

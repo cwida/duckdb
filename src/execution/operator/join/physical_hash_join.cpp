@@ -1700,6 +1700,7 @@ static unique_ptr<Expression> CreateRuntimeFilterExpression(ClientContext &conte
 		if (!prefix_range_filter || !prefix_range_filter->IsInitialized()) {
 			return nullptr;
 		}
+		prefix_range_filter->MarkPublished();
 		filter_expr = make_uniq<BoundFunctionExpression>(
 		    BoundScalarFunction(PrefixRangeScalarFun::GetFunction(filter_input_type)), std::move(children),
 		    make_uniq<PrefixRangeFunctionData>(prefix_range_filter, filters_null_values, key_name, key_type,
@@ -2071,7 +2072,7 @@ void JoinFilterPushdownInfo::FilterFinalizer::FinalizeCandidate(const JoinFilter
 
 	if (!pushed_in_filter) {
 		CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val, max_val,
-		                           condition_type, reconstruct_filter_expression, false);
+		                           condition_type, reconstruct_filter_expression, true);
 	}
 	if (!registered_prf && allow_bloom_filters && can_emit_runtime_filters) {
 		if (ht->HasPublishableBloomFilter(key_idx)) {

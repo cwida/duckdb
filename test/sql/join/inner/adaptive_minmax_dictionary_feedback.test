@@ -1,0 +1,57 @@
+# name: test/sql/join/inner/adaptive_minmax_dictionary_feedback.test
+# description: Adaptive Parquet filters measure row frequency instead of dictionary frequency
+# group: [inner]
+
+require parquet
+
+# Exact adaptive scan counts below assume 2048-row batches.
+require exact_vector_size 2048
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+SET parquet_use_page_index=false;
+
+statement ok
+CREATE TABLE frequency_build AS
+SELECT 1::BIGINT AS w,1::BIGINT AS d,k,k>=2700 AS keep FROM range(1,3001) t(k);
+
+# Half of the dictionary values fail, but almost every row passes.
+statement ok
+COPY (
+    SELECT 1::BIGINT AS w,1::BIGINT AS d,
+           CASE WHEN i%2048=0 THEN 1 ELSE 3000 END::BIGINT AS k,1::BIGINT AS n
+    FROM range(122880) t(i)
+) TO '{TEST_DIR}/adaptive_minmax_frequency.parquet' (FORMAT PARQUET,ROW_GROUP_SIZE 122880);
+
+query II
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_frequency.parquet') p
+JOIN frequency_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+122820	122820
+
+# Dense optional results preserve the full batch; the exact join still removes non-matches.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_frequency.parquet') p
+JOIN frequency_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*"Filename\(s\)": "[^"]*adaptive_minmax_frequency.parquet"[^}]*},\s*"intermediate_rows": 122880,.*
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;
+
+statement ok
+RESET parquet_use_page_index;

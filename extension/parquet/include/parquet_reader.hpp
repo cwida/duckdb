@@ -158,6 +158,7 @@ struct ParquetScanFilter {
 	ParquetScanFilter(ClientContext &context, ProjectionIndex filter_idx, TableFilter &filter);
 	~ParquetScanFilter();
 	ParquetScanFilter(ParquetScanFilter &&) = default;
+	void Initialize(ClientContext &context);
 
 	ProjectionIndex filter_idx;
 	TableFilter &filter;

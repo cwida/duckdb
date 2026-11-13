@@ -110,6 +110,47 @@ TEST_CASE("RLE validation covers batch boundaries before decoding", "[storage][c
 	}
 }
 
+TEST_CASE("Pure RLE filtering advances past a partially selected batch", "[storage][compression][rle]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto function = RLEFun::GetFunction(PhysicalType::INT32);
+	vector<uint16_t> counts {0, 1, 9, 0, 1, 9, 0};
+	auto segment = MakeRLETestSegment(db, function, counts, 20);
+	ColumnScanState state(nullptr);
+	segment->InitializeScan(state);
+	auto filter =
+	    ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHANOREQUALTO, Value::INTEGER(3));
+	auto filter_state = TableFilterState::Initialize(*con.context, *filter);
+	REQUIRE(filter_state->can_cache);
+	REQUIRE(filter_state->Cast<ExpressionFilterState>().can_cache_result);
+	const idx_t prefix = GENERATE(0, 1, 5, 10);
+	const auto incoming_selection = GENERATE(false, true);
+	Vector result(LogicalType::INTEGER, 10);
+	SelectionVector selection;
+	if (incoming_selection) {
+		selection.Initialize(10);
+		for (idx_t row = 0; row < prefix; row++) {
+			selection.set_index(row, row);
+		}
+	}
+	idx_t selected_count = prefix;
+	segment->Filter(state, 10, result, selection, selected_count, *filter, *filter_state);
+	REQUIRE(selected_count == (prefix == 0 ? 0 : prefix - 1));
+	{
+		auto values = result.Values<int32_t>();
+		for (idx_t row = 0; row < selected_count; row++) {
+			REQUIRE(selection.get_index(row) == row + 1);
+			REQUIRE(values[selection.get_index(row)].GetValue() == 3);
+		}
+	}
+	state.offset_in_column = 10;
+	segment->Scan(state, 10, result, 0, ScanVectorType::SCAN_FLAT_VECTOR);
+	auto values = result.Values<int32_t>();
+	for (idx_t row = 0; row < 10; row++) {
+		REQUIRE(values[row].GetValue() == (row == 0 ? 5 : 6));
+	}
+}
+
 TEST_CASE("Malformed RLE batches fail before unchecked run access", "[storage][compression][rle]") {
 	DuckDB db(nullptr);
 	Connection con(db);

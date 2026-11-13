@@ -426,8 +426,10 @@ struct RLEScanState : public SegmentScanState {
 	idx_t entry_pos;
 	idx_t position_in_entry;
 	//! If we are running a filter over the column - the runs that match the filter
-	unsafe_unique_array<bool> matching_runs;
-	idx_t matching_run_count = 0;
+	unique_ptr<TableFilterCache> filter_cache;
+	SelectionVector run_indices;
+	vector<idx_t> run_offsets;
+	vector<idx_t> run_row_counts;
 };
 
 template <class T>
@@ -582,105 +584,127 @@ template <class T>
 void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result, SelectionVector &sel,
                idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
 	auto &scan_state = state.scan_state->Cast<RLEScanState<T>>();
-
-	if (!scan_state.matching_runs) {
-		// we haven't applied the filter yet
-		// apply the filter to all RLE values at once
-		auto total_run_count = scan_state.layout.ValidateAllRuns();
-		auto run_values = scan_state.layout.GetRunValues(total_run_count);
-		auto data_pointer = const_cast<T *>(run_values.data());
-
-		// initialize the filter set to all false (all runs are filtered out)
-		scan_state.matching_runs = make_unsafe_uniq_array<bool>(total_run_count);
-		memset(scan_state.matching_runs.get(), 0, sizeof(bool) * total_run_count);
-
-		// execute the filter over all runs at once
-		Vector run_vector(result.GetType(), data_ptr_cast(data_pointer), total_run_count);
-
-		SelectionVector run_matches;
-		scan_state.matching_run_count = total_run_count;
-		ColumnSegment::FilterSelection(run_matches, run_vector, filter_state, total_run_count,
-		                               scan_state.matching_run_count);
-
-		// for any runs that pass the filter - set the matches to true
-		for (idx_t i = 0; i < scan_state.matching_run_count; i++) {
-			auto idx = run_matches.get_index(i);
-			scan_state.matching_runs[idx] = true;
-		}
+	const auto run_count = scan_state.layout.ValidateAllRuns();
+	const auto run_values = scan_state.layout.GetRunValues(run_count);
+	if (!scan_state.filter_cache || !scan_state.filter_cache->IsValidFor(filter_state)) {
+		Vector values(result.GetType(), run_count);
+		memcpy(FlatVector::GetDataMutable<T>(values), run_values.data(), run_count * sizeof(T));
+		FlatVector::SetSize(values, count_t(run_count));
+		scan_state.filter_cache = filter_state.CreateCache(values, run_count);
 	}
-	if (scan_state.matching_run_count == 0) {
-		// early-out, no runs match the filter so the filter can never pass
+	if (scan_state.filter_cache->CanSkipAll()) {
+		scan_state.SkipInternal(vector_count);
 		sel_count = 0;
 		return;
 	}
-	// scan (the subset of) the matching runs AND set the output selection vector with the rows that match
-	auto result_data = FlatVector::GetDataMutable<T>(result);
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-
-	idx_t matching_count = 0;
-	SelectionVector matching_sel(sel_count);
+	if (scan_state.filter_cache->CanAcceptAll()) {
+		SelectionVector no_values;
+		scan_state.filter_cache->Filter(no_values, sel, sel_count);
+		RLEScan<T>(segment, state, vector_count, result);
+		return;
+	}
+	const auto current_run = scan_state.GetCurrentRun();
+	if (CanEmitConstantVector<true>(scan_state.position_in_entry, current_run.length, vector_count)) {
+		scan_state.filter_cache->FilterConstant(scan_state.entry_pos, sel_count);
+		RLEScanConstant<T>(scan_state, current_run, vector_count, result);
+		return;
+	}
 	if (!sel.IsSet()) {
-		// no selection vector yet - fast path
-		// this is essentially the normal scan, but we apply the filter and fill the selection vector
-		idx_t result_offset = 0;
-		idx_t result_end = sel_count;
-		while (result_offset < result_end) {
-			auto run = scan_state.GetCurrentRun();
-			auto run_count = run.length - scan_state.position_in_entry;
-			idx_t remaining_scan_count = result_end - result_offset;
-			// the run is scanned - scan it
-			T element = run.value;
-			if (DUCKDB_UNLIKELY(run_count > remaining_scan_count)) {
-				if (scan_state.matching_runs[scan_state.entry_pos]) {
-					for (idx_t i = 0; i < remaining_scan_count; i++) {
-						result_data[result_offset + i] = element;
-						matching_sel.set_index(matching_count++, result_offset + i);
+		if (const auto matches = scan_state.filter_cache->GetPureMask()) {
+			SelectionVector selected_rows(sel_count);
+			result.SetVectorType(VectorType::FLAT_VECTOR);
+			auto writer = FlatVector::ScatterWriter<T>(result);
+			idx_t offset = 0;
+			idx_t accepted_rows = 0;
+			while (offset < vector_count) {
+				const auto run = scan_state.GetCurrentRun();
+				const auto count = MinValue<idx_t>(run.length - scan_state.position_in_entry, vector_count - offset);
+				if (offset < sel_count && (*matches)[scan_state.entry_pos]) {
+					const auto end = offset + MinValue<idx_t>(count, sel_count - offset);
+					for (idx_t row = offset; row < end; row++) {
+						writer[row] = run.value;
+						selected_rows.set_index(accepted_rows++, row);
 					}
 				}
-				scan_state.position_in_entry += remaining_scan_count;
-				break;
-			}
-
-			if (scan_state.matching_runs[scan_state.entry_pos]) {
-				for (idx_t i = 0; i < run_count; i++) {
-					result_data[result_offset + i] = element;
-					matching_sel.set_index(matching_count++, result_offset + i);
+				offset += count;
+				scan_state.position_in_entry += count;
+				if (scan_state.ExhaustedRun(run.length)) {
+					scan_state.ForwardToNextRun();
 				}
 			}
-
-			result_offset += run_count;
-			scan_state.ForwardToNextRun();
-		}
-	} else {
-		// we already have a selection applied - this is more complex since we need to merge it with our filter
-		// use a simpler (but slower) approach
-		idx_t prev_idx = 0;
-		for (idx_t i = 0; i < sel_count; i++) {
-			auto read_idx = sel.get_index(i);
-			if (read_idx < prev_idx) {
-				InternalException::Throw("Error in RLEFilter - selection vector indices are not ordered");
+			if (accepted_rows != sel_count) {
+				sel.Initialize(selected_rows);
 			}
-			D_ASSERT(read_idx < vector_count);
-			// skip forward to the next index
-			scan_state.SkipInternal(read_idx - prev_idx);
-			prev_idx = read_idx;
-			auto run = scan_state.GetCurrentRun();
-			if (!scan_state.matching_runs[scan_state.entry_pos]) {
-				// this run is filtered out - we don't need to scan it
-				continue;
-			}
-			// the run is not filtered out - read the element
-			result_data[read_idx] = run.value;
-			matching_sel.set_index(matching_count++, read_idx);
+			sel_count = accepted_rows;
+			return;
 		}
-		// skip the tail
-		scan_state.SkipInternal(vector_count - prev_idx);
+		if (scan_state.run_indices.Capacity() < vector_count) {
+			scan_state.run_indices.Initialize(vector_count);
+		}
+		scan_state.run_offsets.clear();
+		scan_state.run_row_counts.clear();
+		idx_t offset = 0;
+		while (offset < vector_count) {
+			const auto run = scan_state.GetCurrentRun();
+			const auto count = MinValue<idx_t>(run.length - scan_state.position_in_entry, vector_count - offset);
+			if (offset < sel_count) {
+				scan_state.run_indices.set_index(scan_state.run_row_counts.size(), scan_state.entry_pos);
+				scan_state.run_offsets.push_back(offset);
+				scan_state.run_row_counts.push_back(MinValue<idx_t>(count, sel_count - offset));
+			}
+			offset += count;
+			scan_state.position_in_entry += count;
+			if (scan_state.ExhaustedRun(run.length)) {
+				scan_state.ForwardToNextRun();
+			}
+		}
+		SelectionVector selected_runs;
+		idx_t selected_run_count = scan_state.run_row_counts.size();
+		scan_state.filter_cache->FilterRuns(
+		    scan_state.run_indices,
+		    array_ptr<const idx_t>(scan_state.run_row_counts.data(), scan_state.run_row_counts.size()), selected_runs,
+		    selected_run_count);
+		SelectionVector selected_rows(sel_count);
+		result.SetVectorType(VectorType::FLAT_VECTOR);
+		auto writer = FlatVector::ScatterWriter<T>(result);
+		idx_t accepted_rows = 0;
+		for (idx_t i = 0; i < selected_run_count; i++) {
+			const auto run = selected_runs.get_index(i);
+			const auto value = run_values[scan_state.run_indices.get_index(run)];
+			const auto start = scan_state.run_offsets[run];
+			const auto count = scan_state.run_row_counts[run];
+			for (idx_t row = start; row < start + count; row++) {
+				writer[row] = value;
+				selected_rows.set_index(accepted_rows++, row);
+			}
+		}
+		if (accepted_rows != sel_count) {
+			sel.Initialize(selected_rows);
+		}
+		sel_count = accepted_rows;
+		return;
 	}
-
-	// set up the filter result
-	if (matching_count != sel_count) {
-		sel.Initialize(matching_sel);
-		sel_count = matching_count;
+	if (scan_state.run_indices.Capacity() < vector_count) {
+		scan_state.run_indices.Initialize(vector_count);
+	}
+	idx_t previous = 0;
+	for (idx_t i = 0; i < sel_count; i++) {
+		const auto row = sel.get_index(i);
+		if (row < previous || row >= vector_count) {
+			throw InternalException("Invalid row selection in RLE filter");
+		}
+		scan_state.SkipInternal(row - previous);
+		scan_state.GetCurrentRun();
+		scan_state.run_indices.set_index(row, scan_state.entry_pos);
+		previous = row;
+	}
+	scan_state.SkipInternal(vector_count - previous);
+	scan_state.filter_cache->Filter(scan_state.run_indices, sel, sel_count);
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto data = FlatVector::GetDataMutable<T>(result);
+	for (idx_t i = 0; i < sel_count; i++) {
+		const auto row = sel.get_index(i);
+		data[row] = run_values[scan_state.run_indices.get_index(row)];
 	}
 }
 

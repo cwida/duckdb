@@ -1,0 +1,92 @@
+# name: test/sql/join/inner/adaptive_minmax_runtime_filter.test
+# description: Adaptive min/max join filters evaluate rows within overlapping Parquet groups
+# group: [inner]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE minmax_build AS
+SELECT w, d, k, k>=2700 AS keep
+FROM range(1,4) t(w), range(1,3) u(d), range(1,3001) v(k);
+
+statement ok
+COPY (
+    SELECT w, d, k, n
+    FROM range(1,4) t(w), range(1,3) u(d), range(1,3001) v(k), range(1,11) x(n)
+    ORDER BY w,d,k,n
+) TO '{TEST_DIR}/adaptive_minmax_probe.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 122880);
+
+query II
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_probe.parquet') p
+JOIN minmax_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k
+WHERE b.keep;
+----
+18060	99330
+
+# Every row group overlaps the build range; pruning alone cannot remove probe rows.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_probe.parquet') p
+JOIN minmax_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k
+WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*"Filename\(s\)": "[^"]*adaptive_minmax_probe.parquet"[^}]*},\s*"intermediate_rows": [0-9]{1,5},.*
+
+# Native scans retain their adaptive evaluation path.
+statement ok
+CREATE TABLE minmax_native_probe AS FROM read_parquet('{TEST_DIR}/adaptive_minmax_probe.parquet');
+
+query II
+SELECT count(*),sum(p.n) FROM minmax_native_probe p
+JOIN minmax_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+18060	99330
+
+# Mandatory bounds and predicates on other columns must retain their semantics.
+query II
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_probe.parquet') p
+JOIN minmax_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k
+WHERE b.keep AND p.k>=2800 AND p.n=1;
+----
+1206	1206
+
+# TRUE_OR_NULL statistics still require null rejection by mandatory predicates.
+statement ok
+COPY (SELECT * FROM (VALUES (2700::BIGINT),(3000::BIGINT),(NULL::BIGINT)) t(k))
+TO '{TEST_DIR}/adaptive_minmax_nulls.parquet' (FORMAT PARQUET);
+
+query II
+SELECT count(*),sum(k) FROM read_parquet('{TEST_DIR}/adaptive_minmax_nulls.parquet') WHERE k>=2700;
+----
+2	5700
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/adaptive_minmax_nulls.parquet') WHERE k IS NULL;
+----
+1
+
+query II
+SELECT count(*),sum(p.k)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_nulls.parquet') p
+JOIN (VALUES (2700::BIGINT),(3000::BIGINT),(NULL::BIGINT)) b(k)
+ON p.k IS NOT DISTINCT FROM b.k;
+----
+3	5700
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;

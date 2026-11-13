@@ -1209,13 +1209,14 @@ void ColumnReader::DirectFilter(ColumnReaderInput &input, Vector &result, const 
 	auto &repeat_out = input.repeat_out;
 
 	auto to_read = num_values;
+	dictionary_decoder.ResetFilter(filter_state);
 
 	// prepare the first read if we haven't yet
 	BeginRead(define_out, repeat_out);
 	auto read_now = ReadPageHeaders(to_read, &filter, &filter_state);
 
 	// we can only push the filter into the decoder if we are reading the ENTIRE vector in one go
-	if (encoding == ColumnEncoding::DICTIONARY && read_now == to_read && dictionary_decoder.HasFilter()) {
+	if (encoding == ColumnEncoding::DICTIONARY && read_now == to_read && dictionary_decoder.HasFilter(filter_state)) {
 		BlockPinGuard pin_guard(*this);
 		if (page_is_filtered_out) {
 			// the page has been filtered out entirely - skip

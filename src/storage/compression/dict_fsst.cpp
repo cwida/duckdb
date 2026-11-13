@@ -175,62 +175,12 @@ static void DictFSSTFilter(ColumnSegment &segment, ColumnScanState &state, idx_t
 	auto &scan_state = state.scan_state->Cast<CompressedStringScanState>();
 	auto start = state.GetPositionInSegment();
 	if (scan_state.AllowDictionaryScan(vector_count)) {
-		// only pushdown filters on dictionaries
-		if (!scan_state.filter_result) {
-			// no filter result yet - apply filter to the dictionary
-			// initialize the filter result - setting everything to false
-			scan_state.filter_result = make_unsafe_uniq_array<bool>(scan_state.layout.dict_count);
-
-			// Slot zero represents NULL and is not necessarily referenced by any row.
-			idx_t non_null_count = scan_state.layout.dict_count - 1;
-			Vector dict_data(scan_state.dictionary->data, /*offset=*/1, scan_state.layout.dict_count);
-			SelectionVector dict_sel;
-			idx_t filter_count = non_null_count;
-			ColumnSegment::FilterSelection(dict_sel, dict_data, filter_state, non_null_count, filter_count);
-			D_ASSERT(filter_count <= non_null_count);
-
-			// now set all matching tuples to true
-			for (idx_t i = 0; i < filter_count; i++) {
-				auto idx = dict_sel.get_index(i) + 1;
-				D_ASSERT(idx < scan_state.layout.dict_count);
-				scan_state.filter_result[idx] = true;
-			}
+		if (!scan_state.filter_cache || !scan_state.filter_cache->IsValidFor(filter_state)) {
+			scan_state.filter_cache =
+			    filter_state.CreateCache(scan_state.dictionary->data, scan_state.layout.dict_count);
 		}
-		// Till now, we have a filter result for all non-NULL values.
-		auto &dict_sel = scan_state.GetSelVec(start, vector_count);
-		SelectionVector new_sel(sel_count);
-		idx_t approved_tuple_count = 0;
-		if (!sel.IsSet() && (scan_state.null_filter_result_initialized || !segment.GetStats().CanHaveNull())) {
-			approved_tuple_count =
-			    SelectionVector::SelectFromBoolean(scan_state.filter_result.get(), &dict_sel, sel_count,
-			                                       array_ptr<sel_t>(new_sel.data(), new_sel.Capacity()));
-		} else {
-			for (idx_t idx = 0; idx < sel_count; idx++) {
-				auto row_idx = sel.get_index(idx);
-				D_ASSERT(row_idx < vector_count);
-				auto dict_offset = dict_sel.get_index(row_idx);
-				// Evaluate NULL only when slot zero is referenced by an actual row.
-				if (dict_offset == 0 && !scan_state.null_filter_result_initialized) {
-					Vector null_data(scan_state.dictionary->data, /*offset=*/0, /*end=*/1);
-					SelectionVector null_sel;
-					idx_t null_filter_count = 1;
-					ColumnSegment::FilterSelection(null_sel, null_data, filter_state, 1, null_filter_count);
-					scan_state.filter_result[0] = null_filter_count == 1;
-					scan_state.null_filter_result_initialized = true;
-				}
-				// Check filter result for the value at the offset and assign selection vector.
-				if (!scan_state.filter_result[dict_offset]) {
-					// does not pass the filter
-					continue;
-				}
-				new_sel.set_index(approved_tuple_count++, row_idx);
-			}
-		}
-		if (approved_tuple_count < vector_count) {
-			sel.Initialize(new_sel);
-		}
-		sel_count = approved_tuple_count;
-
+		const auto &dict_sel = scan_state.GetSelVec(start, vector_count);
+		scan_state.filter_cache->Filter(dict_sel, sel, sel_count);
 		result.Dictionary(scan_state.dictionary, dict_sel, vector_count);
 		return;
 	}

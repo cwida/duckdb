@@ -1,0 +1,69 @@
+# name: test/sql/join/inner/adaptive_minmax_recovery.test
+# description: Optional min/max filtering recovers from an unrepresentative row-group prefix
+# group: [inner]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+SET parquet_use_page_index=false;
+
+statement ok
+CREATE TABLE recovery_build AS
+SELECT 1::BIGINT AS w,1::BIGINT AS d,k,k>=2700 AS keep FROM range(1,3001) t(k);
+
+# A matching prefix precedes the remaining 90% that reject.
+statement ok
+COPY (
+    SELECT 1::BIGINT AS w,1::BIGINT AS d,
+           CASE WHEN i<12288 THEN 3000 ELSE 1 END::BIGINT AS k,1::BIGINT AS n
+    FROM range(122880) t(i)
+) TO '{TEST_DIR}/adaptive_minmax_recovery.parquet' (FORMAT PARQUET,ROW_GROUP_SIZE 122880);
+
+query II
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_recovery.parquet') p
+JOIN recovery_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+12288	12288
+
+# A paused filter must resume and reject a substantial part of the tail.
+query II
+EXPLAIN (ANALYZE, FORMAT JSON)
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_recovery.parquet') p
+JOIN recovery_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+analyzed_plan	<REGEX>:(?s).*"Filename\(s\)": "[^"]*adaptive_minmax_recovery.parquet"[^}]*},\s*"intermediate_rows": [0-9]{1,5},.*
+
+# The same dictionary values now have opposite row frequencies.
+statement ok
+COPY (
+    SELECT 1::BIGINT AS w,1::BIGINT AS d,
+           CASE WHEN i<12288 THEN 1 ELSE 3000 END::BIGINT AS k,1::BIGINT AS n
+    FROM range(122880) t(i)
+) TO '{TEST_DIR}/adaptive_minmax_reverse.parquet' (FORMAT PARQUET,ROW_GROUP_SIZE 122880);
+
+query II
+SELECT count(*),sum(p.n)
+FROM read_parquet('{TEST_DIR}/adaptive_minmax_reverse.parquet') p
+JOIN recovery_build b ON p.w=b.w AND p.d=b.d AND p.k=b.k WHERE b.keep;
+----
+110592	110592
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;
+
+statement ok
+RESET parquet_use_page_index;
