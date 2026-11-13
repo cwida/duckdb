@@ -1,0 +1,119 @@
+# name: test/optimizer/comparison_simplification_numeric_casts.test
+# description: Casts to NUMERIC are invertible, casts from NUMERIC are not: comparisons move to the source column only when the constant round-trips
+# group: [optimizer]
+
+statement ok
+CREATE TABLE ti AS SELECT * FROM (VALUES (5::INTEGER), (6::INTEGER), (NULL::INTEGER)) t(i);
+
+statement ok
+CREATE TABLE tn AS SELECT * FROM (VALUES (5.4::NUMERIC), (5.44::NUMERIC), (6::NUMERIC), (NULL::NUMERIC)) t(n);
+
+statement ok
+CREATE TABLE td AS SELECT * FROM (VALUES (5.44::DECIMAL(10,2)), (6.00::DECIMAL(10,2)), (NULL::DECIMAL(10,2))) t(d);
+
+# an integer cast to NUMERIC compared with a NUMERIC constant: the comparison moves to the integer when the constant
+# is an integer, and is false otherwise
+query II
+EXPLAIN SELECT count(*) FROM ti WHERE i::NUMERIC = 5::NUMERIC;
+----
+physical_plan	<REGEX>:.*Filters: i = 5.*
+
+query II
+EXPLAIN SELECT count(*) FROM ti WHERE i::NUMERIC > 5::NUMERIC;
+----
+physical_plan	<REGEX>:.*Filters: i > 5.*
+
+query II
+EXPLAIN SELECT count(*) FROM ti WHERE i::NUMERIC = 5.4::NUMERIC;
+----
+physical_plan	<!REGEX>:.*i = 5.*
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC = 5::NUMERIC;
+----
+5
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC = 5.4::NUMERIC;
+----
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC <> 5.4::NUMERIC ORDER BY i;
+----
+5
+6
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC > 5.4::NUMERIC;
+----
+6
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC >= 5.4::NUMERIC;
+----
+6
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC < 5.4::NUMERIC;
+----
+5
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC IN (5.4::NUMERIC, 7::NUMERIC);
+----
+
+query I
+SELECT i FROM ti WHERE i::NUMERIC IN (5::NUMERIC, 5.4::NUMERIC);
+----
+5
+
+query II
+SELECT i, i::NUMERIC = 5.4::NUMERIC FROM ti ORDER BY i NULLS LAST;
+----
+5	false
+6	false
+NULL	NULL
+
+# a NUMERIC cast to a narrower type rounds, so the comparison stays on the cast
+query I
+SELECT n FROM tn WHERE n::INTEGER = 5 ORDER BY n;
+----
+5.4
+5.44
+
+query I
+SELECT n FROM tn WHERE n::INTEGER IN (5, 7) ORDER BY n;
+----
+5.4
+5.44
+
+query I
+SELECT n FROM tn WHERE n::INTEGER > 5;
+----
+6
+
+query I
+SELECT n FROM tn WHERE n::DECIMAL(10,1) = 5.4 ORDER BY n;
+----
+5.4
+5.44
+
+# a decimal cast to NUMERIC holds every value exactly
+query I
+SELECT d FROM td WHERE d::NUMERIC = 5.44::NUMERIC;
+----
+5.44
+
+query I
+SELECT d FROM td WHERE d::NUMERIC = 5.444::NUMERIC;
+----
+
+query I
+SELECT d FROM td WHERE d::NUMERIC > 5.444::NUMERIC;
+----
+6.00
+
+query I
+SELECT d FROM td WHERE d::NUMERIC IN (5.444::NUMERIC, 6::NUMERIC);
+----
+6.00

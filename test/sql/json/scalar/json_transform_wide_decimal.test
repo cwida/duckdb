@@ -1,0 +1,42 @@
+# name: test/sql/json/scalar/json_transform_wide_decimal.test
+# description: json_transform into decimals wider than 38 digits
+# group: [scalar]
+
+require json
+
+# numbers are parsed into wide decimals like into fixed-size decimals
+query II
+SELECT json_transform('{"d": 1.5}', '{"d": "DECIMAL(50,3)"}'), json_transform('{"d": 1.5}', '{"d": "DECIMAL(38,3)"}')
+----
+{'d': 1.500}	{'d': 1.500}
+
+query II
+SELECT json_transform_strict('{"d": 1.5}', '{"d": "DECIMAL(50,3)"}'), json_transform_strict('{"d": -123456789012345678901234567890.1235}', '{"d": "DECIMAL(50,3)"}')
+----
+{'d': 1.500}	{'d': -123456789012345678901234567890.124}
+
+query II
+SELECT json_transform('{"d": "1.5"}', '{"d": "DECIMAL(50,3)"}'), json_transform('{"d": 42}', '{"d": "DECIMAL(50,3)"}')
+----
+{'d': 1.500}	{'d': 42.000}
+
+query I
+SELECT json_transform('{"d": "abc"}', '{"d": "DECIMAL(50,3)"}')
+----
+{'d': NULL}
+
+statement error
+SELECT json_transform_strict('{"d": "abc"}', '{"d": "DECIMAL(50,3)"}')
+----
+Failed to cast value to decimal: "abc"
+
+# round trip through JSON
+query I
+SELECT json_transform(to_json({'d': '1234567890123456789012345678901234567890.5'::DECIMAL(50,1)}), '{"d": "DECIMAL(50,1)"}')
+----
+{'d': 1234567890123456789012345678901234567890.5}
+
+query I
+SELECT from_json(to_json([ '1.25'::DECIMAL(45,2), NULL ]), '["DECIMAL(45,2)"]')
+----
+[1.25, NULL]

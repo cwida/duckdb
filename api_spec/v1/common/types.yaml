@@ -131,7 +131,7 @@ structs:
   decimal:
     lifecycle:
       - ["stable", "v0.3.3", "2022-04-11"]
-    description: "DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT."
+    description: "DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT. Decimals wider than 38 digits store their value as BIGNUM; a duckdb_decimal can only carry those whose value fits in 128 bits, the exact value is available through the VARCHAR conversions."
     fields:
       - name: width
         type: u8

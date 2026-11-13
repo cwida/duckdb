@@ -14,6 +14,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/array_ptr.hpp"
 #include "duckdb/storage/statistics/stats_merge_type.hpp"
+#include "duckdb/storage/statistics/extra_stats_data.hpp"
+#include "duckdb/common/unique_ptr.hpp"
 
 namespace duckdb {
 class BaseStatistics;
@@ -32,6 +34,14 @@ enum class StringStatsType {
 };
 
 struct StringStatsData {
+	//! The storage of a minimum or maximum that does not fit an inlined string
+	struct StringData {
+		unique_ptr<data_t[]> data;
+		idx_t capacity = 0;
+
+		string_t AssignString(const string_t &value);
+	};
+
 	constexpr static uint32_t CURRENT_MAX_STRING_MINMAX_SIZE = 12;
 	constexpr static uint32_t LEGACY_MAX_STRING_MINMAX_SIZE = 8;
 	constexpr static uint32_t MAXIMUM_MIN_STRING_LENGTH = (1 << 21U) - 1;
@@ -61,6 +71,11 @@ struct StringStatsData {
 
 public:
 	bool HasMinStringLength() const;
+};
+
+//! The minimum and maximum strings that do not fit an inlined string
+struct StringStatsExtraData : public ExtraStatsData {
+	StringStatsData::StringData string_data[2];
 };
 
 struct StringStats {
@@ -105,6 +120,8 @@ struct StringStats {
 
 	//! Resets the max string length so HasMaxStringLength() is false
 	DUCKDB_API static void ResetMaxStringLength(BaseStatistics &stats);
+	//! Resets the min string length so MinStringLength() is unknown
+	DUCKDB_API static void ResetMinStringLength(BaseStatistics &stats);
 	//! Sets the max string length
 	DUCKDB_API static void SetMaxStringLength(BaseStatistics &stats, uint32_t length);
 	//! FIXME: make this part of Set on statistics

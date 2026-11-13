@@ -1,7 +1,11 @@
 #pragma once
 
+#include "duckdb/common/types/numeric_blob.hpp"
+#include "duckdb/common/vector/numeric_vector.hpp"
+
 #include "duckdb/function/cast/variant/to_variant_fwd.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 namespace duckdb {
 namespace variant {
@@ -362,6 +366,10 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 		case PhysicalType::INT128:
 			return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::DECIMAL, hugeint_t>(
 			    source, result, count, selvec, values_index_selvec, payload, is_root);
+		case PhysicalType::VARCHAR:
+			throw NotImplementedException("Can't convert %s to VARIANT: DECIMAL values wider than %d digits are not "
+			                              "supported in VARIANT",
+			                              type.ToString(), Decimal::MAX_WIDTH_INT128);
 		default:
 			NotImplementedException::Throw("Can't convert DECIMAL value of physical type: %s", physical_type);
 		};
@@ -404,6 +412,18 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 	case LogicalTypeId::BIT:
 		return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::BITSTRING, string_t>(
 		    source, result, count, selvec, values_index_selvec, empty_payload, is_root);
+	case LogicalTypeId::NUMERIC: {
+		// NUMERIC values enter the VARIANT as the typed values of their representation: canonical values are decoded
+		// into the narrowest representation that holds them first
+		unique_ptr<Vector> typed;
+		if (!NumericVector::TryGetTyped(source.vec, typed)) {
+			typed = make_uniq<Vector>(NumericBlob::RangeType(source.vec, source.source_size), source.source_size);
+			NumericBlob::Decode(source.vec, source.source_size, *typed);
+		}
+		ToVariantSourceData typed_source(*typed, source.source_size, source.source_sel);
+		return ConvertToVariant<WRITE_DATA, IGNORE_NULLS>(typed_source, result, count, selvec, values_index_selvec,
+		                                                  is_root);
+	}
 	default:
 		throw NotImplementedException("Invalid LogicalType (%s) for ConvertToVariant",
 		                              EnumUtil::ToString(logical_type));

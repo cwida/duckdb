@@ -9,6 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/main/settings.hpp"
 
 #include "duckdb/common/algorithm.hpp"
@@ -409,6 +410,17 @@ void CustomUserAgentSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (!info.is_reset && !existing.empty()) {
 		input = Value(existing + " " + StringValue::Get(input));
 	}
+}
+
+//===----------------------------------------------------------------------===//
+// Debug Force Wide Decimal
+//===----------------------------------------------------------------------===//
+void DebugForceWideDecimalSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	if (input.IsNull()) {
+		throw InvalidInputException("%s setting cannot be NULL", DebugForceWideDecimalSetting::Name);
+	}
+	// the physical type of a DECIMAL is computed without a database, so the switch is process-wide
+	Decimal::SetForceWide(input.GetValue<bool>());
 }
 
 //===----------------------------------------------------------------------===//

@@ -70,6 +70,10 @@ static Value NegatePercentileValue(const Value &v, const bool desc) {
 	const auto &type = v.type();
 	switch (type.id()) {
 	case LogicalTypeId::DECIMAL: {
+		if (type.InternalType() == PhysicalType::VARCHAR) {
+			// a wide decimal has no HUGEINT representation, the quantile handles it as DOUBLE
+			return Value::DOUBLE(-v.GetValue<double>());
+		}
 		// Negate DECIMALs as DECIMAL.
 		const auto integral = IntegralValue::Get(v);
 		const auto width = DecimalType::GetWidth(type);

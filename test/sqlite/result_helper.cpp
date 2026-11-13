@@ -560,7 +560,7 @@ bool TestResultHelper::CompareValues(SQLLogicTestLogger &logger, QueryResult &re
 	// some times require more checking (specifically floating point numbers because of inaccuracies)
 	// if not equivalent we need to cast to the SQL type to verify
 	auto sql_type = result.GetTypes()[current_column];
-	if (sql_type.IsNumeric()) {
+	if (sql_type.IsNumeric() || sql_type.id() == LogicalTypeId::NUMERIC) {
 		bool converted_lvalue = false;
 		bool converted_rvalue = false;
 		if (lvalue_str == "NULL") {

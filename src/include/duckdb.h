@@ -285,6 +285,14 @@ typedef enum DUCKDB_TYPE {
 
 	//! duckdb_timestamp (nanoseconds)
 	DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42,
+
+	/*!
+	 * NUMERIC: an exact number of up to 255 digits. Fetched through the value functions as its decimal text
+	 * (duckdb_value_varchar) or converted (duckdb_value_double, the integer fetches when the value fits); in a chunk,
+	 * duckdb_vector_get_data yields duckdb_string_t values holding the canonical binary encoding, so cast the column to
+	 * VARCHAR, DOUBLE or DECIMAL in SQL to read it from a vector
+	 */
+	DUCKDB_TYPE_NUMERIC = 43,
 } DUCKDB_TYPE;
 
 /*!
@@ -733,7 +741,9 @@ struct duckdb_uhugeint {
 };
 
 /*!
- * DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT.
+ * DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT. Decimals wider than 38 digits store their
+ * value as BIGNUM; a duckdb_decimal can only carry those whose value fits in 128 bits, the exact value is available
+ * through the VARCHAR conversions.
  *
  * history:
  * - stable: v0.3.3
@@ -5335,6 +5345,9 @@ DUCKDB_C_API uint8_t duckdb_decimal_scale(duckdb_logical_type type);
 /*!
  * Retrieves the internal storage type of a decimal type.
  *
+ * Decimals of up to 38 digits are stored as SMALLINT, INTEGER, BIGINT or HUGEINT. Wider decimals store their unscaled
+ * value as BIGNUM, which is what their vectors hold.
+ *
  * history:
  * - stable: v0.3.3
  *
@@ -8670,7 +8683,8 @@ DUCKDB_C_API duckdb_value duckdb_create_bignum(duckdb_bignum input);
 
 #if DUCKDB_API_VERSION_AT_LEAST(1, 2, 0)
 /*!
- * Creates a DECIMAL value from a duckdb_decimal
+ * Creates a DECIMAL value from a duckdb_decimal. The width can be up to 255 digits; widths above 38 create a wide
+ * decimal whose unscaled value is the 128-bit value of the duckdb_decimal.
  *
  * history:
  * - stable: v1.2.0
@@ -9050,7 +9064,8 @@ DUCKDB_C_API duckdb_bignum duckdb_get_bignum(duckdb_value val);
 
 #if DUCKDB_API_VERSION_AT_LEAST(1, 2, 0)
 /*!
- * Returns the duckdb_decimal value of the given value.
+ * Returns the duckdb_decimal value of the given value. A decimal wider than 38 digits is only representable when its
+ * unscaled value fits in 128 bits; use `duckdb_get_varchar` for the exact value otherwise.
  *
  * history:
  * - stable: v1.2.0

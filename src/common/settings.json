@@ -350,6 +350,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_decimal_as_numeric",
+        "description": "Declare the DECIMAL columns of new tables as NUMERIC (used to run the test suite over NUMERIC columns).",
+        "type": "BOOLEAN",
+        "default_scope": "global",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
         "name": "debug_delta_only_variant_encoding_enabled",
         "description": "Enables the Parquet reader to identify a Variant structurally.",
         "type": "BOOLEAN",
@@ -524,6 +532,17 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
+        "is_debug": true
+    },
+    {
+        "name": "debug_force_wide_decimal",
+        "description": "Store DECIMAL values of every width as BIGNUM blobs, so the wide-decimal code paths run for all decimals (process-wide, set it before creating any decimal).",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "false",
+        "on_callbacks": [
+            "set"
+        ],
         "is_debug": true
     },
     {

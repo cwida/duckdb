@@ -18,6 +18,7 @@ add_library_unity(
   create_sort_key.cpp
   strftime_format.cpp
   nested_functions.cpp
+  numeric_dispatch.cpp
   pragma_functions.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_func_scalar>

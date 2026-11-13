@@ -1,0 +1,122 @@
+# name: test/sql/types/numeric/numeric_type_copy.test
+# description: COPY FROM and VARCHAR sources into NUMERIC columns: the text decides the representation
+# group: [numeric]
+
+require parquet
+
+statement ok
+CREATE TABLE src(id INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO src VALUES (1, '1.5'), (2, '-200'), (3, NULL), (4, '12345678901234567890.25'), (5, '0900'), (6, '007.50');
+
+#----------------------------------------------------------------------------------------------------------------------
+# CSV: the values are read as text and parsed when they are stored
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+COPY src TO '{TEST_DIR}/numeric_copy.csv' (HEADER);
+
+statement ok
+CREATE TABLE t(id INTEGER, n NUMERIC);
+
+statement ok
+COPY t FROM '{TEST_DIR}/numeric_copy.csv' (HEADER);
+
+query II
+SELECT typeof(n), count(*) FROM t GROUP BY ALL;
+----
+NUMERIC	6
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	1.5
+2	-200
+3	NULL
+4	12345678901234567890.25
+5	900
+6	7.5
+
+# whole numbers stay in an integer representation
+statement ok
+CREATE TABLE whole(n NUMERIC);
+
+statement ok
+COPY (SELECT range * 1000 AS n FROM range(5)) TO '{TEST_DIR}/numeric_whole.csv';
+
+statement ok
+COPY whole FROM '{TEST_DIR}/numeric_whole.csv';
+
+query II
+SELECT typeof(n), sum(n) FROM whole GROUP BY ALL;
+----
+NUMERIC	10000
+
+# text that is not a number is rejected when it is stored
+statement ok
+COPY (SELECT 'abc' AS n) TO '{TEST_DIR}/numeric_bad.csv';
+
+statement error
+COPY whole FROM '{TEST_DIR}/numeric_bad.csv';
+----
+Could not convert string "abc" to 'NUMERIC'
+
+query I
+SELECT count(*) FROM whole;
+----
+5
+
+#----------------------------------------------------------------------------------------------------------------------
+# Parquet
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+COPY (SELECT 1 AS id, 2.5::DECIMAL(4,1) AS n UNION ALL SELECT 2, 1000.0::DECIMAL(5,1)) TO '{TEST_DIR}/numeric_copy.parquet';
+
+statement ok
+CREATE TABLE p(id INTEGER, n NUMERIC);
+
+statement ok
+COPY p FROM '{TEST_DIR}/numeric_copy.parquet';
+
+query III
+SELECT id, n, typeof(n) FROM p ORDER BY id;
+----
+1	2.5	NUMERIC
+2	1000	NUMERIC
+
+#----------------------------------------------------------------------------------------------------------------------
+# INSERT ... SELECT from a VARCHAR column
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE from_text(n NUMERIC);
+
+statement ok
+INSERT INTO from_text SELECT v FROM src;
+
+query II
+SELECT typeof(n), count(*) FROM from_text GROUP BY ALL;
+----
+NUMERIC	6
+
+statement error
+INSERT INTO from_text SELECT 'x' || id FROM src;
+----
+not an exact number
+
+# nested: a list of text becomes a list of numbers
+statement ok
+CREATE TABLE lists(l NUMERIC[]);
+
+statement ok
+INSERT INTO lists SELECT ['1.25', '-3'] UNION ALL SELECT ['400'];
+
+query II
+SELECT typeof(l), count(*) FROM lists GROUP BY ALL;
+----
+NUMERIC[]	2
+
+query I
+SELECT l FROM lists ORDER BY ALL;
+----
+[1.25, -3]
+[400]

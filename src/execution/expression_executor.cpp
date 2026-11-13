@@ -1,5 +1,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/context.hpp"
 #include "duckdb/main/database.hpp"
@@ -217,11 +218,15 @@ void ExpressionExecutor::Verify(const Expression &expr, Vector &vector, idx_t co
 		Vector::DebugTransformToDictionary(vector);
 	}
 	if (debug_vector_verification == DebugVectorVerification::VARIANT_VECTOR) {
-		// LAMBDA is not a value - its slot only holds a placeholder, so there is nothing to round-trip
+		// LAMBDA is not a value - its slot only holds a placeholder, so there is nothing to round-trip;
+		// VARIANT holds decimals of at most 38 digits
 		if (TypeVisitor::Contains(vector.GetType(), [](const LogicalType &type) {
 			    if (type.IsJSONType() || type.id() == LogicalTypeId::VARIANT || type.id() == LogicalTypeId::UNION ||
 			        type.id() == LogicalTypeId::ENUM || type.id() == LogicalTypeId::TYPE ||
 			        type.id() == LogicalTypeId::TUPLE || type.id() == LogicalTypeId::LAMBDA) {
+				    return true;
+			    }
+			    if (type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(type) > Decimal::MAX_WIDTH_INT128) {
 				    return true;
 			    }
 			    return false;
@@ -230,8 +235,13 @@ void ExpressionExecutor::Verify(const Expression &expr, Vector &vector, idx_t co
 		}
 
 		// preserve the input vector type if it was constant - the cast roundtrip below would otherwise flatten it,
-		// breaking callers that rely on constant-value defaults staying constant (e.g. remap_struct)
+		// breaking callers that rely on constant-value defaults staying constant (e.g. remap_struct and scalar
+		// expression folding in EvaluateScalar). A NUMERIC comes back as a shredded vector, which cannot be made
+		// constant: constant vectors containing NUMERIC skip the round trip
 		const bool input_is_constant = vector.GetVectorType() == VectorType::CONSTANT_VECTOR;
+		if (input_is_constant && TypeVisitor::Contains(vector.GetType(), LogicalTypeId::NUMERIC)) {
+			return;
+		}
 		const idx_t cast_count = input_is_constant ? 1 : count;
 
 		Vector intermediate(LogicalType::VARIANT(), cast_count);

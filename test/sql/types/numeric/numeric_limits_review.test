@@ -1,0 +1,60 @@
+# name: test/sql/types/numeric/numeric_limits_review.test
+# description: Exact NUMERIC results at the representation limits (review reproducers)
+# group: [numeric]
+
+# a cached range with endpoints of different scales must rescale each endpoint from its own type
+statement ok
+CREATE TABLE range_repro(n NUMERIC);
+
+statement ok
+INSERT INTO range_repro VALUES (1);
+
+statement ok
+INSERT INTO range_repro VALUES (0.01);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT n, n * 1000 FROM range_repro ORDER BY n;
+----
+0.01	10
+1	1000
+
+# rounding past the full width keeps the rounding threshold
+query II
+SELECT round('0.6'::DECIMAL(255,255), -1), round_even('0.6'::DECIMAL(255,255), -1);
+----
+0	0
+
+# abs of the minimum HUGEINT widens to a representation that holds the positive result
+statement ok
+CREATE TABLE abs_repro(n NUMERIC);
+
+statement ok
+INSERT INTO abs_repro VALUES ('-170141183460469231731687303715884105728');
+
+query I
+SELECT abs(n) FROM abs_repro;
+----
+170141183460469231731687303715884105728
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT abs(n) FROM abs_repro;
+----
+170141183460469231731687303715884105728
+
+# a scale-255 result that needs no extra integer digit is representable
+query I
+SELECT '1e-255'::NUMERIC + 0 = '1e-255'::NUMERIC;
+----
+true
+
+# scientific notation counts the digits of the resulting value, not of the literal
+query II
+SELECT TRY_CAST('0.01e256' AS NUMERIC) = '1e254'::NUMERIC, TRY_CAST('100e-256' AS NUMERIC) = '1e-254'::NUMERIC;
+----
+true	true

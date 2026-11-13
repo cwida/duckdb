@@ -57,5 +57,13 @@
         "description": "Invokes a lambda function with the given arguments",
         "example": "invoke(x -> x + 1, 5)",
         "type": "scalar_function"
+    },
+    {
+        "name": "numeric_representation",
+        "parameters": "numeric",
+        "description": "Returns the run-time representation of a NUMERIC value (the exact type it is held in, or CANONICAL)",
+        "example": "numeric_representation(1.5::NUMERIC)",
+        "type": "scalar_function",
+        "struct": "NumericRepresentationFun"
     }
 ]

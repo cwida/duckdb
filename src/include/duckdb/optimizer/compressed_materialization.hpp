@@ -10,6 +10,7 @@
 
 #include "duckdb/common/types.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
+#include "duckdb/planner/bound_result_modifier.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
@@ -116,11 +117,17 @@ private:
 	void CompressAggregate(unique_ptr<LogicalOperator> &op);
 	void CompressComparisonJoin(unique_ptr<LogicalOperator> &op);
 	void CompressOrder(unique_ptr<LogicalOperator> &op);
+	void CompressTopN(unique_ptr<LogicalOperator> &op);
+	//! Compresses the materialized columns of an operator that orders its input without changing its bindings
+	void CompressOrdering(unique_ptr<LogicalOperator> &op, vector<BoundOrderByNode> &orders,
+	                      column_binding_set_t referenced_bindings);
 
 	//! Update statistics after compressing
 	void UpdateAggregateStats(unique_ptr<LogicalOperator> &op);
 	void UpdateComparisonJoinStats(unique_ptr<LogicalOperator> &op);
 	void UpdateOrderStats(unique_ptr<LogicalOperator> &op);
+	void UpdateTopNStats(unique_ptr<LogicalOperator> &op);
+	void UpdateOrderingStats(vector<BoundOrderByNode> &orders);
 
 	//! Adds bindings referenced in expression to referenced_bindings
 	static void GetReferencedBindings(const Expression &expression, column_binding_set_t &referenced_bindings);
@@ -152,12 +159,15 @@ private:
 	unique_ptr<CompressExpression> GetStringCompress(unique_ptr<Expression> input, const BaseStatistics &stats);
 	unique_ptr<CompressExpression> GetGeometryCompress(unique_ptr<Expression> input, const BaseStatistics &stats);
 	unique_ptr<CompressExpression> GetVariantCompress(unique_ptr<Expression> input, const BaseStatistics &stats);
+	unique_ptr<CompressExpression> GetNumericCompress(unique_ptr<Expression> input, const BaseStatistics &stats);
 	bool TryGetVariantJoinKeyInfo(const Expression &expr, VariantJoinKeyInfo &result);
 	static unique_ptr<BaseStatistics> CastVariantJoinKeyStats(const VariantJoinKeyInfo &key_info,
 	                                                          const LogicalType &target_type);
 	unique_ptr<Expression> CreateVariantJoinKeyCast(unique_ptr<Expression> input, const LogicalType &shredded_type,
 	                                                const LogicalType &target_type);
 	bool TryCompressVariantComparisonJoinKey(JoinCondition &condition);
+	//! Lowers a comparison of two NUMERIC columns of known representation to a comparison in that representation
+	bool TryCompressNumericComparisonJoinKey(JoinCondition &condition);
 
 	//! Create an expression that applies a scalar decompression function
 	unique_ptr<Expression> GetDecompressExpression(unique_ptr<Expression> input, const LogicalType &result_type,
@@ -169,6 +179,8 @@ private:
 	unique_ptr<Expression> GetGeometryDecompress(unique_ptr<Expression> input, const LogicalType &result_type,
 	                                             const BaseStatistics &stats);
 	unique_ptr<Expression> GetVariantDecompress(unique_ptr<Expression> input, const LogicalType &result_type,
+	                                            const BaseStatistics &stats);
+	unique_ptr<Expression> GetNumericDecompress(unique_ptr<Expression> input, const LogicalType &result_type,
 	                                            const BaseStatistics &stats);
 
 private:

@@ -95,4 +95,14 @@ struct InvokeFun {
 	static ScalarFunction GetFunction();
 };
 
+struct NumericRepresentationFun {
+	static constexpr const char *Name = "numeric_representation";
+	static constexpr const char *Parameters = "numeric";
+	static constexpr const char *Description = "Returns the run-time representation of a NUMERIC value (the exact type it is held in, or CANONICAL)";
+	static constexpr const char *Example = "numeric_representation(1.5::NUMERIC)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 } // namespace duckdb

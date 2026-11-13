@@ -1,5 +1,6 @@
 #include "duckdb/function/combine_types_rule.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 

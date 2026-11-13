@@ -18,6 +18,7 @@ add_library_unity(
   test_capi_data_chunk.cpp
   test_capi_extract.cpp
   test_capi_geometry.cpp
+  test_capi_numeric.cpp
   test_capi_instance_cache.cpp
   test_capi_logging.cpp
   test_capi_pending.cpp

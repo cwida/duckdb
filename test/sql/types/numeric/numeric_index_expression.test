@@ -1,0 +1,68 @@
+# name: test/sql/types/numeric/numeric_index_expression.test
+# description: NUMERIC arithmetic in index expressions, which run without a client context
+# group: [numeric]
+
+load {TEST_DIR}/numeric_index_expression.db
+
+statement ok
+CREATE TABLE prod(a NUMERIC, b NUMERIC);
+
+statement ok
+CREATE UNIQUE INDEX prod_idx ON prod((a * b));
+
+statement ok
+INSERT INTO prod VALUES (2, 3), (1.25, 4);
+
+# the same product violates the unique index
+statement error
+INSERT INTO prod VALUES (3, 2);
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO prod VALUES (3, 2.5);
+
+query II
+SELECT a, b FROM prod WHERE a * b = 6 ORDER BY a;
+----
+2	3
+
+query II
+SELECT a, b FROM prod WHERE a * b = 7.5 ORDER BY a;
+----
+3	2.5
+
+statement ok
+CREATE TABLE sums(a NUMERIC, b NUMERIC);
+
+statement ok
+CREATE INDEX sums_idx ON sums((a + b));
+
+statement ok
+INSERT INTO sums VALUES (2, 3), (-1, 0.25), (12345678901234567890, 1);
+
+query I
+SELECT a + b FROM sums ORDER BY 1;
+----
+-0.75
+5
+12345678901234567891
+
+# the indexes keep working after the expressions are reloaded from storage
+restart
+
+statement ok
+INSERT INTO prod VALUES (10, 10);
+
+statement error
+INSERT INTO prod VALUES (100, 1);
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO sums VALUES (0.5, 0.5);
+
+query I
+SELECT count(*) FROM sums WHERE a + b = 1;
+----
+1

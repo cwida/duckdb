@@ -263,7 +263,12 @@ PEGTransformerFactory::TransformDecType(PEGTransformer &transformer,
 unique_ptr<ParsedExpression>
 PEGTransformerFactory::TransformNumericModType(PEGTransformer &transformer,
                                                optional<vector<unique_ptr<ParsedExpression>>> type_modifiers) {
-	return TransformDecimalType(transformer, std::move(type_modifiers));
+	if (type_modifiers && !type_modifiers->empty()) {
+		// NUMERIC(width, scale) is a DECIMAL
+		return TransformDecimalType(transformer, std::move(type_modifiers));
+	}
+	// a bare NUMERIC is the exact numeric type whose representation follows its values
+	return make_uniq<TypeExpression>(Identifier("NUMERIC"), vector<unique_ptr<ParsedExpression>> {});
 }
 
 vector<unique_ptr<ParsedExpression>>

@@ -1,0 +1,13 @@
+# name: benchmark/micro/numeric/sum_decimal.benchmark
+# description: NUMERIC vs native types: sum of two columns (scan + aggregate) over 10M rows of DECIMAL(10,2)
+# group: [numeric]
+
+name sum decimal
+group micro
+subgroup numeric
+
+load
+CREATE TABLE t AS SELECT (((i * 9582398353) % 100000) / 100.0)::DECIMAL(10,2) AS a, (((i * 847892347987) % 1000) / 100.0)::DECIMAL(10,2) AS b FROM range(0, 10000000) tbl(i);
+
+run
+SELECT sum(a), sum(b) FROM t

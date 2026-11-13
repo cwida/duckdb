@@ -39,14 +39,29 @@ TEST_CASE("SQL export type admission follows DuckDB value types", "[sql_export][
 	auto types = LogicalType::AllTypes();
 	for (idx_t value = 0; value <= NumericLimits<uint8_t>::Maximum(); value++) {
 		auto id = static_cast<LogicalTypeId>(value);
-		bool admitted = id == LogicalTypeId::SQLNULL || id == LogicalTypeId::TYPE;
+		// SQLNULL, TYPE and NUMERIC have SQL syntax without being part of AllTypes
+		bool admitted = id == LogicalTypeId::SQLNULL || id == LogicalTypeId::TYPE || id == LogicalTypeId::NUMERIC;
 		for (auto &type : types) {
 			admitted |= type.id() == id;
 		}
 		REQUIRE(SQLExportHelpers::IsSQLExportType(id) == admitted);
 	}
+	// a NUMERIC constant exports as SQL that binds back to the same value
+	{
+		BoundExpressionSQLExportContext context;
+		BoundConstantExpression numeric_constant(Value::NUMERIC("1"));
+		auto exported = BoundExpressionSQLExporter::Export(numeric_constant, context);
+		REQUIRE(exported.IsSuccess());
+		DuckDB db(nullptr);
+		Connection connection(db);
+		auto rebound = connection.Query("SELECT " + exported.GetValue()->ToString());
+		REQUIRE_NO_FAIL(*rebound);
+		REQUIRE(rebound->GetTypes()[0] == LogicalType::NUMERIC);
+		REQUIRE(rebound->Collection().GetValue(0, 0).ToString() == "1");
+	}
 	types.push_back(LogicalType::SQLNULL);
 	types.push_back(LogicalType::TYPE());
+	types.push_back(LogicalType::NUMERIC);
 	types.push_back(LogicalType::POINTER);
 	types.push_back(LogicalType::ANY);
 	types.push_back(LogicalType::INVALID);

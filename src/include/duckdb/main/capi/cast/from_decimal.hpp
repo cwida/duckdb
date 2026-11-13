@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include "duckdb/common/type_util.hpp"
 #include "duckdb/main/capi/cast/utils.hpp"
+#include "duckdb/main/query_result.hpp"
 
 namespace duckdb {
 
@@ -35,6 +37,19 @@ bool CastDecimalCInternal(duckdb_result *source, RESULT_TYPE &result, idx_t col,
 	case duckdb::PhysicalType::INT128:
 		return duckdb::TryCastFromDecimal::Operation<hugeint_t, RESULT_TYPE>(source_value, result, parameters, width,
 		                                                                     scale);
+	case duckdb::PhysicalType::VARCHAR: {
+		// the materialized duckdb_decimal only holds 128-bit values, so convert the original value instead
+		auto value = query_result->Collection().GetValue(col, row);
+		if (value.IsNull()) {
+			return false;
+		}
+		auto converted = value.DefaultTryCastAs(PrimitiveToLogicalType<RESULT_TYPE>());
+		if (!converted) {
+			return false;
+		}
+		result = converted->template GetValue<RESULT_TYPE>();
+		return true;
+	}
 	default:
 		InternalException::Throw("Unimplemented internal type for decimal");
 	}

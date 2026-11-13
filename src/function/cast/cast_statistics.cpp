@@ -3,7 +3,9 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/array_stats.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/statistics/numeric_range_stats.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
+#include "duckdb/common/types/numeric_type.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 
@@ -230,8 +232,46 @@ static unique_ptr<BaseStatistics> StatisticsPropagateArrayToList(const BaseStati
 	return result.ToUnique();
 }
 
+//! NUMERIC values of a known exact range cast to an exact type: the range as statistics of that type when it holds
+//! every value, so that the cast of a column compares against constants in zonemaps
+static unique_ptr<BaseStatistics> StatisticsPropagateNumericToExact(const BaseStatistics &input,
+                                                                    const LogicalType &target) {
+	if (!NumericType::IsExact(target) || !TypeIsConstantSize(target.InternalType())) {
+		return nullptr;
+	}
+	auto range = NumericRangeStats::TryGet(input);
+	if (!range) {
+		return nullptr;
+	}
+	auto result = range->ToTyped(target);
+	if (result.GetStatsType() != StatisticsType::NUMERIC_STATS || !NumericStats::HasMinMax(result)) {
+		// the values do not all fit the target: the cast rounds or fails, nothing is known about the result
+		return nullptr;
+	}
+	result.CopyValidity(input);
+	return result.ToUnique();
+}
+
+//! Exact values cast to NUMERIC: canonical statistics with the exact range of the values
+static unique_ptr<BaseStatistics> StatisticsPropagateExactToNumeric(const BaseStatistics &input) {
+	NumericRange range;
+	if (!range.TryUpdate(input)) {
+		return nullptr;
+	}
+	auto result = range.ToCanonical();
+	result.CopyValidity(input);
+	return result.ToUnique();
+}
+
 unique_ptr<BaseStatistics> CastStatistics::TryPropagate(const BaseStatistics &stats, const LogicalType &source,
                                                         const LogicalType &target) {
+	if (source.id() == LogicalTypeId::NUMERIC) {
+		return StatisticsPropagateNumericToExact(stats, target);
+	}
+	if (target.id() == LogicalTypeId::NUMERIC && NumericType::IsExact(source) &&
+	    stats.GetStatsType() == StatisticsType::NUMERIC_STATS) {
+		return StatisticsPropagateExactToNumeric(stats);
+	}
 	if (source.id() == LogicalTypeId::VARIANT) {
 		return StatisticsPropagateVariant(stats, target);
 	}

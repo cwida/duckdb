@@ -572,9 +572,9 @@ VariantDecimalProperties ParquetVariantNode::GetDecimalProperties() const {
 	auto value_metadata = VariantValueMetadata::FromHeaderByte(binary[0]);
 	auto payload = binary + 1;
 	uint8_t scale = LoadChecked<uint8_t>(payload, binary_end);
-	if (scale > Decimal::MAX_WIDTH_DECIMAL) {
+	if (scale > Decimal::MAX_WIDTH_INT128) {
 		throw IOException("Corrupted VARIANT 'value' buffer, decimal scale %d exceeds the maximum of %d", scale,
-		                  Decimal::MAX_WIDTH_DECIMAL);
+		                  Decimal::MAX_WIDTH_INT128);
 	}
 	auto value_data = payload + sizeof(uint8_t);
 	uint32_t width;
@@ -591,12 +591,12 @@ VariantDecimalProperties ParquetVariantNode::GetDecimalProperties() const {
 		hugeint_t value;
 		value.lower = Load<uint64_t>(value_data);
 		value.upper = Load<int64_t>(value_data + sizeof(uint64_t));
-		auto &limit = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL];
+		auto &limit = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_INT128];
 		if (value >= limit || value <= -limit) {
 			throw IOException("Corrupted VARIANT 'value' buffer, DECIMAL16 value exceeds the maximum width of %d",
-			                  Decimal::MAX_WIDTH_DECIMAL);
+			                  Decimal::MAX_WIDTH_INT128);
 		}
-		width = Decimal::MAX_WIDTH_DECIMAL;
+		width = Decimal::MAX_WIDTH_INT128;
 		break;
 	}
 	}

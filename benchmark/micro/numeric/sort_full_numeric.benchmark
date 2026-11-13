@@ -1,0 +1,13 @@
+# name: benchmark/micro/numeric/sort_full_numeric.benchmark
+# description: NUMERIC vs native types: full ordering (OFFSET keeps the sort, no top-N) on both columns over 10M rows of NUMERIC
+# group: [numeric]
+
+name sort_full numeric
+group micro
+subgroup numeric
+
+load
+CREATE TABLE t AS SELECT ((i * 9582398353) % 100000)::INTEGER::NUMERIC AS a, ((i * 847892347987) % 1000)::INTEGER::NUMERIC AS b FROM range(0, 10000000) tbl(i);
+
+run
+SELECT a, b FROM t ORDER BY a, b OFFSET 9999990

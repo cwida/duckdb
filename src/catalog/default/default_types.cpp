@@ -71,6 +71,24 @@ void RegisterDecimalConstructors(TypeConstructorSet &set) {
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// NUMERIC Type
+//----------------------------------------------------------------------------------------------------------------------
+//! A bare NUMERIC is the exact numeric type whose representation is inferred from its values; NUMERIC(width, scale) is
+//! a DECIMAL as before
+LogicalType BindNumericType(BindLogicalTypeInput &input) {
+	return LogicalType::NUMERIC;
+}
+
+void RegisterNumericConstructors(TypeConstructorSet &set) {
+	set.AddFunction(TypeConstructor(TypeConstructor::Signature(), BindNumericType));
+
+	auto signature = TypeConstructor::Signature();
+	signature.AddParameter("width", LogicalType::UTINYINT);
+	signature.AddParameter("scale", LogicalType::UTINYINT, Value::UTINYINT(0));
+	set.AddFunction(TypeConstructor(std::move(signature), BindDecimalType));
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // TIMESTAMP Type
 //----------------------------------------------------------------------------------------------------------------------
 LogicalType BindDefaultTimestampType(BindLogicalTypeInput &input) {
@@ -389,7 +407,7 @@ using builtin_type_array = std::array<DefaultType, 83>;
 
 const builtin_type_array BUILTIN_TYPES = {{{"decimal", LogicalTypeId::DECIMAL, RegisterDecimalConstructors},
                                            {"dec", LogicalTypeId::DECIMAL, RegisterDecimalConstructors},
-                                           {"numeric", LogicalTypeId::DECIMAL, RegisterDecimalConstructors},
+                                           {"numeric", LogicalTypeId::NUMERIC, RegisterNumericConstructors},
                                            {"time", LogicalTypeId::TIME, nullptr},
                                            {"time_ns", LogicalTypeId::TIME_NS, nullptr},
                                            {"date", LogicalTypeId::DATE, nullptr},

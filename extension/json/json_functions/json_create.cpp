@@ -254,6 +254,7 @@ static LogicalType GetJSONType(StructNames &const_struct_names, const LogicalTyp
 	case LogicalTypeId::UUID:
 	case LogicalTypeId::BIGNUM:
 	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::NUMERIC:
 	// GEOMETRY is emitted as either WKT or GeoJSON, so it must reach CreateValues untouched
 	case LogicalTypeId::GEOMETRY:
 		return type;
@@ -1042,7 +1043,9 @@ static void CreateValues(const StructNames &names, yyjson_mut_doc *doc, yyjson_m
 		}
 		break;
 	}
-	case LogicalTypeId::BIGNUM: {
+	case LogicalTypeId::BIGNUM:
+	case LogicalTypeId::NUMERIC: {
+		// exact numbers of any width: their decimal text is the JSON number
 		Vector string_vector(LogicalTypeId::VARCHAR, count);
 		VectorOperations::DefaultCast(value_v, string_vector, count);
 		CreateRawValues(doc, vals, string_vector, count);

@@ -1,4 +1,5 @@
 #include "parquet_writer.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include <functional>
 #include <limits>
@@ -201,6 +202,10 @@ bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_p
 		case PhysicalType::INT128:
 			parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
 			break;
+		case PhysicalType::VARCHAR:
+			// wide decimals are written as big-endian two's complement bytes
+			parquet_type = Type::FIXED_LEN_BYTE_ARRAY;
+			break;
 		default:
 			throw InternalException("Unsupported internal decimal type");
 		}
@@ -362,6 +367,11 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		schema_ele.__isset.scale = true;
 		if (duckdb_type.InternalType() == PhysicalType::INT128) {
 			schema_ele.type_length = 16;
+			schema_ele.__isset.type_length = true;
+		} else if (duckdb_type.InternalType() == PhysicalType::VARCHAR) {
+			// wide decimal
+			schema_ele.type_length =
+			    NumericCast<int32_t>(ParquetDecimalUtils::WideDecimalByteLength(DecimalType::GetWidth(duckdb_type)));
 			schema_ele.__isset.type_length = true;
 		}
 		schema_ele.__isset.logicalType = true;
@@ -1147,6 +1157,38 @@ struct UUIDStatsUnifier : public BaseStringStatsUnifier {
 		return result;
 	}
 };
+//! Wide decimal statistics are the big-endian two's complement bytes of the FIXED_LEN_BYTE_ARRAY column; they are
+//! compared as BIGNUM blobs, whose byte order is the numeric order
+struct WideDecimalStatsUnifier : public ColumnStatsUnifier {
+	WideDecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
+	}
+
+	uint32_t width;
+	uint32_t scale;
+
+	static string Decode(const string &stats) {
+		return ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_cast(stats.data()), stats.size());
+	}
+
+	string StatsToString(const string &stats) override {
+		if (stats.empty()) {
+			return string();
+		}
+		return Value::WIDEDECIMAL(Decode(stats), width, scale).ToString();
+	}
+
+	void UnifyMinMax(const string &new_min, const string &new_max) override {
+		if (!min_is_set || LessThan::Operation(string_t(Decode(new_min)), string_t(Decode(global_min)))) {
+			global_min = new_min;
+			min_is_set = true;
+		}
+		if (!max_is_set || GreaterThan::Operation(string_t(Decode(new_max)), string_t(Decode(global_max)))) {
+			global_max = new_max;
+			max_is_set = true;
+		}
+	}
+};
+
 struct NullStatsUnifier : public ColumnStatsUnifier {
 	void UnifyMinMax(const string &new_min, const string &new_max) override {
 	}
@@ -1208,6 +1250,9 @@ static unique_ptr<ColumnStatsUnifier> GetBaseStatsUnifier(const LogicalType &typ
 			return make_uniq<DecimalStatsUnifier<int64_t>>(width, scale);
 		case PhysicalType::INT128:
 			return make_uniq<DecimalStatsUnifier<hugeint_t>>(width, scale);
+		case PhysicalType::VARCHAR:
+			// wide decimal stored as a BIGNUM blob
+			return make_uniq<WideDecimalStatsUnifier>(width, scale);
 		default:
 			return make_uniq<NullStatsUnifier>();
 		}

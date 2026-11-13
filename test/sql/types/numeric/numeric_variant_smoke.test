@@ -1,0 +1,71 @@
+# name: test/sql/types/numeric/numeric_variant_smoke.test
+# description: NUMERIC as a generic type: casts, text, ordering and equality on the canonical representation
+# group: [numeric]
+
+query II
+SELECT '1.5'::NUMERIC, typeof('1.5'::NUMERIC);
+----
+1.5	NUMERIC
+
+query I
+SELECT 5::NUMERIC;
+----
+5
+
+query I
+SELECT ('12.50'::NUMERIC)::DECIMAL(5,2);
+----
+12.50
+
+query I
+SELECT ('-300'::NUMERIC)::INTEGER;
+----
+-300
+
+query I
+SELECT ('123456789012345678901234567890123456789012345.678'::NUMERIC)::VARCHAR;
+----
+123456789012345678901234567890123456789012345.678
+
+# equal numbers are equal whatever representation they came from
+query II
+SELECT '1.50'::NUMERIC = '1.5'::NUMERIC, 2::NUMERIC < '10'::NUMERIC;
+----
+true	true
+
+# the canonical representation orders like the numbers
+query I
+SELECT n FROM (VALUES ('10'::NUMERIC), ('9'::NUMERIC), ('-1.5'::NUMERIC), ('0'::NUMERIC), ('-20'::NUMERIC), ('0.25'::NUMERIC)) t(n) ORDER BY n;
+----
+-20
+-1.5
+0
+0.25
+9
+10
+
+query II
+SELECT n, count(*) FROM (VALUES ('1.5'::NUMERIC), ('1.50'::NUMERIC), (2::NUMERIC), ('2.0'::NUMERIC)) t(n) GROUP BY n ORDER BY n;
+----
+1.5	2
+2	2
+
+query I
+SELECT ('1.5'::NUMERIC)::DOUBLE;
+----
+1.5
+
+statement error
+SELECT 'abc'::NUMERIC;
+----
+not an exact number
+
+statement error
+SELECT ('nan'::DOUBLE)::NUMERIC;
+----
+not an exact number
+
+query I
+SELECT NULL::NUMERIC;
+----
+NULL

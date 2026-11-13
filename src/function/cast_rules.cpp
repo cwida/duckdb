@@ -20,6 +20,8 @@ static int64_t TargetTypeCost(const LogicalType &type) {
 		return 105;
 	case LogicalTypeId::BIGNUM:
 		return 106;
+	case LogicalTypeId::NUMERIC:
+		return 107;
 	case LogicalTypeId::TIMESTAMP_NS:
 		return 119;
 	case LogicalTypeId::TIMESTAMP:
@@ -53,6 +55,8 @@ static int64_t TargetTypeCost(const LogicalType &type) {
 
 static int64_t ImplicitCastTinyint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::SMALLINT:
 	case LogicalTypeId::INTEGER:
 	case LogicalTypeId::BIGINT:
@@ -69,6 +73,8 @@ static int64_t ImplicitCastTinyint(const LogicalType &to) {
 
 static int64_t ImplicitCastSmallint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::INTEGER:
 	case LogicalTypeId::BIGINT:
 	case LogicalTypeId::HUGEINT:
@@ -84,6 +90,8 @@ static int64_t ImplicitCastSmallint(const LogicalType &to) {
 
 static int64_t ImplicitCastInteger(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::BIGINT:
 	case LogicalTypeId::HUGEINT:
 	case LogicalTypeId::FLOAT:
@@ -98,6 +106,8 @@ static int64_t ImplicitCastInteger(const LogicalType &to) {
 
 static int64_t ImplicitCastBigint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 	case LogicalTypeId::HUGEINT:
@@ -111,6 +121,8 @@ static int64_t ImplicitCastBigint(const LogicalType &to) {
 
 static int64_t ImplicitCastUTinyint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::USMALLINT:
 	case LogicalTypeId::UINTEGER:
 	case LogicalTypeId::UBIGINT:
@@ -131,6 +143,8 @@ static int64_t ImplicitCastUTinyint(const LogicalType &to) {
 
 static int64_t ImplicitCastUSmallint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::UINTEGER:
 	case LogicalTypeId::UBIGINT:
 	case LogicalTypeId::INTEGER:
@@ -149,6 +163,8 @@ static int64_t ImplicitCastUSmallint(const LogicalType &to) {
 
 static int64_t ImplicitCastUInteger(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::UBIGINT:
 	case LogicalTypeId::BIGINT:
 	case LogicalTypeId::UHUGEINT:
@@ -165,6 +181,8 @@ static int64_t ImplicitCastUInteger(const LogicalType &to) {
 
 static int64_t ImplicitCastUBigint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 	case LogicalTypeId::UHUGEINT:
@@ -197,6 +215,8 @@ static int64_t ImplicitCastDouble(const LogicalType &to) {
 
 static int64_t ImplicitCastDecimal(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 		return TargetTypeCost(to);
@@ -207,6 +227,8 @@ static int64_t ImplicitCastDecimal(const LogicalType &to) {
 
 static int64_t ImplicitCastHugeint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 	case LogicalTypeId::DECIMAL:
@@ -219,6 +241,8 @@ static int64_t ImplicitCastHugeint(const LogicalType &to) {
 
 static int64_t ImplicitCastUhugeint(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::NUMERIC:
+		return TargetTypeCost(to);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 	case LogicalTypeId::DECIMAL:
@@ -312,6 +336,16 @@ static int64_t ImplicitCastTimestampTz(const LogicalType &to) {
 
 static int64_t ImplicitCastBignum(const LogicalType &to) {
 	switch (to.id()) {
+	case LogicalTypeId::DOUBLE:
+		return TargetTypeCost(to);
+	default:
+		return -1;
+	}
+}
+
+static int64_t ImplicitCastNumeric(const LogicalType &to) {
+	switch (to.id()) {
+	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
 		return TargetTypeCost(to);
 	default:
@@ -649,6 +683,8 @@ int64_t CastRules::ImplicitCast(const LogicalType &from, const LogicalType &to) 
 		return ImplicitCastBignum(to);
 	case LogicalTypeId::VARIANT:
 		return ImplicitCastVariant(to);
+	case LogicalTypeId::NUMERIC:
+		return ImplicitCastNumeric(to);
 	default:
 		return -1;
 	}

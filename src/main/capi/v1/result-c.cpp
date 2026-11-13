@@ -1,6 +1,8 @@
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 
 namespace duckdb {
@@ -130,6 +132,23 @@ struct CDecimalConverter : public CBaseConverter {
 	}
 };
 
+//! The deprecated duckdb_decimal only holds 128-bit values, wider BIGNUM-backed decimals report the default of zero
+struct CWideDecimalConverter : public CBaseConverter {
+	template <class SRC, class DST>
+	static DST Convert(SRC input) {
+		duckdb_hugeint result;
+		hugeint_t value;
+		if (!BignumDecimal::TryToHugeint(input, value)) {
+			result.lower = 0;
+			result.upper = 0;
+			return result;
+		}
+		result.lower = value.lower;
+		result.upper = value.upper;
+		return result;
+	}
+};
+
 template <class SRC, class DST = SRC, class OP = CStandardConverter>
 void WriteData(duckdb_column *column, ColumnDataCollection &source, const vector<column_t> &column_ids) {
 	idx_t row = 0;
@@ -243,6 +262,27 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 		WriteData<string_t, const char *, CStringConverter>(column, collection, column_ids);
 		break;
 	}
+	case LogicalTypeId::NUMERIC: {
+		// the deprecated interface reports NUMERIC values as their decimal text
+		idx_t row = 0;
+		auto target = reinterpret_cast<const char **>(column->deprecated_data);
+		for (auto &input : collection.Chunks(column_ids)) {
+			Vector text(LogicalType::VARCHAR, input.size());
+			VectorOperations::DefaultCast(input.data[0], text, input.size(), true);
+			UnifiedVectorFormat vdata;
+			text.ToUnifiedFormat(vdata);
+			auto strings = UnifiedVectorFormat::GetData<string_t>(vdata);
+			for (idx_t k = 0; k < input.size(); k++, row++) {
+				auto idx = vdata.sel->get_index(k);
+				if (!vdata.validity.RowIsValid(idx)) {
+					CStringConverter::NullConvert<const char *>(target[row]);
+				} else {
+					target[row] = CStringConverter::Convert<string_t, const char *>(strings[idx]);
+				}
+			}
+		}
+		break;
+	}
 	case LogicalTypeId::BLOB: {
 		WriteData<string_t, duckdb_blob, CBlobConverter>(column, collection, column_ids);
 		break;
@@ -288,6 +328,10 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 		}
 		case PhysicalType::INT128: {
 			WriteData<hugeint_t, duckdb_hugeint, CHugeintConverter>(column, collection, column_ids);
+			break;
+		}
+		case PhysicalType::VARCHAR: {
+			WriteData<string_t, duckdb_hugeint, CWideDecimalConverter>(column, collection, column_ids);
 			break;
 		}
 		default:
@@ -445,8 +489,8 @@ bool DeprecatedMaterializeResult(duckdb_result *result) {
 
 static void DuckdbDestroyColumn(duckdb_column column, idx_t count) {
 	if (column.deprecated_data) {
-		if (column.deprecated_type == DUCKDB_TYPE_VARCHAR) {
-			// varchar, delete individual strings
+		if (column.deprecated_type == DUCKDB_TYPE_VARCHAR || column.deprecated_type == DUCKDB_TYPE_NUMERIC) {
+			// varchar (and the decimal text of NUMERIC), delete individual strings
 			auto data = reinterpret_cast<char **>(column.deprecated_data);
 			for (idx_t i = 0; i < count; i++) {
 				if (data[i]) {

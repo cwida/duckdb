@@ -457,8 +457,10 @@ bool VariantUtils::VariantSupportsType(const LogicalType &type) {
 	case LogicalTypeId::INTERVAL:
 	case LogicalTypeId::BIT:
 	case LogicalTypeId::GEOMETRY:
-	case LogicalTypeId::DECIMAL:
 		return true;
+	case LogicalTypeId::DECIMAL:
+		// the VARIANT decimal encoding holds at most 128 bits, wide decimals (BIGNUM blobs) do not fit
+		return type.InternalType() != PhysicalType::VARCHAR;
 	default:
 		return false;
 	}

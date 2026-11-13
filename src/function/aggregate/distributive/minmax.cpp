@@ -10,6 +10,7 @@
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/aggregate/minmax_n_helpers.hpp"
+#include "duckdb/function/aggregate/numeric_aggregates.hpp"
 #include "duckdb/function/aggregate/sort_key_helpers.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/config.hpp"
@@ -393,9 +394,11 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	auto name = function.GetName();
 
 	auto state_export_type = function.GetStateTypeCallback();
-	auto minmax_func = GetMinMaxOperator<OP, OP_STRING, OP_VECTOR>(input_type);
+	auto minmax_func = input_type.id() == LogicalTypeId::NUMERIC
+	                       ? NumericAggregates::GetMinMax(name == "min")
+	                       : GetMinMaxOperator<OP, OP_STRING, OP_VECTOR>(input_type);
 
-	if (state_export_type) {
+	if (state_export_type && input_type.id() != LogicalTypeId::NUMERIC) {
 		minmax_func.SetStructStateExport(state_export_type);
 	}
 	minmax_func.SetName(std::move(name));

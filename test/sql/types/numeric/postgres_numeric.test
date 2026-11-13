@@ -1,0 +1,864 @@
+# name: test/sql/types/numeric/postgres_numeric.test
+# description: PostgreSQL's numeric regression test (src/test/regress/sql/numeric.sql) adapted to NUMERIC
+# group: [numeric]
+
+# The expected results of the arithmetic checks are PostgreSQL's, computed with bc(1) at a scale of 200. Division,
+# sqrt, ln, log and the variance checks are not adapted: those return DOUBLE here. NaN and infinities are rejected by
+# NUMERIC, so the Inf/NaN sections are reduced to that.
+
+statement ok
+CREATE TABLE num_data (id INTEGER, val NUMERIC);
+
+statement ok
+CREATE TABLE num_exp_add (id1 INTEGER, id2 INTEGER, expected NUMERIC);
+
+statement ok
+CREATE TABLE num_exp_sub (id1 INTEGER, id2 INTEGER, expected NUMERIC);
+
+statement ok
+CREATE TABLE num_exp_mul (id1 INTEGER, id2 INTEGER, expected NUMERIC);
+
+statement ok
+CREATE TABLE num_result (id1 INTEGER, id2 INTEGER, result NUMERIC);
+
+statement ok
+INSERT INTO num_exp_add VALUES
+    (0, 0, '0'),
+    (0, 1, '0'),
+    (0, 2, '-34338492.215397047'),
+    (0, 3, '4.31'),
+    (0, 4, '7799461.4119'),
+    (0, 5, '16397.038491'),
+    (0, 6, '93901.57763026'),
+    (0, 7, '-83028485'),
+    (0, 8, '74881'),
+    (0, 9, '-24926804.045047420'),
+    (1, 0, '0'),
+    (1, 1, '0'),
+    (1, 2, '-34338492.215397047'),
+    (1, 3, '4.31'),
+    (1, 4, '7799461.4119'),
+    (1, 5, '16397.038491'),
+    (1, 6, '93901.57763026'),
+    (1, 7, '-83028485'),
+    (1, 8, '74881'),
+    (1, 9, '-24926804.045047420'),
+    (2, 0, '-34338492.215397047'),
+    (2, 1, '-34338492.215397047'),
+    (2, 2, '-68676984.430794094'),
+    (2, 3, '-34338487.905397047'),
+    (2, 4, '-26539030.803497047'),
+    (2, 5, '-34322095.176906047'),
+    (2, 6, '-34244590.637766787'),
+    (2, 7, '-117366977.215397047'),
+    (2, 8, '-34263611.215397047'),
+    (2, 9, '-59265296.260444467'),
+    (3, 0, '4.31'),
+    (3, 1, '4.31'),
+    (3, 2, '-34338487.905397047'),
+    (3, 3, '8.62'),
+    (3, 4, '7799465.7219'),
+    (3, 5, '16401.348491'),
+    (3, 6, '93905.88763026'),
+    (3, 7, '-83028480.69'),
+    (3, 8, '74885.31'),
+    (3, 9, '-24926799.735047420'),
+    (4, 0, '7799461.4119'),
+    (4, 1, '7799461.4119'),
+    (4, 2, '-26539030.803497047'),
+    (4, 3, '7799465.7219'),
+    (4, 4, '15598922.8238'),
+    (4, 5, '7815858.450391'),
+    (4, 6, '7893362.98953026'),
+    (4, 7, '-75229023.5881'),
+    (4, 8, '7874342.4119'),
+    (4, 9, '-17127342.633147420'),
+    (5, 0, '16397.038491'),
+    (5, 1, '16397.038491'),
+    (5, 2, '-34322095.176906047'),
+    (5, 3, '16401.348491'),
+    (5, 4, '7815858.450391'),
+    (5, 5, '32794.076982'),
+    (5, 6, '110298.61612126'),
+    (5, 7, '-83012087.961509'),
+    (5, 8, '91278.038491'),
+    (5, 9, '-24910407.006556420'),
+    (6, 0, '93901.57763026'),
+    (6, 1, '93901.57763026'),
+    (6, 2, '-34244590.637766787'),
+    (6, 3, '93905.88763026'),
+    (6, 4, '7893362.98953026'),
+    (6, 5, '110298.61612126'),
+    (6, 6, '187803.15526052'),
+    (6, 7, '-82934583.42236974'),
+    (6, 8, '168782.57763026'),
+    (6, 9, '-24832902.467417160'),
+    (7, 0, '-83028485'),
+    (7, 1, '-83028485'),
+    (7, 2, '-117366977.215397047'),
+    (7, 3, '-83028480.69'),
+    (7, 4, '-75229023.5881'),
+    (7, 5, '-83012087.961509'),
+    (7, 6, '-82934583.42236974'),
+    (7, 7, '-166056970'),
+    (7, 8, '-82953604'),
+    (7, 9, '-107955289.045047420'),
+    (8, 0, '74881'),
+    (8, 1, '74881'),
+    (8, 2, '-34263611.215397047'),
+    (8, 3, '74885.31'),
+    (8, 4, '7874342.4119'),
+    (8, 5, '91278.038491'),
+    (8, 6, '168782.57763026'),
+    (8, 7, '-82953604'),
+    (8, 8, '149762'),
+    (8, 9, '-24851923.045047420'),
+    (9, 0, '-24926804.045047420'),
+    (9, 1, '-24926804.045047420'),
+    (9, 2, '-59265296.260444467'),
+    (9, 3, '-24926799.735047420'),
+    (9, 4, '-17127342.633147420'),
+    (9, 5, '-24910407.006556420'),
+    (9, 6, '-24832902.467417160'),
+    (9, 7, '-107955289.045047420'),
+    (9, 8, '-24851923.045047420'),
+    (9, 9, '-49853608.090094840');
+
+statement ok
+INSERT INTO num_exp_sub VALUES
+    (0, 0, '0'),
+    (0, 1, '0'),
+    (0, 2, '34338492.215397047'),
+    (0, 3, '-4.31'),
+    (0, 4, '-7799461.4119'),
+    (0, 5, '-16397.038491'),
+    (0, 6, '-93901.57763026'),
+    (0, 7, '83028485'),
+    (0, 8, '-74881'),
+    (0, 9, '24926804.045047420'),
+    (1, 0, '0'),
+    (1, 1, '0'),
+    (1, 2, '34338492.215397047'),
+    (1, 3, '-4.31'),
+    (1, 4, '-7799461.4119'),
+    (1, 5, '-16397.038491'),
+    (1, 6, '-93901.57763026'),
+    (1, 7, '83028485'),
+    (1, 8, '-74881'),
+    (1, 9, '24926804.045047420'),
+    (2, 0, '-34338492.215397047'),
+    (2, 1, '-34338492.215397047'),
+    (2, 2, '0'),
+    (2, 3, '-34338496.525397047'),
+    (2, 4, '-42137953.627297047'),
+    (2, 5, '-34354889.253888047'),
+    (2, 6, '-34432393.793027307'),
+    (2, 7, '48689992.784602953'),
+    (2, 8, '-34413373.215397047'),
+    (2, 9, '-9411688.170349627'),
+    (3, 0, '4.31'),
+    (3, 1, '4.31'),
+    (3, 2, '34338496.525397047'),
+    (3, 3, '0'),
+    (3, 4, '-7799457.1019'),
+    (3, 5, '-16392.728491'),
+    (3, 6, '-93897.26763026'),
+    (3, 7, '83028489.31'),
+    (3, 8, '-74876.69'),
+    (3, 9, '24926808.355047420'),
+    (4, 0, '7799461.4119'),
+    (4, 1, '7799461.4119'),
+    (4, 2, '42137953.627297047'),
+    (4, 3, '7799457.1019'),
+    (4, 4, '0'),
+    (4, 5, '7783064.373409'),
+    (4, 6, '7705559.83426974'),
+    (4, 7, '90827946.4119'),
+    (4, 8, '7724580.4119'),
+    (4, 9, '32726265.456947420'),
+    (5, 0, '16397.038491'),
+    (5, 1, '16397.038491'),
+    (5, 2, '34354889.253888047'),
+    (5, 3, '16392.728491'),
+    (5, 4, '-7783064.373409'),
+    (5, 5, '0'),
+    (5, 6, '-77504.53913926'),
+    (5, 7, '83044882.038491'),
+    (5, 8, '-58483.961509'),
+    (5, 9, '24943201.083538420'),
+    (6, 0, '93901.57763026'),
+    (6, 1, '93901.57763026'),
+    (6, 2, '34432393.793027307'),
+    (6, 3, '93897.26763026'),
+    (6, 4, '-7705559.83426974'),
+    (6, 5, '77504.53913926'),
+    (6, 6, '0'),
+    (6, 7, '83122386.57763026'),
+    (6, 8, '19020.57763026'),
+    (6, 9, '25020705.622677680'),
+    (7, 0, '-83028485'),
+    (7, 1, '-83028485'),
+    (7, 2, '-48689992.784602953'),
+    (7, 3, '-83028489.31'),
+    (7, 4, '-90827946.4119'),
+    (7, 5, '-83044882.038491'),
+    (7, 6, '-83122386.57763026'),
+    (7, 7, '0'),
+    (7, 8, '-83103366'),
+    (7, 9, '-58101680.954952580'),
+    (8, 0, '74881'),
+    (8, 1, '74881'),
+    (8, 2, '34413373.215397047'),
+    (8, 3, '74876.69'),
+    (8, 4, '-7724580.4119'),
+    (8, 5, '58483.961509'),
+    (8, 6, '-19020.57763026'),
+    (8, 7, '83103366'),
+    (8, 8, '0'),
+    (8, 9, '25001685.045047420'),
+    (9, 0, '-24926804.045047420'),
+    (9, 1, '-24926804.045047420'),
+    (9, 2, '9411688.170349627'),
+    (9, 3, '-24926808.355047420'),
+    (9, 4, '-32726265.456947420'),
+    (9, 5, '-24943201.083538420'),
+    (9, 6, '-25020705.622677680'),
+    (9, 7, '58101680.954952580'),
+    (9, 8, '-25001685.045047420'),
+    (9, 9, '0');
+
+statement ok
+INSERT INTO num_exp_mul VALUES
+    (0, 0, '0'),
+    (0, 1, '0'),
+    (0, 2, '0'),
+    (0, 3, '0'),
+    (0, 4, '0'),
+    (0, 5, '0'),
+    (0, 6, '0'),
+    (0, 7, '0'),
+    (0, 8, '0'),
+    (0, 9, '0'),
+    (1, 0, '0'),
+    (1, 1, '0'),
+    (1, 2, '0'),
+    (1, 3, '0'),
+    (1, 4, '0'),
+    (1, 5, '0'),
+    (1, 6, '0'),
+    (1, 7, '0'),
+    (1, 8, '0'),
+    (1, 9, '0'),
+    (2, 0, '0'),
+    (2, 1, '0'),
+    (2, 2, '1179132047626883.596862135856320209'),
+    (2, 3, '-147998901.44836127257'),
+    (2, 4, '-267821744976817.8111137106593'),
+    (2, 5, '-563049578578.769242506736077'),
+    (2, 6, '-3224438592470.18449811926184222'),
+    (2, 7, '2851072985828710.485883795'),
+    (2, 8, '-2571300635581.146276407'),
+    (2, 9, '855948866655588.453741509242968740'),
+    (3, 0, '0'),
+    (3, 1, '0'),
+    (3, 2, '-147998901.44836127257'),
+    (3, 3, '18.5761'),
+    (3, 4, '33615678.685289'),
+    (3, 5, '70671.23589621'),
+    (3, 6, '404715.7995864206'),
+    (3, 7, '-357852770.35'),
+    (3, 8, '322737.11'),
+    (3, 9, '-107434525.43415438020'),
+    (4, 0, '0'),
+    (4, 1, '0'),
+    (4, 2, '-267821744976817.8111137106593'),
+    (4, 3, '33615678.685289'),
+    (4, 4, '60831598315717.14146161'),
+    (4, 5, '127888068979.9935054429'),
+    (4, 6, '732381731243.745115764094'),
+    (4, 7, '-647577464846017.9715'),
+    (4, 8, '584031469984.4839'),
+    (4, 9, '-194415646271340.1815956522980'),
+    (5, 0, '0'),
+    (5, 1, '0'),
+    (5, 2, '-563049578578.769242506736077'),
+    (5, 3, '70671.23589621'),
+    (5, 4, '127888068979.9935054429'),
+    (5, 5, '268862871.275335557081'),
+    (5, 6, '1539707782.76899778633766'),
+    (5, 7, '-1361421264394.416135'),
+    (5, 8, '1227826639.244571'),
+    (5, 9, '-408725765384.257043660243220'),
+    (6, 0, '0'),
+    (6, 1, '0'),
+    (6, 2, '-3224438592470.18449811926184222'),
+    (6, 3, '404715.7995864206'),
+    (6, 4, '732381731243.745115764094'),
+    (6, 5, '1539707782.76899778633766'),
+    (6, 6, '8817506281.4517452372676676'),
+    (6, 7, '-7796505729750.37795610'),
+    (6, 8, '7031444034.53149906'),
+    (6, 9, '-2340666225110.29929521292692920'),
+    (7, 0, '0'),
+    (7, 1, '0'),
+    (7, 2, '2851072985828710.485883795'),
+    (7, 3, '-357852770.35'),
+    (7, 4, '-647577464846017.9715'),
+    (7, 5, '-1361421264394.416135'),
+    (7, 6, '-7796505729750.37795610'),
+    (7, 7, '6893729321395225'),
+    (7, 8, '-6217255985285'),
+    (7, 9, '2069634775752159.035758700'),
+    (8, 0, '0'),
+    (8, 1, '0'),
+    (8, 2, '-2571300635581.146276407'),
+    (8, 3, '322737.11'),
+    (8, 4, '584031469984.4839'),
+    (8, 5, '1227826639.244571'),
+    (8, 6, '7031444034.53149906'),
+    (8, 7, '-6217255985285'),
+    (8, 8, '5607164161'),
+    (8, 9, '-1866544013697.195857020'),
+    (9, 0, '0'),
+    (9, 1, '0'),
+    (9, 2, '855948866655588.453741509242968740'),
+    (9, 3, '-107434525.43415438020'),
+    (9, 4, '-194415646271340.1815956522980'),
+    (9, 5, '-408725765384.257043660243220'),
+    (9, 6, '-2340666225110.29929521292692920'),
+    (9, 7, '2069634775752159.035758700'),
+    (9, 8, '-1866544013697.195857020'),
+    (9, 9, '621345559900192.420120630048656400');
+
+statement ok
+INSERT INTO num_data VALUES
+    (0, '0'),
+    (1, '0'),
+    (2, '-34338492.215397047'),
+    (3, '4.31'),
+    (4, '7799461.4119'),
+    (5, '16397.038491'),
+    (6, '93901.57763026'),
+    (7, '-83028485'),
+    (8, '74881'),
+    (9, '-24926804.045047420');
+
+# the values decide the representation
+query I
+SELECT typeof(val) FROM num_data LIMIT 1;
+----
+NUMERIC
+
+#----------------------------------------------------------------------------------------------------------------------
+# addition
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, t1.val + t2.val FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_add t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != t2.expected;
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_add t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = t2.expected;
+----
+100
+
+query I
+SELECT typeof(result) FROM num_result LIMIT 1;
+----
+NUMERIC
+
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, round(t1.val + t2.val, 10) FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_add t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != round(t2.expected, 10);
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_add t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = round(t2.expected, 10);
+----
+100
+
+#----------------------------------------------------------------------------------------------------------------------
+# subtraction
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, t1.val - t2.val FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_sub t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != t2.expected;
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_sub t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = t2.expected;
+----
+100
+
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, round(t1.val - t2.val, 40) FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_sub t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != round(t2.expected, 40);
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_sub t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = round(t2.expected, 40);
+----
+100
+
+#----------------------------------------------------------------------------------------------------------------------
+# multiplication: the products need up to 42 digits, more than the widest fixed representation
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, t1.val * t2.val FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_mul t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != t2.expected;
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_mul t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = t2.expected;
+----
+100
+
+query I
+SELECT typeof(result) FROM num_result LIMIT 1;
+----
+NUMERIC
+
+statement ok
+DELETE FROM num_result;
+
+statement ok
+INSERT INTO num_result SELECT t1.id, t2.id, round(t1.val * t2.val, 30) FROM num_data t1, num_data t2;
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_mul t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result != round(t2.expected, 30);
+----
+0
+
+query I
+SELECT count(*) FROM num_result t1, num_exp_mul t2 WHERE t1.id1 = t2.id1 AND t1.id2 = t2.id2 AND t1.result = round(t2.expected, 30);
+----
+100
+
+#----------------------------------------------------------------------------------------------------------------------
+# aggregates
+#----------------------------------------------------------------------------------------------------------------------
+query III
+SELECT min(val), max(val), sum(val) FROM num_data;
+----
+-83028485	7799461.4119	-134309135.922423207
+
+#----------------------------------------------------------------------------------------------------------------------
+# ceil(), floor() and round()
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE ceil_floor_round (a NUMERIC);
+
+statement ok
+INSERT INTO ceil_floor_round VALUES ('-5.5'), ('-5.499999'), ('9.5'), ('9.4999999'), ('0.0'), ('0.0000001'), ('-0.000001');
+
+query IIIII
+SELECT a, ceil(a), ceiling(a), floor(a), round(a) FROM ceil_floor_round ORDER BY a;
+----
+-5.5	-5	-5	-6	-6
+-5.499999	-5	-5	-6	-5
+-0.000001	0	0	-1	0
+0	0	0	0	0
+0.0000001	1	1	0	0
+9.4999999	10	10	9	9
+9.5	10	10	9	10
+
+# rounding ties away from zero, before and after the decimal point
+statement ok
+CREATE TABLE ties (i INTEGER, m25 NUMERIC, m15 NUMERIC, m05 NUMERIC, p05 NUMERIC, p15 NUMERIC, p25 NUMERIC,
+                   e_m25 NUMERIC, e_m15 NUMERIC, e_m05 NUMERIC, e_p05 NUMERIC, e_p15 NUMERIC, e_p25 NUMERIC);
+
+statement ok
+INSERT INTO ties VALUES
+    (-5, '-0.000025', '-0.000015', '-0.000005', '0.000005', '0.000015', '0.000025', '-0.00003', '-0.00002', '-0.00001', '0.00001', '0.00002', '0.00003'),
+    (-4, '-0.00025', '-0.00015', '-0.00005', '0.00005', '0.00015', '0.00025', '-0.0003', '-0.0002', '-0.0001', '0.0001', '0.0002', '0.0003'),
+    (-3, '-0.0025', '-0.0015', '-0.0005', '0.0005', '0.0015', '0.0025', '-0.003', '-0.002', '-0.001', '0.001', '0.002', '0.003'),
+    (-2, '-0.025', '-0.015', '-0.005', '0.005', '0.015', '0.025', '-0.03', '-0.02', '-0.01', '0.01', '0.02', '0.03'),
+    (-1, '-0.25', '-0.15', '-0.05', '0.05', '0.15', '0.25', '-0.3', '-0.2', '-0.1', '0.1', '0.2', '0.3'),
+    (0, '-2.5', '-1.5', '-0.5', '0.5', '1.5', '2.5', '-3', '-2', '-1', '1', '2', '3'),
+    (1, '-25', '-15', '-5', '5', '15', '25', '-30', '-20', '-10', '10', '20', '30'),
+    (2, '-250', '-150', '-50', '50', '150', '250', '-300', '-200', '-100', '100', '200', '300'),
+    (3, '-2500', '-1500', '-500', '500', '1500', '2500', '-3000', '-2000', '-1000', '1000', '2000', '3000'),
+    (4, '-25000', '-15000', '-5000', '5000', '15000', '25000', '-30000', '-20000', '-10000', '10000', '20000', '30000'),
+    (5, '-250000', '-150000', '-50000', '50000', '150000', '250000', '-300000', '-200000', '-100000', '100000', '200000', '300000');
+
+# (the precision of round() must be a constant: one check per power of ten)
+query I
+SELECT round(m25, 5) = e_m25 AND round(m15, 5) = e_m15 AND round(m05, 5) = e_m05 AND round(p05, 5) = e_p05
+    AND round(p15, 5) = e_p15 AND round(p25, 5) = e_p25 FROM ties WHERE i = -5;
+----
+true
+
+query I
+SELECT round(m25, 4) = e_m25 AND round(m15, 4) = e_m15 AND round(m05, 4) = e_m05 AND round(p05, 4) = e_p05
+    AND round(p15, 4) = e_p15 AND round(p25, 4) = e_p25 FROM ties WHERE i = -4;
+----
+true
+
+query I
+SELECT round(m25, 3) = e_m25 AND round(m15, 3) = e_m15 AND round(m05, 3) = e_m05 AND round(p05, 3) = e_p05
+    AND round(p15, 3) = e_p15 AND round(p25, 3) = e_p25 FROM ties WHERE i = -3;
+----
+true
+
+query I
+SELECT round(m25, 2) = e_m25 AND round(m15, 2) = e_m15 AND round(m05, 2) = e_m05 AND round(p05, 2) = e_p05
+    AND round(p15, 2) = e_p15 AND round(p25, 2) = e_p25 FROM ties WHERE i = -2;
+----
+true
+
+query I
+SELECT round(m25, 1) = e_m25 AND round(m15, 1) = e_m15 AND round(m05, 1) = e_m05 AND round(p05, 1) = e_p05
+    AND round(p15, 1) = e_p15 AND round(p25, 1) = e_p25 FROM ties WHERE i = -1;
+----
+true
+
+query I
+SELECT round(m25, 0) = e_m25 AND round(m15, 0) = e_m15 AND round(m05, 0) = e_m05 AND round(p05, 0) = e_p05
+    AND round(p15, 0) = e_p15 AND round(p25, 0) = e_p25 FROM ties WHERE i = 0;
+----
+true
+
+query I
+SELECT round(m25, -1) = e_m25 AND round(m15, -1) = e_m15 AND round(m05, -1) = e_m05 AND round(p05, -1) = e_p05
+    AND round(p15, -1) = e_p15 AND round(p25, -1) = e_p25 FROM ties WHERE i = 1;
+----
+true
+
+query I
+SELECT round(m25, -2) = e_m25 AND round(m15, -2) = e_m15 AND round(m05, -2) = e_m05 AND round(p05, -2) = e_p05
+    AND round(p15, -2) = e_p15 AND round(p25, -2) = e_p25 FROM ties WHERE i = 2;
+----
+true
+
+query I
+SELECT round(m25, -3) = e_m25 AND round(m15, -3) = e_m15 AND round(m05, -3) = e_m05 AND round(p05, -3) = e_p05
+    AND round(p15, -3) = e_p15 AND round(p25, -3) = e_p25 FROM ties WHERE i = 3;
+----
+true
+
+query I
+SELECT round(m25, -4) = e_m25 AND round(m15, -4) = e_m15 AND round(m05, -4) = e_m05 AND round(p05, -4) = e_p05
+    AND round(p15, -4) = e_p15 AND round(p25, -4) = e_p25 FROM ties WHERE i = 4;
+----
+true
+
+query I
+SELECT round(m25, -5) = e_m25 AND round(m15, -5) = e_m15 AND round(m05, -5) = e_m05 AND round(p05, -5) = e_p05
+    AND round(p15, -5) = e_p15 AND round(p25, -5) = e_p25 FROM ties WHERE i = 5;
+----
+true
+
+#----------------------------------------------------------------------------------------------------------------------
+# conversion to integers rounds, and fails when the rounded value does not fit
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE conv (id INTEGER, v NUMERIC);
+
+statement ok
+INSERT INTO conv VALUES (1, '-9223372036854775808.5'), (2, '-9223372036854775808.4'), (3, '9223372036854775807.4'),
+    (4, '9223372036854775807.5'), (5, '-2147483648.5'), (6, '-2147483648.4'), (7, '2147483647.4'), (8, '2147483647.5'),
+    (9, '-32768.5'), (10, '-32768.4'), (11, '32767.4'), (12, '32767.5');
+
+query II
+SELECT id, v::BIGINT FROM conv WHERE id IN (2, 3) ORDER BY id;
+----
+2	-9223372036854775808
+3	9223372036854775807
+
+statement error
+SELECT v::BIGINT FROM conv WHERE id = 1;
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT v::BIGINT FROM conv WHERE id = 4;
+----
+<REGEX>:.*Conversion Error.*
+
+query II
+SELECT id, v::INTEGER FROM conv WHERE id IN (6, 7) ORDER BY id;
+----
+6	-2147483648
+7	2147483647
+
+statement error
+SELECT v::INTEGER FROM conv WHERE id = 5;
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT v::INTEGER FROM conv WHERE id = 8;
+----
+<REGEX>:.*Conversion Error.*
+
+query II
+SELECT id, v::SMALLINT FROM conv WHERE id IN (10, 11) ORDER BY id;
+----
+10	-32768
+11	32767
+
+statement error
+SELECT v::SMALLINT FROM conv WHERE id = 9;
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT v::SMALLINT FROM conv WHERE id = 12;
+----
+<REGEX>:.*Conversion Error.*
+
+#----------------------------------------------------------------------------------------------------------------------
+# input syntax: PostgreSQL's good inputs that are plain numbers are accepted
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE num_input_test (n1 NUMERIC);
+
+statement ok
+INSERT INTO num_input_test VALUES (' 123'), ('   3245874    '), ('  -93853'), ('555.50'), ('-555.50');
+
+query I
+SELECT n1 FROM num_input_test ORDER BY n1;
+----
+-93853
+-555.5
+123
+555.5
+3245874
+
+# PostgreSQL also accepts NaN, infinities, digit separators, exponents and non-decimal bases - NUMERIC does not
+statement error
+INSERT INTO num_input_test VALUES ('NaN ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('        nan');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' inf ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' +inf ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' -inf ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' Infinity ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' +inFinity ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' -INFINITY ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('12_000_000_000');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('12_000.123_456');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('23_000_000_000e-1_0');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('.000_000_000_123e1_0');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0b10001110111100111100001001010');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('  +0o112402761777 ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('-0x0000000000000000000000000deadbeef');
+----
+not an exact number
+
+# PostgreSQL's bad inputs are bad here as well
+statement error
+INSERT INTO num_input_test VALUES ('     ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('   1234   %');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('xyz');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('- 1234');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('5 . 0');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('5. 0   ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES (' N aN ');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('+NaN');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('-NaN');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('+ infinity');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('_123');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('123_');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('12__34');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('123_.456');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('123._456');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('1.2e_34');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('1.2e34_');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0b1112');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0c1112');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0o12345678');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0x1eg');
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test VALUES ('0x12.34');
+----
+not an exact number
+
+query I
+SELECT count(*) FROM num_input_test;
+----
+5
+
+# NaN and infinities do not arrive through floating point values either
+statement error
+INSERT INTO num_input_test SELECT 'NaN'::DOUBLE;
+----
+not an exact number
+
+statement error
+INSERT INTO num_input_test SELECT 'Infinity'::FLOAT;
+----
+not an exact number

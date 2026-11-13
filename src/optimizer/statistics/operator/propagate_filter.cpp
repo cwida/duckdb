@@ -55,8 +55,8 @@ void StatisticsPropagator::UpdateFilterStatistics(BaseStatistics &stats, Express
 	if (!IsCompareDistinct(comparison_type)) {
 		stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
 	}
-	if (!stats.GetType().IsNumeric()) {
-		// don't handle non-numeric columns here (yet)
+	if (!stats.GetType().IsNumeric() || stats.GetStatsType() != StatisticsType::NUMERIC_STATS) {
+		// don't handle non-numeric columns here (yet), wide decimals are numeric but carry string statistics
 		return;
 	}
 	if (!NumericStats::HasMinMax(stats)) {
@@ -95,8 +95,8 @@ void StatisticsPropagator::UpdateFilterStatistics(BaseStatistics &lstats, BaseSt
 		rstats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
 	}
 	D_ASSERT(lstats.GetType() == rstats.GetType());
-	if (!lstats.GetType().IsNumeric()) {
-		// don't handle non-numeric columns here (yet)
+	if (!lstats.GetType().IsNumeric() || lstats.GetStatsType() != StatisticsType::NUMERIC_STATS) {
+		// don't handle non-numeric columns here (yet), wide decimals are numeric but carry string statistics
 		return;
 	}
 	if (!NumericStats::HasMinMax(lstats) || !NumericStats::HasMinMax(rstats)) {

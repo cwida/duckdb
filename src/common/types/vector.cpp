@@ -8,6 +8,7 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/types/numeric_type.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/fsst.hpp"
@@ -507,10 +508,19 @@ void Vector::Sequence(int64_t start, int64_t increment, idx_t count) {
 }
 
 void Vector::Shred(Vector &shredded_data, idx_t capacity) {
-	if (GetType().id() != LogicalTypeId::VARIANT) {
-		throw InternalException("Vector::Shred can only be used on variant vectors");
-	}
 	auto &shredded_type = shredded_data.GetType();
+	if (GetType().id() == LogicalTypeId::NUMERIC) {
+		// a NUMERIC vector carries one exact representation of its values
+		if (!NumericType::IsExact(shredded_type)) {
+			throw InternalException("Vector::Shred of a NUMERIC vector needs an exact representation, not %s",
+			                        shredded_type.ToString());
+		}
+		this->buffer = make_buffer<ShreddedVectorBuffer>(shredded_data, count_t(capacity));
+		return;
+	}
+	if (GetType().id() != LogicalTypeId::VARIANT) {
+		throw InternalException("Vector::Shred can only be used on variant and numeric vectors");
+	}
 	if (shredded_type.id() != LogicalTypeId::STRUCT || StructType::GetChildCount(shredded_type) != 2) {
 		throw InternalException("Vector::Shred parameter must be a struct with two children");
 	}

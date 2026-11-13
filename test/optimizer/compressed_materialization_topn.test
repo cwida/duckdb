@@ -1,0 +1,38 @@
+# name: test/optimizer/compressed_materialization_topn.test
+# description: Compressed materialization wraps a top-N only when a NUMERIC column is involved
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# native types: the plan around the top-N keeps its shape (optimizer extensions match the operators around a top-N)
+statement ok
+CREATE TABLE items AS SELECT i AS id, (i * 7919) % 1000 AS score FROM range(100) tbl(i);
+
+query II
+EXPLAIN SELECT id FROM items WHERE id % 3 = 0 ORDER BY score LIMIT 3
+----
+logical_opt	<!REGEX>:.*CAST.*
+
+query I
+SELECT id FROM items WHERE id % 3 = 0 ORDER BY score, id LIMIT 3
+----
+0
+12
+24
+
+# NUMERIC columns: the top-N keys and payload are compressed to their representation
+statement ok
+CREATE TABLE numerics AS SELECT i::NUMERIC AS n, ((i * 7919) % 1000)::NUMERIC AS score FROM range(100) tbl(i);
+
+query II
+EXPLAIN SELECT n FROM numerics ORDER BY score LIMIT 3
+----
+logical_opt	<REGEX>:.*CAST.*
+
+query I
+SELECT n FROM numerics ORDER BY score, n LIMIT 3
+----
+0
+37
+74

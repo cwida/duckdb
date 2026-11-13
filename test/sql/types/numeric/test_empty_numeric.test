@@ -1,7 +1,8 @@
 # name: test/sql/types/numeric/test_empty_numeric.test
-# description: Test empty numeric
+# description: Test NUMERIC without type modifiers
 # group: [numeric]
 
+# a bare NUMERIC (with or without empty parentheses) takes the representation of its values
 statement ok
 CREATE TABLE numerics(i NUMERIC(), j NUMERIC)
 
@@ -11,10 +12,25 @@ INSERT INTO numerics VALUES (0176030871715840, 2.2)
 query II
 SELECT * FROM numerics
 ----
-176030871715840.000	2.200
+176030871715840	2.2
 
-# Test cast
 query II
-SELECT 1.25::FLOAT::NUMERIC, 1.25::FLOAT::NUMERIC()
+SELECT typeof(i), typeof(j) FROM numerics
 ----
-1.250	1.250
+NUMERIC	NUMERIC
+
+# Test cast: exact numbers keep their type, floating point values must be made exact first
+query II
+SELECT 1.25::NUMERIC, 1.25::NUMERIC()
+----
+1.25	1.25
+
+query I
+SELECT 1.25::FLOAT::NUMERIC
+----
+1.25
+
+query I
+SELECT 1.25::FLOAT::DECIMAL(4,2)::NUMERIC
+----
+1.25

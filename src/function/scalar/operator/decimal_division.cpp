@@ -41,7 +41,7 @@ struct DecimalDivBindData : public FunctionData {
 //===--------------------------------------------------------------------===//
 
 template <class T>
-static constexpr uint8_t DecimalTierWidth() {
+static constexpr uint32_t DecimalTierWidth() {
 	if constexpr (std::is_same_v<T, int16_t>) {
 		return Decimal::MAX_WIDTH_INT16;
 	} else if constexpr (std::is_same_v<T, int32_t>) {
@@ -49,7 +49,7 @@ static constexpr uint8_t DecimalTierWidth() {
 	} else if constexpr (std::is_same_v<T, int64_t>) {
 		return Decimal::MAX_WIDTH_INT64;
 	} else {
-		return Decimal::MAX_WIDTH_DECIMAL;
+		return Decimal::MAX_WIDTH_INT128;
 	}
 }
 
@@ -219,7 +219,7 @@ static void SelectDecimalDivFunction(BoundScalarFunction &bound_function);
 // Result width and scale for e1 / e2 (SQL Server semantics):
 //   result_scale = max(6, s1 + p2 + 1)
 //   result_width = p1 - s1 + s2 + result_scale
-// Both are capped at Decimal::MAX_WIDTH_DECIMAL (38).
+// Both are capped at Decimal::MAX_WIDTH_INT128 (38).
 static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &lhs_type = input.GetArgumentType(0);
@@ -229,6 +229,10 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	if (!lhs_type.GetDecimalProperties(p1, s1) || !rhs_type.GetDecimalProperties(p2, s2)) {
 		throw InvalidInputException("decimal_division: both arguments must be DECIMAL");
 	}
+	if (Decimal::IsWide(p1) || Decimal::IsWide(p2)) {
+		throw NotImplementedException("decimal_division is not supported for DECIMAL types wider than %d digits",
+		                              Decimal::MAX_WIDTH_INT128);
+	}
 	// an integer argument is an implicit DECIMAL(p, 0): bind on its canonical DECIMAL type
 	auto lhs_decimal_type = lhs_type.id() == LogicalTypeId::DECIMAL ? lhs_type : LogicalType::DECIMAL(p1, s1);
 	auto rhs_decimal_type = rhs_type.id() == LogicalTypeId::DECIMAL ? rhs_type : LogicalType::DECIMAL(p2, s2);
@@ -237,9 +241,9 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	if (input.GetArgumentCount() == 3) {
 		auto scale_val = input.GetNonNullConstant(2);
 		auto scale_i = scale_val.GetValue<int32_t>();
-		if (scale_i < 0 || scale_i > Decimal::MAX_WIDTH_DECIMAL) {
+		if (scale_i < 0 || scale_i > Decimal::MAX_WIDTH_INT128) {
 			throw InvalidInputException("decimal_division: scale must be between 0 and %d, got %d",
-			                            Decimal::MAX_WIDTH_DECIMAL, scale_i);
+			                            Decimal::MAX_WIDTH_INT128, scale_i);
 		}
 		result_scale = UnsafeNumericCast<uint32_t>(scale_i);
 	} else {
@@ -253,19 +257,19 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	}
 	uint32_t result_width = UnsafeNumericCast<uint32_t>(result_width_i);
 
-	if (result_scale > Decimal::MAX_WIDTH_DECIMAL) {
+	if (result_scale > Decimal::MAX_WIDTH_INT128) {
 		throw OutOfRangeException(
 		    "Needed scale %d to accurately represent the division result, but this is out of range of the "
 		    "DECIMAL type. Max scale is %d; could not perform an accurate division. Either add a cast to DOUBLE, "
 		    "or add an explicit cast to a decimal with a lower scale.",
-		    result_scale, Decimal::MAX_WIDTH_DECIMAL);
+		    result_scale, Decimal::MAX_WIDTH_INT128);
 	}
-	if (result_width > Decimal::MAX_WIDTH_DECIMAL) {
+	if (result_width > Decimal::MAX_WIDTH_INT128) {
 		throw OutOfRangeException(
 		    "Needed width %d to accurately represent the division result, but this is out of range of the "
 		    "DECIMAL type. Max width is %d; could not perform an accurate division. Either add a cast to DOUBLE, "
 		    "or add an explicit cast to a decimal with a lower scale.",
-		    result_width, Decimal::MAX_WIDTH_DECIMAL);
+		    result_width, Decimal::MAX_WIDTH_INT128);
 	}
 
 	bound_function.SetReturnType(LogicalType::DECIMAL(result_width, result_scale));

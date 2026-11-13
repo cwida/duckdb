@@ -1,0 +1,331 @@
+# name: test/sql/types/numeric/numeric_type.test
+# description: NUMERIC columns take the representation of the values they hold
+# group: [numeric]
+
+statement ok
+CREATE TABLE t(n NUMERIC);
+
+# the catalog keeps the declared type
+query I
+SELECT column_type FROM (DESCRIBE t);
+----
+NUMERIC
+
+# an empty column is bound to the default representation
+query I
+SELECT typeof(max(n)) FROM t;
+----
+NUMERIC
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM t ORDER BY n;
+----
+1
+2
+3
+
+# values that do not fit widen the representation
+statement ok
+INSERT INTO t VALUES (1000);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO t VALUES (100000), (-100000);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO t VALUES (10000000000);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query III
+SELECT min(n), max(n), sum(n) FROM t;
+----
+-100000	10000000000	10000001006
+
+# fractional values turn the column into a decimal with the scale they need
+statement ok
+INSERT INTO t VALUES (1.5);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO t VALUES (0.25);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM t ORDER BY n;
+----
+-100000
+0.25
+1
+1.5
+2
+3
+1000
+100000
+10000000000
+
+# filters, including ones that prune row groups by their statistics
+query I
+SELECT n FROM t WHERE n > 1000 ORDER BY n;
+----
+100000
+10000000000
+
+query I
+SELECT n FROM t WHERE n = 1.5;
+----
+1.5
+
+query I
+SELECT count(*) FROM t WHERE n < 0;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE n > 100000000000;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE n IS NULL;
+----
+0
+
+# NULLs
+statement ok
+INSERT INTO t VALUES (NULL);
+
+query I
+SELECT count(*) FROM t WHERE n IS NULL;
+----
+1
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+# beyond 38 digits the column becomes a wide decimal
+statement ok
+INSERT INTO t VALUES ('123456789012345678901234567890123456789012.5'::DECIMAL(45,1));
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT max(n) FROM t;
+----
+123456789012345678901234567890123456789012.5
+
+# a NUMERIC that only ever held NULLs stays in the default representation
+statement ok
+CREATE TABLE nulls(n NUMERIC);
+
+statement ok
+INSERT INTO nulls VALUES (NULL), (NULL);
+
+query II
+SELECT typeof(n), count(*) FROM nulls GROUP BY ALL;
+----
+NUMERIC	2
+
+# the default representation is also used for NULL defaults and DEFAULT VALUES
+statement ok
+CREATE TABLE defaults(i INTEGER, n NUMERIC, m NUMERIC DEFAULT 7.25);
+
+statement ok
+INSERT INTO defaults (i) VALUES (1);
+
+statement ok
+INSERT INTO defaults DEFAULT VALUES;
+
+query III
+SELECT i, n, m FROM defaults ORDER BY i NULLS LAST;
+----
+1	NULL	7.25
+NULL	NULL	7.25
+
+query II
+SELECT typeof(n), typeof(m) FROM defaults LIMIT 1;
+----
+NUMERIC	NUMERIC
+
+# whole numbers stored as decimals do not need fractional digits: the column stays in an integer representation
+statement ok
+CREATE TABLE whole(n NUMERIC);
+
+statement ok
+INSERT INTO whole VALUES (2.00::DECIMAL(5,2)), (100.00::DECIMAL(5,2));
+
+query I
+SELECT typeof(n) FROM whole LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO whole VALUES (2.50::DECIMAL(5,2));
+
+query I
+SELECT typeof(n) FROM whole LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM whole ORDER BY n;
+----
+2
+2.5
+100
+
+# NUMERIC(width, scale) is a DECIMAL as before
+statement ok
+CREATE TABLE d(x NUMERIC(10, 2));
+
+query I
+SELECT column_type FROM (DESCRIBE d);
+----
+DECIMAL(10,2)
+
+# casts to NUMERIC keep the type of exact values
+query I
+SELECT typeof(42::NUMERIC);
+----
+NUMERIC
+
+query I
+SELECT typeof(1.5::NUMERIC);
+----
+NUMERIC
+
+query I
+SELECT typeof(NULL::NUMERIC);
+----
+NUMERIC
+
+# floating point values take their shortest round-trip decimal text; NaN and infinities are not exact numbers
+query I
+SELECT 1.5::DOUBLE::NUMERIC;
+----
+1.5
+
+statement error
+SELECT 'inf'::DOUBLE::NUMERIC;
+----
+not an exact number
+
+# a string literal that reads as a number is an exact number (see the literals block below)
+query II
+SELECT '1.5'::NUMERIC, typeof('1.5'::NUMERIC);
+----
+1.5	NUMERIC
+
+query I
+SELECT 1.5::FLOAT::NUMERIC;
+----
+1.5
+
+# NUMERIC nested in other types: see numeric_type_nested.test
+statement ok
+CREATE TABLE nested(l NUMERIC[]);
+
+# CREATE TABLE AS keeps results that derive from NUMERIC columns NUMERIC
+statement ok
+CREATE TABLE copy AS SELECT n, n::DECIMAL(44,2) AS fixed FROM t;
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE copy) ORDER BY column_name;
+----
+fixed	DECIMAL(44,2)
+n	NUMERIC
+
+query I
+SELECT typeof(n) FROM copy LIMIT 1;
+----
+NUMERIC
+
+# string literals that read as numbers are exact numbers, as they are for DECIMAL columns
+statement ok
+CREATE TABLE literals(n NUMERIC);
+
+statement ok
+INSERT INTO literals VALUES ('0.1'), ('0.2'), (' -42 '), ('+7'), ('1000000000000000000000000000000000000000000.5'), (NULL);
+
+query I
+SELECT typeof(n) FROM literals LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM literals ORDER BY ALL;
+----
+-42
+0.1
+0.2
+7
+1000000000000000000000000000000000000000000.5
+NULL
+
+query II
+SELECT '12.50'::NUMERIC, typeof('12.50'::NUMERIC);
+----
+12.5	NUMERIC
+
+query II
+SELECT '300'::NUMERIC, typeof('300'::NUMERIC);
+----
+300	NUMERIC
+
+# scientific notation is an exact number, other text is not
+statement ok
+INSERT INTO literals VALUES ('1e3');
+
+query I
+SELECT n FROM literals WHERE n = 1000;
+----
+1000
+
+statement error
+INSERT INTO literals VALUES ('abc');
+----
+not an exact number
+
+statement error
+SELECT 'inf'::NUMERIC;
+----
+not an exact number
+
+# VARCHAR values are parsed into the representation that holds them
+query I
+SELECT ('1.5' || '')::NUMERIC;
+----
+1.5

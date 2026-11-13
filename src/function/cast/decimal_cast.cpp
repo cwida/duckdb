@@ -255,6 +255,10 @@ static bool DecimalToStringCast(Vector &source, Vector &result, idx_t count, Cas
 
 BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const LogicalType &source,
                                               const LogicalType &target) {
+	if (source.InternalType() == PhysicalType::VARCHAR) {
+		// wide decimal source
+		return FromWideDecimalCastSwitch(input, source, target);
+	}
 	// now switch on the result type
 	switch (target.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -279,7 +283,13 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 		return FromDecimalCast<hugeint_t>;
 	case LogicalTypeId::UHUGEINT:
 		return FromDecimalCast<uhugeint_t>;
+	case LogicalTypeId::BIGNUM:
+		return DecimalToBignumCast;
 	case LogicalTypeId::DECIMAL: {
+		if (target.InternalType() == PhysicalType::VARCHAR) {
+			// fixed-size decimal to wide decimal
+			return ToWideDecimalCast;
+		}
 		// decimal to decimal cast
 		// first we need to figure out the source and target internal types
 		switch (source.InternalType()) {

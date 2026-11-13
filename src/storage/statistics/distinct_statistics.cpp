@@ -106,10 +106,16 @@ void DistinctStatistics::Merge(const DistinctStatistics &other) {
 	total_count += other.total_count;
 }
 
+//! Integral values are sampled at the higher rate; NUMERIC columns mostly hold integers and their estimates feed the
+//! same cardinality decisions, so they take the same rate
+static bool UsesIntegralSampleRate(const LogicalType &type) {
+	return type.IsIntegral() || type.id() == LogicalTypeId::NUMERIC;
+}
+
 void DistinctStatistics::UpdateSample(const Vector &new_data, idx_t count, Vector &hashes) {
 	total_count += count;
 	const auto original_count = count;
-	const auto sample_rate = new_data.GetType().IsIntegral() ? INTEGRAL_SAMPLE_RATE : BASE_SAMPLE_RATE;
+	const auto sample_rate = UsesIntegralSampleRate(new_data.GetType()) ? INTEGRAL_SAMPLE_RATE : BASE_SAMPLE_RATE;
 	// Sample up to 'sample_rate' of STANDARD_VECTOR_SIZE of this vector (at least 1)
 	count = MaxValue<idx_t>(LossyNumericCast<idx_t>(sample_rate * static_cast<double>(STANDARD_VECTOR_SIZE)), 1);
 	// But never more than the original count
@@ -124,7 +130,7 @@ void DistinctStatistics::UpdateSample(const Vector &new_data, idx_t count, Vecto
 	    CreateSampleSelection(MaxValue<idx_t>(LossyNumericCast<idx_t>(INTEGRAL_SAMPLE_RATE * STANDARD_VECTOR_SIZE), 1));
 	static auto other_sample =
 	    CreateSampleSelection(MaxValue<idx_t>(LossyNumericCast<idx_t>(BASE_SAMPLE_RATE * STANDARD_VECTOR_SIZE), 1));
-	auto &sample_selection = new_data.GetType().IsIntegral() ? integral_sample : other_sample;
+	auto &sample_selection = UsesIntegralSampleRate(new_data.GetType()) ? integral_sample : other_sample;
 	if (TryUpdateSampleValues(*log, new_data, sample_selection, count)) {
 		sample_count += count;
 		return;

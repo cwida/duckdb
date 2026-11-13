@@ -1,0 +1,263 @@
+# name: test/sql/types/numeric/numeric_aggregates.test
+# description: min/max/first/last/any_value over NUMERIC work on the run-time representation of their input
+# group: [numeric]
+
+load {TEST_DIR}/numeric_aggregates.db
+
+# the typed reference: the same values in the representation they get stored in
+statement ok
+CREATE TABLE ref AS SELECT i::DECIMAL(18,1) AS i, (i % 7)::INTEGER AS g, (i / 100.0)::DECIMAL(10,2) AS d FROM range(-5000, 5000) tbl(i);
+
+statement ok
+CREATE TABLE t AS SELECT i::NUMERIC AS n, g, d::NUMERIC AS nd FROM ref;
+
+# NULLs and a second representation (decimals) in the integer column: different row groups keep different ones
+statement ok
+INSERT INTO t SELECT NULL, 3, NULL FROM range(10);
+
+statement ok
+INSERT INTO t SELECT (i / 10.0)::DECIMAL(6,1)::NUMERIC, (i % 7)::INTEGER, i::NUMERIC FROM range(0, 100) tbl(i);
+
+statement ok
+INSERT INTO ref SELECT NULL, 3, NULL FROM range(10);
+
+statement ok
+INSERT INTO ref SELECT (i / 10.0)::DECIMAL(6,1), (i % 7)::INTEGER, i FROM range(0, 100) tbl(i);
+
+# the same queries before and after the checkpoint re-picks the representations
+loop i 0 2
+
+query IIII
+SELECT min(n), max(n), min(nd), max(nd) FROM t;
+----
+-5000	4999	-50	99
+
+query IIII
+SELECT (SELECT min(n) FROM t) = (SELECT min(i) FROM ref), (SELECT max(n) FROM t) = (SELECT max(i) FROM ref), (SELECT min(nd) FROM t) = (SELECT min(d) FROM ref), (SELECT max(nd) FROM t) = (SELECT max(d) FROM ref);
+----
+true	true	true	true
+
+query IIII
+SELECT g, min(n), max(n), max(nd) FROM t GROUP BY g ORDER BY g;
+----
+-6	-4997	-6	-0.06
+-5	-4996	-5	-0.05
+-4	-4995	-4	-0.04
+-3	-4994	-3	-0.03
+-2	-5000	-2	-0.02
+-1	-4999	-1	-0.01
+0	-4998	4998	98
+1	0.1	4999	99
+2	0.2	4993	93
+3	0.3	4994	94
+4	0.4	4995	95
+5	0.5	4996	96
+6	0.6	4997	97
+
+# grouped results equal the typed reference
+query I
+SELECT count(*) FROM (SELECT g, min(n) AS mn, max(n) AS mx, first(n ORDER BY nd) AS f, last(nd ORDER BY n) AS l FROM t GROUP BY g) tt
+JOIN (SELECT g, min(i) AS mn, max(i) AS mx, first(i ORDER BY d) AS f, last(d ORDER BY i) AS l FROM ref GROUP BY g) rr
+ON tt.g = rr.g AND tt.mn = rr.mn AND tt.mx = rr.mx AND tt.f IS NOT DISTINCT FROM rr.f AND tt.l IS NOT DISTINCT FROM rr.l;
+----
+13
+
+# min/max of expressions: the result of an arithmetic chain is narrowed to its values
+query III
+SELECT max(n * nd), min(n * nd), max(n + nd) FROM t;
+----
+250000	0	5048.99
+
+# the same decimals through min/max keep their scale and representation
+query III
+SELECT min(nd), max(nd), typeof(max(nd)) FROM t WHERE nd < 0;
+----
+-50	-0.01	NUMERIC
+
+# window functions
+query II
+SELECT n, max(n) OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t WHERE n BETWEEN 0.05 AND 0.95 ORDER BY n;
+----
+0.1	0.2
+0.2	0.3
+0.3	0.4
+0.4	0.5
+0.5	0.6
+0.6	0.7
+0.7	0.8
+0.8	0.9
+0.9	0.9
+
+query II
+SELECT n, min(n) OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t WHERE n BETWEEN 0.05 AND 0.95 ORDER BY n;
+----
+0.1	0.1
+0.2	0.1
+0.3	0.2
+0.4	0.3
+0.5	0.4
+0.6	0.5
+0.7	0.6
+0.8	0.7
+0.9	0.8
+
+# FILTER and DISTINCT
+query II
+SELECT max(n) FILTER (WHERE n < 0), min(DISTINCT nd) FILTER (WHERE nd > 50) FROM t;
+----
+-1	51
+
+# first/last/any_value follow their typed counterparts
+query IIII
+SELECT first(n ORDER BY n), last(n ORDER BY n), any_value(n ORDER BY n), first(n ORDER BY n DESC) FROM t WHERE n IS NOT NULL;
+----
+-5000	4999	-5000	4999
+
+query III
+SELECT first(n), last(n), any_value(n) FROM (SELECT n FROM t ORDER BY n LIMIT 5) tt(n);
+----
+-5000	-4996	-5000
+
+# NULL handling: first/last record NULLs, any_value skips them
+query IIII
+SELECT first(n), last(n), any_value(n), count(*) FROM (SELECT NULL::NUMERIC AS n UNION ALL SELECT 2::NUMERIC UNION ALL SELECT NULL) tt;
+----
+NULL	NULL	2	3
+
+query III
+SELECT g, first(n ORDER BY n), last(n ORDER BY n) FROM t GROUP BY g ORDER BY g LIMIT 2;
+----
+-6	-4997	-6
+-5	-4996	-5
+
+statement ok
+CHECKPOINT;
+
+endloop
+
+# empty inputs and all-NULL inputs
+query IIIII
+SELECT min(n), max(n), first(n), last(n), any_value(n) FROM t WHERE n > 100000;
+----
+NULL	NULL	NULL	NULL	NULL
+
+query III
+SELECT min(n), max(n), any_value(n) FROM t WHERE n IS NULL;
+----
+NULL	NULL	NULL
+
+# mixed representations within one aggregate: integers, decimals of different scales, and wide values
+statement ok
+CREATE TABLE mixed (n NUMERIC);
+
+statement ok
+INSERT INTO mixed VALUES (1), (2.5), (-3), ('0.125'), (NULL), ('99999999999999999999999999999999999999999.5'), ('-99999999999999999999999999999999999999999.5'), (1000000000000000000000);
+
+query III
+SELECT min(n), max(n), count(n) FROM mixed;
+----
+-99999999999999999999999999999999999999999.5	99999999999999999999999999999999999999999.5	7
+
+query II
+SELECT min(n), max(n) FROM mixed WHERE n < 1000000000000000000000000;
+----
+-99999999999999999999999999999999999999999.5	1000000000000000000000
+
+query II
+SELECT min(n), max(n) FROM mixed WHERE n > -1000000000000000000000000 AND n < 1000000000000000000000000;
+----
+-3	1000000000000000000000
+
+query II
+SELECT min(n), max(n) FROM mixed WHERE n BETWEEN -3 AND 3;
+----
+-3	2.5
+
+# values that need more than 128 bits after scale alignment compare correctly
+query II
+SELECT min(n), max(n) FROM (VALUES ('99999999999999999999999999999999999999'::NUMERIC), ('0.000000000000000000000000000000000001'::NUMERIC), ('99999999999999999999999999999999999998.5'::NUMERIC)) tt(n);
+----
+0.000000000000000000000000000000000001	99999999999999999999999999999999999999
+
+query II
+SELECT min(n), max(n) FROM (VALUES ('-99999999999999999999999999999999999999'::NUMERIC), ('-0.000000000000000000000000000000000001'::NUMERIC), ('-99999999999999999999999999999999999998.5'::NUMERIC)) tt(n);
+----
+-99999999999999999999999999999999999999	-0.000000000000000000000000000000000001
+
+# the extremes of two row groups of different scales
+statement ok
+CREATE TABLE scales AS SELECT (i / 100.0)::DECIMAL(10,2)::NUMERIC AS n FROM range(0, 1000) tbl(i);
+
+statement ok
+INSERT INTO scales SELECT (i / 1000.0)::DECIMAL(10,3)::NUMERIC FROM range(0, 1000) tbl(i);
+
+query III
+SELECT min(n), max(n), min(n) FILTER (WHERE n > 0) FROM scales;
+----
+0	9.99	0.001
+
+query II
+SELECT min(n), max(n) FROM scales WHERE n > 0.5 AND n < 0.51;
+----
+0.501	0.509
+
+# equality of the typed and canonical paths: a canonical input (UNION of representations) agrees with the typed one
+query IIII
+SELECT min(n), max(n), first(n ORDER BY n), last(n ORDER BY n) FROM (SELECT 3::NUMERIC AS n UNION ALL SELECT 2.75::NUMERIC UNION ALL SELECT -1::NUMERIC UNION ALL SELECT 1000000000000::NUMERIC) tt;
+----
+-1	1000000000000	-1	1000000000000
+
+# arg_min/arg_max with a NUMERIC key and value
+query II
+SELECT arg_min(g, n), arg_max(n, nd) FROM t;
+----
+-2	9.9
+
+query II
+SELECT arg_min(g, i), arg_max(i, d) FROM ref;
+----
+-2	9.9
+
+# avg is the exact sum divided by the count, as a DOUBLE like the average of a DECIMAL
+query III
+SELECT avg(n) = avg(n::DECIMAL(18,1)), avg(nd) = avg(nd::DECIMAL(10,2)), typeof(avg(n)) FROM t;
+----
+true	true	DOUBLE
+
+query II
+SELECT avg(n) = avg(n::DECIMAL(10,3)), avg(n) FILTER (WHERE n > 100) FROM scales;
+----
+true	NULL
+
+query I
+SELECT count(*) FROM (SELECT g, avg(n) AS a, avg(n::DECIMAL(18,1)) AS b FROM t GROUP BY g) WHERE a <> b OR a IS NULL;
+----
+0
+
+# a sum of different scales and of a wide value
+query I
+SELECT avg(n) FROM (SELECT 1.5::NUMERIC AS n UNION ALL SELECT 2::NUMERIC UNION ALL SELECT 0.25::NUMERIC);
+----
+1.25
+
+query I
+SELECT avg(n) FROM (VALUES ('123456789012345678901234567890.5'::NUMERIC), ('1'::NUMERIC)) t(n);
+----
+6.172839450617284e+28
+
+# a state that held a long value, then an inlined one, then a long one again: the long value must not be written
+# through the inlined one
+query I
+SELECT max(n) FROM (VALUES ('-123456789012345678901234567890123456789012345.5'::NUMERIC), (0::NUMERIC), ('123456789012345678901234567890123456789012345.5'::NUMERIC)) t(n);
+----
+123456789012345678901234567890123456789012345.5
+
+query I
+SELECT min(n) FROM (VALUES ('123456789012345678901234567890123456789012345.5'::NUMERIC), (0::NUMERIC), ('-123456789012345678901234567890123456789012345.5'::NUMERIC)) t(n);
+----
+-123456789012345678901234567890123456789012345.5
+
+query II
+SELECT min(n), max(n) FROM (SELECT CASE WHEN i % 3 = 0 THEN ('-9' || repeat('9', 60 + i % 7))::NUMERIC WHEN i % 3 = 1 THEN i::NUMERIC ELSE ('9' || repeat('9', 60 + i % 5))::NUMERIC END AS n FROM range(3000) t(i));
+----
+-9999999999999999999999999999999999999999999999999999999999999999999	99999999999999999999999999999999999999999999999999999999999999999

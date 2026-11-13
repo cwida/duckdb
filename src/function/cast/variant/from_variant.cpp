@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
@@ -1210,6 +1211,10 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			case PhysicalType::INT128:
 				return CastVariantToPrimitive<VariantDecimalConversion<hugeint_t>>(conversion_data, result, sel, offset,
 				                                                                   count, row, decimal_payload);
+			case PhysicalType::VARCHAR:
+				throw NotImplementedException("Can't convert VARIANT to %s: DECIMAL values wider than %d digits are "
+				                              "not supported in VARIANT",
+				                              target_type.ToString(), Decimal::MAX_WIDTH_INT128);
 			default:
 				throw NotImplementedException("Can't convert VARIANT to DECIMAL value of physical type: %s",
 				                              EnumUtil::ToString(physical_type));

@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/string_value_scanner.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
@@ -424,7 +425,16 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		break;
 	}
 	case LogicalTypeId::DECIMAL: {
-		if (decimal_separator == ',') {
+		if (parse_types[chunk_col_id].internal_type == PhysicalType::VARCHAR) {
+			// wide decimal, stored as the BIGNUM blob of its unscaled value
+			string blob;
+			success = CSVCast::TryParseWideDecimal(value_ptr, size, decimal_separator, parse_types[chunk_col_id].width,
+			                                       parse_types[chunk_col_id].scale, blob);
+			if (success) {
+				static_cast<string_t *>(vector_ptr[chunk_col_id])[number_of_rows] =
+				    StringVector::AddStringOrBlob(parse_chunk.data[chunk_col_id], blob.data(), blob.size());
+			}
+		} else if (decimal_separator == ',') {
 			switch (parse_types[chunk_col_id].internal_type) {
 			case PhysicalType::INT16:
 				success = TryDecimalStringCast<int16_t, ','>(

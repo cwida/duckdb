@@ -1,0 +1,36 @@
+# name: test/sql/types/numeric/numeric_alter_type_nulls.test
+# description: NULLs appended before a NUMERIC column widens its representation stay in the statistics
+# group: [numeric]
+
+statement ok
+SET threads = 1;
+
+# the first vectors are NULL, the later ones need a wider representation than the empty column starts with
+statement ok
+CREATE TABLE null_stats AS SELECT CASE WHEN rownum < 2048 THEN NULL ELSE '10000000000' END AS n FROM range(4096) AS source(rownum);
+
+statement ok
+ALTER TABLE null_stats ALTER COLUMN n TYPE NUMERIC USING n::NUMERIC;
+
+query II
+SELECT count(*) FILTER (WHERE n IS NULL), count(*) FILTER (WHERE n IS NOT NULL) FROM null_stats;
+----
+2048	2048
+
+query I
+SELECT count(*) FROM null_stats WHERE n IS NULL;
+----
+2048
+
+# the other way around: values first, then NULLs
+statement ok
+CREATE TABLE null_stats_2 AS SELECT CASE WHEN rownum < 2048 THEN '10000000000' ELSE NULL END AS n FROM range(4096) AS source(rownum);
+
+statement ok
+ALTER TABLE null_stats_2 ALTER COLUMN n TYPE NUMERIC USING n::NUMERIC;
+
+query I
+SELECT count(*) FROM null_stats_2 WHERE n IS NULL UNION ALL SELECT count(*) FROM null_stats_2 WHERE n IS NOT NULL;
+----
+2048
+2048

@@ -22,7 +22,7 @@ reset label expected_res
 
 endloop
 
-foreach parquet_file 7-set.snappy.arrow2.parquet adam_genotypes.parquet apkwan.parquet arrow_nan.parquet aws_kinesis.parquet aws1.snappy.parquet aws2.parquet bigdecimal.parquet binary_string.parquet blob.parquet boolean_stats.parquet bug13053-2.parquet bug13053.parquet bug14120-dict-nulls-only.parquet bug1554.parquet bug1588.parquet bug1589.parquet bug1618_struct_strings.parquet bug2267.parquet bug2557.parquet bug3734.parquet bug4442.parquet bug4859.parquet bug4903.parquet bug687_nulls.parquet byte_stream_split.parquet CASE_INSENSITIVE.PARQUET complex.parquet corrupt_stats.parquet data-types.parquet date.parquet delta_byte_array.parquet delta_length_byte_array.parquet empty.parquet enum.parquet file_row_number.parquet filter_bug1391.parquet fixed.parquet float16.parquet incorrect_index_page_offsets.parquet issue_6013.parquet issue10279_delta_encoding.parquet issue12621.parquet issue6630_1.parquet issue6630_2.parquet issue6990.parquet issue9417.parquet leftdate3_192_loop_1.parquet lineitem-top10000.gzip.parquet list_sort_segfault.parquet manyrowgroups.parquet manyrowgroups2.parquet map.parquet multi_bloom_a.parquet multi_bloom_b.parquet multi_bloom_c.parquet nan-float.parquet nullbyte_multiple.parquet nullbyte.parquet parquet_go.parquet rle_boolean_encoding.parquet seqs_table.parquet signed_stats.parquet silly-names.parquet simple.parquet sorted.zstd_18_131072_small.parquet spark-ontime.parquet struct.parquet test_unnest_rewriter.parquet timestamp-ms.parquet tz.parquet upsert_bug.parquet userdata1.parquet varchar_stats.parquet zstd.parquet
+foreach parquet_file 7-set.snappy.arrow2.parquet adam_genotypes.parquet apkwan.parquet arrow_nan.parquet aws_kinesis.parquet aws1.snappy.parquet aws2.parquet binary_string.parquet blob.parquet boolean_stats.parquet bug13053-2.parquet bug13053.parquet bug14120-dict-nulls-only.parquet bug1554.parquet bug1588.parquet bug1589.parquet bug1618_struct_strings.parquet bug2267.parquet bug2557.parquet bug3734.parquet bug4442.parquet bug4859.parquet bug4903.parquet bug687_nulls.parquet byte_stream_split.parquet CASE_INSENSITIVE.PARQUET complex.parquet corrupt_stats.parquet data-types.parquet date.parquet delta_byte_array.parquet delta_length_byte_array.parquet empty.parquet enum.parquet file_row_number.parquet filter_bug1391.parquet fixed.parquet float16.parquet incorrect_index_page_offsets.parquet issue_6013.parquet issue10279_delta_encoding.parquet issue12621.parquet issue6630_1.parquet issue6630_2.parquet issue6990.parquet issue9417.parquet leftdate3_192_loop_1.parquet lineitem-top10000.gzip.parquet list_sort_segfault.parquet manyrowgroups.parquet manyrowgroups2.parquet map.parquet multi_bloom_a.parquet multi_bloom_b.parquet multi_bloom_c.parquet nan-float.parquet nullbyte_multiple.parquet nullbyte.parquet parquet_go.parquet rle_boolean_encoding.parquet seqs_table.parquet signed_stats.parquet silly-names.parquet simple.parquet sorted.zstd_18_131072_small.parquet spark-ontime.parquet struct.parquet test_unnest_rewriter.parquet timestamp-ms.parquet tz.parquet upsert_bug.parquet userdata1.parquet varchar_stats.parquet zstd.parquet
 
 statement ok
 COPY (
@@ -35,3 +35,9 @@ statement ok
 SELECT COLUMNS(*)::VARIANT FROM read_parquet('{TEST_DIR}/variant_{parquet_file}')
 
 endloop
+
+# bigdecimal.parquet holds a DECIMAL(77, 38): decimals wider than 38 digits are not supported in VARIANT
+statement error
+SELECT COLUMNS(*)::VARIANT FROM read_parquet('data/parquet-testing/bigdecimal.parquet')
+----
+DECIMAL values wider than 38 digits are not supported in VARIANT

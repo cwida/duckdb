@@ -205,7 +205,8 @@ functions:
         description: The duckdb_decimal value
     return_type: value
     description: |
-      Creates a DECIMAL value from a duckdb_decimal
+      Creates a DECIMAL value from a duckdb_decimal. The width can be up to 255 digits; widths above 38 create a wide
+      decimal whose unscaled value is the 128-bit value of the duckdb_decimal.
     return_description: The value. This must be destroyed with `duckdb_destroy_value`.
   create_float:
     offset: 106
@@ -562,7 +563,8 @@ functions:
         description: A duckdb_value containing a DECIMAL
     return_type: decimal
     description: |
-      Returns the duckdb_decimal value of the given value.
+      Returns the duckdb_decimal value of the given value. A decimal wider than 38 digits is only representable when
+      its unscaled value fits in 128 bits; use `duckdb_get_varchar` for the exact value otherwise.
     return_description: A duckdb_decimal, or MinValue<decimal> if the value cannot be converted
   get_float:
     offset: 129

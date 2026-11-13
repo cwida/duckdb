@@ -1,0 +1,117 @@
+# name: test/sql/types/numeric/numeric_kernel_sizing.test
+# description: Arithmetic kernels over NUMERIC are sized by the values of the operands
+# group: [numeric]
+
+load {TEST_DIR}/numeric_kernel_sizing.db
+
+# the alternative verification delivers scanned NUMERIC values as canonical blobs: the representations asserted here
+# are those of the regular scan
+require no_alternative_verify
+
+# a row group of small integers stored as INTEGER: the INTEGER kernel is used as long as the results fit
+statement ok
+CREATE TABLE t AS SELECT i::NUMERIC AS a, (i % 1000)::NUMERIC AS b FROM range(0, 100000) tbl(i);
+
+query III
+SELECT numeric_representation(a), numeric_representation(a + b), numeric_representation(a * b) FROM t LIMIT 1;
+----
+INTEGER	INTEGER	INTEGER
+
+query IIII
+SELECT sum(a + b), sum(a * b), max(a * b), min(a - b) FROM t;
+----
+5049900000	2505808350000	99899001	0
+
+# values near the INTEGER limits: the sums do not fit INTEGER, the kernel widens
+statement ok
+CREATE TABLE big AS SELECT (2147483647 - i)::NUMERIC AS a, (2147483647 - i)::NUMERIC AS b FROM range(0, 10) tbl(i);
+
+# the checkpoint stores the rows in the narrowest representation that holds them
+statement ok
+CHECKPOINT;
+
+query III
+SELECT numeric_representation(a), numeric_representation(a + b), numeric_representation(a * b) FROM big LIMIT 1;
+----
+INTEGER	BIGINT	BIGINT
+
+query III
+SELECT max(a + b), max(a * b), min(a - b) FROM big;
+----
+4294967294	4611686014132420609	0
+
+# mixed signs: the interval covers both ends
+query II
+SELECT min(a * -1), max(-a) FROM big;
+----
+-2147483647	-2147483638
+
+# decimals of different scales: the result keeps the larger scale
+statement ok
+CREATE TABLE d AS SELECT (i / 100.0)::DECIMAL(10,2)::NUMERIC AS x, (i / 1000.0)::DECIMAL(10,3)::NUMERIC AS y FROM range(0, 1000) tbl(i);
+
+query IIII
+SELECT sum(x + y), sum(x * y), max(x - y), min(y - x) FROM d;
+----
+5494.5	3328.335	8.991	-8.991
+
+query I
+SELECT x + y FROM d WHERE x = 9.99;
+----
+10.989
+
+# a widened kernel is narrowed back when the values fit: DECIMAL(18,2) operands produce a 128-bit DECIMAL(19,2) kernel
+statement ok
+CREATE TABLE w(x NUMERIC, y NUMERIC);
+
+statement ok
+INSERT INTO w VALUES (1234567890123456.78, 1.25), (-99.99, 100.01);
+
+query III
+SELECT x + y, x * y, numeric_representation(x + y) FROM w ORDER BY x;
+----
+0.02	-9999.9999	DECIMAL(18,2)
+1234567890123458.03	1543209862654320.975	DECIMAL(18,2)
+
+# NULLs: all-NULL vectors and NULL constants
+statement ok
+CREATE TABLE n AS SELECT NULL::NUMERIC AS a, i::NUMERIC AS b FROM range(0, 5000) tbl(i);
+
+query IIII
+SELECT count(a + b), count(b + NULL), sum(b * 2), sum(b + b) FROM n;
+----
+0	0	24995000	24995000
+
+# constants are sized by their value; every vector of b holds values above 327 and above 214
+query III
+SELECT numeric_representation(b * 100), numeric_representation(b * 10000000), numeric_representation(b * 10000000000) FROM n GROUP BY ALL;
+----
+INTEGER	BIGINT	BIGINT
+
+query II
+SELECT max(b * 10000000000), min(b - 10000000000) FROM n;
+----
+49990000000000	-10000000000
+
+# the range handed to scanned vectors covers every row of the row group, including other representations after an insert
+statement ok
+INSERT INTO t VALUES (2.5, -3.5), (1000000, 1000000);
+
+query IIII
+SELECT max(a + b), min(a + b), max(a * b), min(a * b) FROM t;
+----
+2000000	-1	1000000000000	-8.75
+
+statement ok
+CHECKPOINT;
+
+query IIII
+SELECT max(a + b), min(a + b), max(a * b), min(a * b) FROM t;
+----
+2000000	-1	1000000000000	-8.75
+
+# chains stay exact
+query II
+SELECT max(a + b + a + b), sum(a - b + a - b) FROM t;
+----
+4000000	9900000012

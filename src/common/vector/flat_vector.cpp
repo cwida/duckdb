@@ -443,8 +443,11 @@ Value StandardVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 			return Value::DECIMAL(reinterpret_cast<const int64_t *>(data_ptr)[index], width, scale);
 		case PhysicalType::INT128:
 			return Value::DECIMAL(reinterpret_cast<const hugeint_t *>(data_ptr)[index], width, scale);
+		case PhysicalType::VARCHAR:
+			// the unscaled value of a wide decimal is a BIGNUM blob
+			return Value::WIDEDECIMAL(reinterpret_cast<const string_t *>(data_ptr)[index].GetString(), width, scale);
 		default:
-			throw InternalException("Physical type '%s' has a width bigger than 38, which is not supported",
+			throw InternalException("Unimplemented physical type '%s' for DECIMAL",
 			                        TypeIdToString(type.InternalType()));
 		}
 	}
@@ -490,6 +493,10 @@ Value StandardVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 	case LogicalTypeId::LEGACY_AGGREGATE_STATE: {
 		auto str = reinterpret_cast<const string_t *>(data_ptr)[index];
 		return Value::LEGACY_AGGREGATE_STATE(type, const_data_ptr_cast(str.GetData()), str.GetSize());
+	}
+	case LogicalTypeId::NUMERIC: {
+		auto blob = reinterpret_cast<const string_t *>(data_ptr)[index];
+		return Value::NUMERICBLOB(blob.GetString());
 	}
 	case LogicalTypeId::BIT: {
 		auto str = reinterpret_cast<const string_t *>(data_ptr)[index];

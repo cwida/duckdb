@@ -167,7 +167,8 @@ TEST_CASE("Plain decimal types share metadata across construction and deserializ
 			auto expected = width <= 4    ? PhysicalType::INT16
 			                : width <= 9  ? PhysicalType::INT32
 			                : width <= 18 ? PhysicalType::INT64
-			                              : PhysicalType::INT128;
+			                : width <= 38 ? PhysicalType::INT128
+			                              : PhysicalType::VARCHAR;
 			REQUIRE(type.InternalType() == expected);
 		}
 	}
@@ -211,10 +212,10 @@ TEST_CASE("Decimal cache preserves validation and unparameterized types", "[logi
 	auto invalid = LogicalType::DECIMAL(0, 0);
 	REQUIRE(DecimalType::GetWidth(invalid) == 0);
 	REQUIRE_THROWS(RoundtripCachedDecimalType(invalid));
-	REQUIRE_FALSE(Decimal::IsValidWidthScale(39, 0));
+	REQUIRE_FALSE(Decimal::IsValidWidthScale(Decimal::MAX_WIDTH_DECIMAL + 1, 0));
 #ifndef DUCKDB_CRASH_ON_ASSERT
 	// InternalException aborts instead of throwing in crash-on-assert builds.
-	REQUIRE_THROWS(LogicalType::DECIMAL(39, 0));
+	REQUIRE_THROWS(LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL + 1, 0));
 #endif
 }
 

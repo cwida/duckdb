@@ -1,4 +1,5 @@
 #include "parquet_reader.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include <string.h>
 #include <unordered_map>
@@ -583,8 +584,15 @@ LogicalType ParquetReader::DeriveLogicalType(const SchemaElement &s_ele, const P
 				throw IOException("Invalid DECIMAL precision %d and scale %d", s_ele.precision, s_ele.scale);
 			}
 			schema.type_scale = NumericCast<uint32_t>(s_ele.scale);
-			if (s_ele.precision > DecimalType::MaxWidth()) {
+			if (s_ele.precision > Decimal::MAX_WIDTH_INT128) {
+				// precisions above 38 become wide (BIGNUM-backed) decimals when they fit, else DOUBLE
 				schema.type_info = ParquetExtraTypeInfo::DECIMAL_BYTE_ARRAY;
+				if (s_ele.precision <= Decimal::MAX_WIDTH_DECIMAL && s_ele.scale >= 0 &&
+				    s_ele.scale <= s_ele.precision &&
+				    (s_ele.type == Type::BYTE_ARRAY || s_ele.type == Type::FIXED_LEN_BYTE_ARRAY)) {
+					return LogicalType::DECIMAL(NumericCast<uint32_t>(s_ele.precision),
+					                            NumericCast<uint32_t>(s_ele.scale));
+				}
 				return LogicalType::DOUBLE;
 			}
 			switch (s_ele.type) {

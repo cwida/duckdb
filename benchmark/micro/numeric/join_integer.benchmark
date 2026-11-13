@@ -1,0 +1,13 @@
+# name: benchmark/micro/numeric/join_integer.benchmark
+# description: NUMERIC vs native types: self join on both columns over 10M rows of INTEGER
+# group: [numeric]
+
+name join integer
+group micro
+subgroup numeric
+
+load
+CREATE TABLE t AS SELECT ((i * 9582398353) % 100000)::INTEGER AS a, ((i * 847892347987) % 1000)::INTEGER AS b FROM range(0, 10000000) tbl(i);
+
+run
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.b = t2.b AND t1.a = t2.a WHERE t1.a < 100

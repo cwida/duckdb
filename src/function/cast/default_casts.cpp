@@ -118,6 +118,9 @@ BoundCastInfo DefaultCasts::GetDefaultCastFunction(BindCastInput &input, const L
 	if (target.id() == LogicalTypeId::VARIANT) {
 		return ImplicitToVariantCast(input, source, target);
 	}
+	if (target.id() == LogicalTypeId::NUMERIC && source.id() != LogicalTypeId::SQLNULL) {
+		return ToNumericCastSwitch(input, source, target);
+	}
 
 	// then check if were casting to a union
 	if (source.id() != LogicalTypeId::UNION && source.id() != LogicalTypeId::SQLNULL &&
@@ -189,6 +192,8 @@ BoundCastInfo DefaultCasts::GetDefaultCastFunction(BindCastInput &input, const L
 		return UnionCastSwitch(input, source, target);
 	case LogicalTypeId::VARIANT:
 		return VariantCastSwitch(input, source, target);
+	case LogicalTypeId::NUMERIC:
+		return FromNumericCastSwitch(input, source, target);
 	case LogicalTypeId::ENUM:
 		return EnumCastSwitch(input, source, target);
 	case LogicalTypeId::ARRAY:

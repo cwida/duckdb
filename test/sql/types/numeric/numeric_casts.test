@@ -1,0 +1,157 @@
+# name: test/sql/types/numeric/numeric_casts.test
+# description: casts to and from NUMERIC: targets are enforced, rows fail on their own, canonical and typed values
+# group: [numeric]
+
+# convert the same way, scientific notation is an exact number
+
+# the DECIMAL width is enforced for canonical values as well as typed ones
+statement error
+SELECT '100'::NUMERIC::DECIMAL(2,0);
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT 100::NUMERIC::DECIMAL(2,0);
+----
+<REGEX>:.*Conversion Error.*
+
+query II
+SELECT TRY_CAST('100'::NUMERIC AS DECIMAL(2,0)), TRY_CAST('99'::NUMERIC AS DECIMAL(2,0));
+----
+NULL	99
+
+query II
+SELECT TRY_CAST('100'::NUMERIC AS DECIMAL(5,3)), TRY_CAST('12.345'::NUMERIC AS DECIMAL(5,3));
+----
+NULL	12.345
+
+# TRY_CAST of text nulls the rows that are not numbers, not the whole vector
+query II
+SELECT s, TRY_CAST(s AS NUMERIC) FROM (VALUES ('1'), ('bad'), ('2.5'), (NULL), ('1e3')) t(s) ORDER BY s NULLS LAST;
+----
+1	1
+1e3	1000
+2.5	2.5
+bad	NULL
+NULL	NULL
+
+statement error
+SELECT s::NUMERIC FROM (VALUES ('1'), ('bad'), ('2.5')) t(s);
+----
+<REGEX>:.*Conversion Error.*'bad'.*
+
+# a single row that needs more than 255 digits fails on its own
+query I
+SELECT TRY_CAST(s AS NUMERIC) IS NULL FROM (VALUES ('1'), ('1' || repeat('0', 300))) t(s) ORDER BY 1;
+----
+false
+true
+
+# conversions of canonical values follow the numeric cast semantics, like typed values
+query IIII
+SELECT '2'::NUMERIC::BOOLEAN, 2::NUMERIC::BOOLEAN, '0'::NUMERIC::BOOLEAN, '0.5'::NUMERIC::BOOLEAN;
+----
+true	true	false	true
+
+query II
+SELECT '2.5'::NUMERIC::INTEGER, 2.5::NUMERIC::INTEGER;
+----
+3	3
+
+query II
+SELECT '1.5'::NUMERIC::DOUBLE, '-0.25'::NUMERIC::FLOAT;
+----
+1.5	-0.25
+
+# floating point values take their shortest round-trip text, in scientific notation when long
+query III
+SELECT 1e20::DOUBLE::NUMERIC, 1.5e-7::DOUBLE::NUMERIC, (-2.5e15)::DOUBLE::NUMERIC;
+----
+100000000000000000000	0.00000015	-2500000000000000
+
+statement ok
+CREATE TABLE doubles(d DOUBLE);
+
+statement ok
+INSERT INTO doubles VALUES (1e20), (1.5e-7);
+
+query I
+SELECT DISTINCT numeric_representation(d::NUMERIC) FROM doubles;
+----
+DECIMAL(29,8)
+
+# the shortest round-trip text of the double, not its binary expansion
+query I
+SELECT 1e200::DOUBLE::NUMERIC;
+----
+100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+statement error
+SELECT 1e308::DOUBLE::NUMERIC;
+----
+<REGEX>:.*more than the maximum of 255.*
+
+statement error
+SELECT 'inf'::DOUBLE::NUMERIC;
+----
+<REGEX>:.*not an exact number.*
+
+# scientific notation in text
+query IIII
+SELECT '1e5'::NUMERIC, '1.5e-3'::NUMERIC, '-12.5E+2'::NUMERIC, '0.0015e2'::NUMERIC;
+----
+100000	0.0015	-1250	0.15
+
+statement ok
+CREATE TABLE sci(s VARCHAR);
+
+statement ok
+INSERT INTO sci VALUES ('1e5'), ('1.5e-3');
+
+query I
+SELECT DISTINCT numeric_representation(s::NUMERIC) FROM sci;
+----
+DECIMAL(10,4)
+
+query I
+SELECT '1e5'::NUMERIC = 100000;
+----
+true
+
+statement error
+SELECT '1e'::NUMERIC;
+----
+<REGEX>:.*not an exact number.*
+
+statement error
+SELECT 'e5'::NUMERIC;
+----
+<REGEX>:.*not an exact number.*
+
+# stored text in scientific notation
+statement ok
+CREATE TABLE t(n NUMERIC);
+
+statement ok
+INSERT INTO t VALUES ('1e3'), ('2.5e-2'), ('1E+1');
+
+query I
+SELECT n FROM t ORDER BY n;
+----
+0.025
+10
+1000
+
+# shredded NUMERIC vectors round-trip through serialization
+statement ok
+SET debug_verification_mode='verify_serialization';
+
+query II
+SELECT n + 1, n::DECIMAL(10,3) FROM t ORDER BY n;
+----
+1.025	0.025
+11	10
+1001	1000
+
+statement ok
+RESET debug_verification_mode;

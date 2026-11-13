@@ -19,6 +19,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/storage/statistics/geometry_stats.hpp"
+#include "duckdb/storage/statistics/numeric_range_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 
 namespace duckdb {
@@ -451,6 +452,7 @@ void CompressedMaterialization::Compress(unique_ptr<LogicalOperator> &op) {
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_TOP_N:
 		break;
 	default:
 		return;
@@ -467,6 +469,9 @@ void CompressedMaterialization::Compress(unique_ptr<LogicalOperator> &op) {
 		break;
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		CompressOrder(op);
+		break;
+	case LogicalOperatorType::LOGICAL_TOP_N:
+		CompressTopN(op);
 		break;
 	default:
 		break;
@@ -712,6 +717,8 @@ unique_ptr<CompressExpression> CompressedMaterialization::GetCompressExpression(
 		return GetGeometryCompress(std::move(input), stats);
 	case LogicalTypeId::VARIANT:
 		return GetVariantCompress(std::move(input), stats);
+	case LogicalTypeId::NUMERIC:
+		return GetNumericCompress(std::move(input), stats);
 	default:
 		return nullptr;
 	}
@@ -980,12 +987,75 @@ unique_ptr<CompressExpression> CompressedMaterialization::GetVariantCompress(uni
 	                                     CompressedMaterializationType::FUNCTION);
 }
 
+//! The representation that holds every NUMERIC value described by the statistics, with the statistics of the values in
+//! that representation; false when the representation is unknown or not of a fixed size (wide decimals)
+static bool GetNumericCompressInfo(const BaseStatistics &stats, LogicalType &representation,
+                                   unique_ptr<BaseStatistics> &typed_stats) {
+	auto range = NumericRangeStats::TryGet(stats);
+	if (!range) {
+		return false;
+	}
+	representation = range->ResolveType();
+	if (!TypeIsConstantSize(representation.InternalType())) {
+		return false;
+	}
+	typed_stats = range->ToTyped(representation).ToUnique();
+	typed_stats->CopyValidity(stats);
+	return true;
+}
+
+unique_ptr<CompressExpression> CompressedMaterialization::GetNumericCompress(unique_ptr<Expression> input,
+                                                                             const BaseStatistics &stats) {
+	LogicalType representation;
+	unique_ptr<BaseStatistics> typed_stats;
+	if (!GetNumericCompressInfo(stats, representation, typed_stats)) {
+		return nullptr;
+	}
+	// the cast references the values of shredded vectors and decodes canonical ones
+	auto cast_expr = BoundCastExpression::AddCastToType(context, std::move(input), representation);
+	if (representation.IsIntegral() && GetTypeIdSize(representation.InternalType()) > 1) {
+		LogicalType offset_type;
+		Value range_value;
+		Value min;
+		if (CMHelper::GetIntegralOffsetCompressInfo(context, representation, *typed_stats, offset_type, min,
+		                                            range_value) &&
+		    GetTypeIdSize(offset_type.InternalType()) < GetTypeIdSize(representation.InternalType())) {
+			// the offset function (not a value-preserving cast) so that decompression restores the representation
+			// from the statistics alone
+			return CMHelper::CreateIntegralFunctionCompress(std::move(cast_expr), representation, offset_type, min,
+			                                                range_value, *typed_stats);
+		}
+	}
+	// marked FUNCTION so that decompression goes through GetNumericDecompress
+	return make_uniq<CompressExpression>(std::move(cast_expr), std::move(typed_stats),
+	                                     CompressedMaterializationType::FUNCTION);
+}
+
+unique_ptr<Expression> CompressedMaterialization::GetNumericDecompress(unique_ptr<Expression> input,
+                                                                       const LogicalType &result_type,
+                                                                       const BaseStatistics &stats) {
+	D_ASSERT(result_type.id() == LogicalTypeId::NUMERIC);
+	LogicalType representation;
+	unique_ptr<BaseStatistics> typed_stats;
+	if (!GetNumericCompressInfo(stats, representation, typed_stats)) { // LCOV_EXCL_START
+		throw InternalException("Could not obtain compress info for NUMERIC decompression!");
+	} // LCOV_EXCL_STOP
+	if (input->GetReturnType() != representation) {
+		// the representation was compressed further
+		input = GetIntegralDecompress(std::move(input), representation, *typed_stats);
+	}
+	return BoundCastExpression::AddCastToType(context, std::move(input), result_type);
+}
+
 unique_ptr<Expression> CompressedMaterialization::GetDecompressExpression(unique_ptr<Expression> input,
                                                                           const LogicalType &result_type,
                                                                           const BaseStatistics &stats) {
 	const auto &type = result_type;
 	if (type.id() == LogicalTypeId::VARIANT) {
 		return GetVariantDecompress(std::move(input), result_type, stats);
+	}
+	if (type.id() == LogicalTypeId::NUMERIC) {
+		return GetNumericDecompress(std::move(input), result_type, stats);
 	}
 	if (type.id() == LogicalTypeId::BLOB && stats.GetType().id() == LogicalTypeId::VARIANT) {
 		auto variant = GetVariantDecompress(std::move(input), LogicalType::VARIANT(), stats);

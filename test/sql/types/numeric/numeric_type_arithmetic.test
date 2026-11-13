@@ -1,0 +1,242 @@
+# name: test/sql/types/numeric/numeric_type_arithmetic.test
+# description: Arithmetic over NUMERIC columns is exact: the result representation holds every possible result
+# group: [numeric]
+
+statement ok
+CREATE TABLE t(a NUMERIC, b NUMERIC, i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (100, 100, 100), (-3, 7, 7);
+
+# TINYINT operands: the sum and the product need SMALLINT
+query III
+SELECT typeof(a), typeof(a + b), typeof(a * b) FROM t LIMIT 1;
+----
+NUMERIC	NUMERIC	NUMERIC
+
+query III
+SELECT a + b, a * b, a - b FROM t ORDER BY a;
+----
+4	-21	-10
+200	10000	0
+
+# the representation follows the data: with wider values the results widen too
+statement ok
+INSERT INTO t VALUES (2147483647, 2147483647, 1);
+
+query III
+SELECT typeof(a), typeof(a + b), typeof(a * b) FROM t LIMIT 1;
+----
+NUMERIC	NUMERIC	NUMERIC
+
+# no overflow error: the product of the two largest INTEGER values is computed exactly
+query II
+SELECT a * b, a + b FROM t WHERE a > 1000000;
+----
+4611686014132420609	4294967294
+
+# regular INTEGER columns keep their type and overflow behaviour
+query I
+SELECT typeof(i * i) FROM t LIMIT 1;
+----
+INTEGER
+
+# mixing a NUMERIC operand with a regular exact operand is exact as well
+query I
+SELECT typeof(a * i) FROM t LIMIT 1;
+----
+NUMERIC
+
+# constants are sized by their value
+query III
+SELECT typeof(a + 1), typeof(a * 1000), typeof(a * 10000000000) FROM t LIMIT 1;
+----
+NUMERIC	NUMERIC	NUMERIC
+
+query I
+SELECT a * 10000000000 FROM t WHERE a > 1000000;
+----
+21474836470000000000
+
+# unary minus
+query I
+SELECT typeof(-a) FROM t LIMIT 1;
+----
+NUMERIC
+
+# nested expressions keep widening as needed
+query I
+SELECT typeof((a + b) * (a - b)) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT (a + b) * (a - b) FROM t WHERE a > 1000000;
+----
+0
+
+# BIGINT operands produce HUGEINT products, HUGEINT operands produce wide decimals
+statement ok
+INSERT INTO t VALUES (9223372036854775807, 9223372036854775807, 1);
+
+query II
+SELECT typeof(a * b), typeof(a + b) FROM t LIMIT 1;
+----
+NUMERIC	NUMERIC
+
+query I
+SELECT a * b FROM t WHERE a > 1000000000000;
+----
+85070591730234615847396907784232501249
+
+statement ok
+INSERT INTO t VALUES (170141183460469231731687303715884105727, 2, 1);
+
+# a is HUGEINT now while b is still BIGINT: 39 + 19 digits
+query II
+SELECT typeof(a), typeof(a * b) FROM t LIMIT 1;
+----
+NUMERIC	NUMERIC
+
+query I
+SELECT a * b FROM t WHERE a > 1000000000000000000000;
+----
+340282366920938463463374607431768211454
+
+query I
+SELECT typeof(a + b) FROM t LIMIT 1;
+----
+NUMERIC
+
+# decimals: scales add up in products, the width follows the operand ranges
+statement ok
+CREATE TABLE d(x NUMERIC, y NUMERIC);
+
+statement ok
+INSERT INTO d VALUES (123.45, 0.5), (-99.99, 2.25);
+
+query IIII
+SELECT typeof(x), typeof(y), typeof(x * y), typeof(x + y) FROM d LIMIT 1;
+----
+NUMERIC	NUMERIC	NUMERIC	NUMERIC
+
+query III
+SELECT x * y, x + y, x - y FROM d ORDER BY x;
+----
+-224.9775	-97.74	-102.24
+61.725	123.95	122.95
+
+query I
+SELECT typeof(x * 2) FROM d LIMIT 1;
+----
+NUMERIC
+
+# aggregates over exact arithmetic
+query II
+SELECT sum(x * y), typeof(sum(x * y)) FROM d;
+----
+-163.2525	NUMERIC
+
+# exactness flows through subqueries, views and CTEs
+query I
+SELECT typeof(p) FROM (SELECT a * b AS p FROM t) LIMIT 1;
+----
+NUMERIC
+
+statement ok
+CREATE VIEW v AS SELECT a, b FROM t;
+
+query I
+SELECT typeof(a * b) FROM v LIMIT 1;
+----
+NUMERIC
+
+query I
+WITH c AS (SELECT a FROM t) SELECT typeof(a * a) FROM c LIMIT 1;
+----
+NUMERIC
+
+# an explicit cast returns to regular typing
+query I
+SELECT typeof(x::INTEGER * 2) FROM d LIMIT 1;
+----
+INTEGER
+
+# division is unchanged
+query I
+SELECT typeof(a / b) FROM t LIMIT 1;
+----
+DOUBLE
+
+# results that derive from NUMERIC columns stay NUMERIC in CREATE TABLE AS
+statement ok
+CREATE TABLE products AS SELECT a * b AS p, i AS plain FROM t;
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE products) ORDER BY column_name;
+----
+p	NUMERIC
+plain	INTEGER
+
+# the stored values decide the representation of the new column
+query I
+SELECT typeof(p) FROM products LIMIT 1;
+----
+NUMERIC
+
+# a column that holds NULLs only
+statement ok
+CREATE TABLE nulls(n NUMERIC);
+
+statement ok
+INSERT INTO nulls VALUES (NULL);
+
+query II
+SELECT typeof(n + 1), n + 1 FROM nulls;
+----
+NUMERIC	NULL
+
+# the cases from the review of the first version: the same query must not fail depending on the stored values
+statement ok
+CREATE TABLE r1(n NUMERIC);
+
+statement ok
+INSERT INTO r1 VALUES (100);
+
+query III
+SELECT n + n, n * n, n + 100 FROM r1;
+----
+200	10000	200
+
+statement ok
+CREATE TABLE r2(n NUMERIC);
+
+statement ok
+INSERT INTO r2 VALUES (20000);
+
+query I
+SELECT n + n FROM r2;
+----
+40000
+
+statement ok
+CREATE TABLE r3(n NUMERIC);
+
+statement ok
+INSERT INTO r3 VALUES (2000000000);
+
+query I
+SELECT n + n FROM r3;
+----
+4000000000
+
+statement ok
+CREATE TABLE r4(n NUMERIC);
+
+statement ok
+INSERT INTO r4 VALUES (5000000000);
+
+query I
+SELECT n * n FROM r4;
+----
+25000000000000000000

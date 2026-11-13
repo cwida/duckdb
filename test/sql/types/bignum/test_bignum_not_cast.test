@@ -2,7 +2,7 @@
 # description: Test that bignums don't try to cast to values they should now
 # group: [bignum]
 
-foreach type bool	date	time	timestamp	timestamp_s	timestamp_ms	timestamp_ns	time_tz	timestamp_tz	dec_4_1	dec_9_4	dec_18_6	dec38_10	uuid	interval	blob	bit		int_array	double_array	date_array	timestamp_array	timestamptz_array	varchar_array	nested_int_array	struct	struct_of_arrays	array_of_structs	map	fixed_int_array	fixed_varchar_array	fixed_nested_int_array	fixed_nested_varchar_array	fixed_struct_array	struct_of_fixed_array	fixed_array_of_int_list	list_of_fixed_int_array
+foreach type bool	date	time	timestamp	timestamp_s	timestamp_ms	timestamp_ns	time_tz	timestamp_tz	uuid	interval	blob	bit		int_array	double_array	date_array	timestamp_array	timestamptz_array	varchar_array	nested_int_array	struct	struct_of_arrays	array_of_structs	map	fixed_int_array	fixed_varchar_array	fixed_nested_int_array	fixed_nested_varchar_array	fixed_struct_array	struct_of_fixed_array	fixed_array_of_int_list	list_of_fixed_int_array
 
 statement error
 select {type}::bignum FROM test_all_types() limit 1;
@@ -10,3 +10,11 @@ select {type}::bignum FROM test_all_types() limit 1;
 Unimplemented type for cast
 
 endloop
+
+# decimals cast to BIGNUM by rounding to an integer
+query IIII
+select dec_4_1::bignum, dec_9_4::bignum, dec_18_6::bignum, dec38_10::bignum FROM test_all_types() ORDER BY dec_4_1
+----
+-1000	-100000	-1000000000000	-10000000000000000000000000000
+1000	100000	1000000000000	10000000000000000000000000000
+NULL	NULL	NULL	NULL

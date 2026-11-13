@@ -3,6 +3,7 @@
 #include "tpch_constants.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -244,7 +245,15 @@ void append_string_reference(tpch_append_information &info, const char *value, i
 }
 
 void append_decimal(tpch_append_information &info, int64_t value) {
-	append_next_column_data<int64_t>(info)[info.active_row] = value;
+	auto &vector = append_next_column(info);
+	if (vector.GetType().InternalType() == PhysicalType::VARCHAR) {
+		// a decimal column stored as BIGNUM blobs (debug_force_wide_decimal): the unscaled value as a blob
+		auto blob = BignumDecimal::FromInteger(hugeint_t(value));
+		FlatVector::GetDataMutable<string_t>(vector)[info.active_row] = StringVector::AddStringOrBlob(vector, blob);
+		return;
+	}
+	D_ASSERT(vector.GetType().InternalType() == PhysicalType::INT64);
+	FlatVector::GetDataMutable<int64_t>(vector)[info.active_row] = value;
 }
 
 void append_char(tpch_append_information &info, char value) {
@@ -701,106 +710,131 @@ struct RegionInfo {
 	static constexpr char *Name = "region";
 	static constexpr idx_t ColumnCount = 3;
 	static const char *Columns[];
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *RegionInfo::Columns[] = {"r_regionkey", "r_name", "r_comment"};
-const LogicalType RegionInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
+vector<LogicalType> RegionInfo::Types() {
+	return {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
                                          LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct NationInfo {
 	static constexpr char *Name = "nation";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 4;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *NationInfo::Columns[] = {"n_nationkey", "n_name", "n_regionkey", "n_comment"};
-const LogicalType NationInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
+vector<LogicalType> NationInfo::Types() {
+	return {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
                                          LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct SupplierInfo {
 	static constexpr char *Name = "supplier";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 7;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *SupplierInfo::Columns[] = {"s_suppkey", "s_name",    "s_address", "s_nationkey",
                                        "s_phone",   "s_acctbal", "s_comment"};
-const LogicalType SupplierInfo::Types[] = {LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
+vector<LogicalType> SupplierInfo::Types() {
+	return {LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
                                            LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
                                            LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
                                            LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct CustomerInfo {
 	static constexpr char *Name = "customer";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 8;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *CustomerInfo::Columns[] = {"c_custkey", "c_name",    "c_address",    "c_nationkey",
                                        "c_phone",   "c_acctbal", "c_mktsegment", "c_comment"};
-const LogicalType CustomerInfo::Types[] = {LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
+vector<LogicalType> CustomerInfo::Types() {
+	return {LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
                                            LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
                                            LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
                                            LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct PartInfo {
 	static constexpr char *Name = "part";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 9;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *PartInfo::Columns[] = {"p_partkey", "p_name",      "p_mfgr",        "p_brand",  "p_type",
                                    "p_size",    "p_container", "p_retailprice", "p_comment"};
-const LogicalType PartInfo::Types[] = {
+vector<LogicalType> PartInfo::Types() {
+	return {
     LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
     LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
     LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct PartsuppInfo {
 	static constexpr char *Name = "partsupp";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 5;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *PartsuppInfo::Columns[] = {"ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost", "ps_comment"};
-const LogicalType PartsuppInfo::Types[] = {LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
+vector<LogicalType> PartsuppInfo::Types() {
+	return {LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
                                            LogicalType(LogicalTypeId::BIGINT), LogicalType::DECIMAL(15, 2),
                                            LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct OrdersInfo {
 	static constexpr char *Name = "orders";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 9;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *OrdersInfo::Columns[] = {"o_orderkey",      "o_custkey", "o_orderstatus",  "o_totalprice", "o_orderdate",
                                      "o_orderpriority", "o_clerk",   "o_shippriority", "o_comment"};
-const LogicalType OrdersInfo::Types[] = {
+vector<LogicalType> OrdersInfo::Types() {
+	return {
     LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
     LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::VARCHAR),
     LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 struct LineitemInfo {
 	static constexpr char *Name = "lineitem";
 	static const char *Columns[];
 	static constexpr idx_t ColumnCount = 16;
-	static const LogicalType Types[];
+	//! Built per call: the physical type of a DECIMAL can change at run time (debug_force_wide_decimal)
+	static vector<LogicalType> Types();
 };
 const char *LineitemInfo::Columns[] = {"l_orderkey",    "l_partkey",       "l_suppkey",  "l_linenumber",
                                        "l_quantity",    "l_extendedprice", "l_discount", "l_tax",
                                        "l_returnflag",  "l_linestatus",    "l_shipdate", "l_commitdate",
                                        "l_receiptdate", "l_shipinstruct",  "l_shipmode", "l_comment"};
-const LogicalType LineitemInfo::Types[] = {
+vector<LogicalType> LineitemInfo::Types() {
+	return {
     LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::BIGINT),
     LogicalType(LogicalTypeId::BIGINT),  LogicalType::DECIMAL(15, 2),         LogicalType::DECIMAL(15, 2),
     LogicalType::DECIMAL(15, 2),         LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::VARCHAR),
     LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::DATE),
     LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
     LogicalType(LogicalTypeId::VARCHAR)};
+}
 
 template <class T>
 static void ValidateTPCHTableSchema(const TableCatalogEntry &table, const string &table_name) {
 	const auto &columns = table.GetColumns();
+	const auto types = T::Types();
 
 	if (columns.LogicalColumnCount() != T::ColumnCount) {
 		throw InvalidInputException(
@@ -817,10 +851,10 @@ static void ValidateTPCHTableSchema(const TableCatalogEntry &table, const string
 			    table_name, T::Columns[i], (unsigned long long)i, column.Name());
 		}
 
-		if (column.Type() != T::Types[i]) {
+		if (column.Type() != types[i]) {
 			throw InvalidInputException(
 			    "TPC-H table \"%s\" has an incompatible schema: column \"%s\" has type %s but expected %s", table_name,
-			    T::Columns[i], column.Type().ToString(), T::Types[i].ToString());
+			    T::Columns[i], column.Type().ToString(), types[i].ToString());
 		}
 	}
 }
@@ -835,8 +869,9 @@ static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_na
 	info->SetQualifiedName(qualified_name);
 	info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	info->temporary = false;
+	const auto types = T::Types();
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
-		info->columns.AddColumn(ColumnDefinition(T::Columns[i], T::Types[i]));
+		info->columns.AddColumn(ColumnDefinition(T::Columns[i], types[i]));
 		info->constraints.push_back(make_uniq<NotNullConstraint>(LogicalIndex(i)));
 	}
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);

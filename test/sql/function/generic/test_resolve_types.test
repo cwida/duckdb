@@ -2,11 +2,17 @@
 # description: Scalar functions resolve their types before the arguments are cast, and bind with the cast arguments
 # group: [generic]
 
-# the overflow check is derived from the types before they are cast
-statement error
-SELECT 99999999999999999999999999999999999999::DECIMAL(38,0) + 1::DECIMAL(38,0);
+# the result type is derived from the types before they are cast
+query II
+SELECT 99999999999999999999999999999999999999::DECIMAL(38,0) + 1::DECIMAL(38,0) AS r, typeof(r);
 ----
-Overflow in addition of DECIMAL(38)
+100000000000000000000000000000000000000	DECIMAL(39,0)
+
+# so is the overflow check at the widest decimal
+statement error
+SELECT repeat('9', 255)::DECIMAL(255,0) + 1::DECIMAL(255,0);
+----
+Overflow in addition of DECIMAL(255,0)
 
 query I
 SELECT 1.5::DECIMAL(38,1) * 2.5::DECIMAL(38,1);

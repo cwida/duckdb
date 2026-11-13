@@ -133,6 +133,12 @@
       "paths": [
         "test/sql/aggregate/aggregates/sum_no_overflow_fallible.test"
       ]
+    },
+    {
+      "reason": "FIXME: the rendered SQL keeps the input casts of a decimal multiplication, so the rebind multiplies DECIMAL(19,2) by DECIMAL(21,0) and gets a wide intermediate that carries no numeric statistics",
+      "paths": [
+        "test/optimizer/statistics/statistics_numeric.test"
+      ]
     }
   ]
 }

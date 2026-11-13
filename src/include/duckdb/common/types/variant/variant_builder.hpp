@@ -313,6 +313,10 @@ struct VariantBuilder {
 			case PhysicalType::INT128:
 				VariantBuilderAppendFixed(blob, primitive.GetValueUnsafe<hugeint_t>());
 				break;
+			case PhysicalType::VARCHAR:
+				throw NotImplementedException("Can't convert %s to VARIANT: DECIMAL values wider than %d digits are "
+				                              "not supported in VARIANT",
+				                              type.ToString(), Decimal::MAX_WIDTH_INT128);
 			default:
 				throw InternalException("Unexpected physical type for Decimal value: %s",
 				                        EnumUtil::ToString(type.InternalType()));

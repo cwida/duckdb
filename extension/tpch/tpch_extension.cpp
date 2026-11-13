@@ -293,6 +293,8 @@ static string PragmaTpchQuery(ClientContext &context, const FunctionParameters &
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
+	// the generators build DECIMAL table types: follow the process-wide switches of the database
+	loader.TakeOverProcessWideSettings();
 	TableFunction dbgen_func("dbgen", {}, DbgenFunction, DbgenBind, DbgenInit);
 	dbgen_func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 		options.Add("sf", LogicalType::DOUBLE)

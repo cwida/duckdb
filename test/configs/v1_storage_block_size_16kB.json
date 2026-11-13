@@ -11,7 +11,38 @@
   "skip_compiled": "true",
   "block_size": "16384",
   "inherit_skip_tests": "test/configs/force_storage.json",
+  "skip_error_messages": [
+    "HTTP",
+    "Unable to connect",
+    "NUMERIC columns are not supported in storage versions prior to v2.0.0"
+  ],
   "skip_tests": [
+    {
+      "reason": "NUMERIC columns require storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/types/numeric/numeric_type.test",
+        "test/sql/types/numeric/numeric_type_storage.test",
+        "test/sql/types/numeric/numeric_type_widening.test",
+        "test/sql/types/numeric/test_empty_numeric.test",
+        "test/sql/types/numeric/numeric_type_arithmetic.test",
+        "test/sql/types/numeric/numeric_type_nested.test",
+        "test/sql/types/numeric/numeric_no_common_representation.test",
+        "test/sql/types/numeric/numeric_kernel_contract.test",
+        "test/sql/types/numeric/numeric_casts.test",
+        "test/sql/types/numeric/numeric_limits_review.test"
+      ]
+    },
+    {
+      "reason": "DECIMAL columns wider than 38 digits require storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/copy/csv/csv_wide_decimal_separator.test",
+        "test/sql/types/decimal/wide_decimal_arithmetic.test",
+        "test/sql/types/decimal/wide_decimal_casts.test",
+        "test/sql/types/decimal/wide_decimal_literals.test",
+        "test/sql/types/decimal/wide_decimal_statistics.test",
+        "test/sql/types/decimal/wide_decimal_storage.test"
+      ]
+    },
     {
       "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
       "paths": [

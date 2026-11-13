@@ -64,6 +64,9 @@ RESULT_TYPE GetInternalCValue(duckdb_result *result, idx_t col, idx_t row) {
 		return TryCastCInternal<interval_t, RESULT_TYPE, OP>(result, col, row);
 	case DUCKDB_TYPE_VARCHAR:
 		return TryCastCInternal<char *, RESULT_TYPE, FromCStringCastWrapper<OP>>(result, col, row);
+	case DUCKDB_TYPE_NUMERIC:
+		// materialized as its decimal text
+		return TryCastCInternal<char *, RESULT_TYPE, FromCStringCastWrapper<OP>>(result, col, row);
 	case DUCKDB_TYPE_BLOB:
 		return TryCastCInternal<duckdb_blob, RESULT_TYPE, FromCBlobCastWrapper>(result, col, row);
 	default: { // LCOV_EXCL_START

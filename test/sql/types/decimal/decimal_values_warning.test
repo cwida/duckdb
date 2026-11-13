@@ -8,17 +8,23 @@ SET enable_logging=true;
 statement ok
 SET warnings_as_errors=true;
 
-# Mixing DECIMAL types that need 39 digits reduces the scale to fit the maximum width
-statement error
-VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL::NUMERIC);
+# Mixing DECIMAL types that need 39 digits widens the column instead of reducing the scale
+query I
+SELECT typeof(col0) FROM (VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL::DECIMAL(18,3))) LIMIT 1;
 ----
-<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(38,24\) is being cast to DECIMAL\(38,23\), reducing the scale from 24 to 23\..*
+DECIMAL(39,24)
+
+# Mixing DECIMAL types that need more than 255 digits reduces the scale to fit the maximum width
+statement error
+VALUES (32942348563242.111222333444555666777888::DECIMAL(255,24)), (NULL::DECIMAL(240,0));
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(255,24\) is being cast to DECIMAL\(255,15\), reducing the scale from 24 to 15\..*
 
 # The warning is independent of row order
 statement error
-VALUES (NULL::NUMERIC), (32942348563242.111222333444555666777888::DECIMAL(38,24));
+VALUES (NULL::DECIMAL(240,0)), (32942348563242.111222333444555666777888::DECIMAL(255,24));
 ----
-<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(38,24\) is being cast to DECIMAL\(38,23\), reducing the scale from 24 to 23\..*
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(255,24\) is being cast to DECIMAL\(255,15\), reducing the scale from 24 to 15\..*
 
 # Untyped NULL does not affect the common DECIMAL type
 statement ok
@@ -39,9 +45,9 @@ statement ok
 CALL truncate_duckdb_logs();
 
 statement ok
-VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)),
-       (32942348563242.999888777666555444333222::DECIMAL(38,24)),
-       (NULL::NUMERIC);
+VALUES (32942348563242.111222333444555666777888::DECIMAL(255,24)),
+       (32942348563242.999888777666555444333222::DECIMAL(255,24)),
+       (NULL::DECIMAL(240,0));
 
 query I
 SELECT count(*) > 0 AND count(*) = count(DISTINCT query_id)

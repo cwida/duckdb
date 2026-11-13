@@ -1,0 +1,254 @@
+# name: test/optimizer/compressed_materialization_numeric.test
+# description: Compressed materialization works on NUMERIC values in the representation that holds them
+# group: [optimizer]
+
+load {TEST_DIR}/compressed_materialization_numeric.db
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# three row groups of integers, each stored in its own representation
+statement ok
+CREATE TABLE t AS
+SELECT CASE WHEN i % 7 = 6 THEN NULL ELSE (i % 1000) - 500 END::INTEGER::NUMERIC AS n,
+       (i * 7919) % 100003 AS payload
+FROM range(300000) tbl(i);
+
+# the representation that holds every value is part of the statistics
+query III
+SELECT stats(n)['representation'], stats(n)['exact_min'], stats(n)['exact_max'] FROM t LIMIT 1;
+----
+SMALLINT	-500	499
+
+# sorting casts the keys to their representation and casts the result back
+query II
+EXPLAIN (FORMAT yaml) SELECT n FROM t ORDER BY n, payload
+----
+logical_opt	<REGEX>:.*(__internal_compress_integral|AS SMALLINT).*
+
+query II
+EXPLAIN (FORMAT yaml) SELECT n FROM t ORDER BY n, payload
+----
+logical_opt	<REGEX>:.*AS NUMERIC.*
+
+query II
+SELECT n, payload FROM t ORDER BY n, payload LIMIT 4
+----
+-500	0
+-500	199
+-500	398
+-500	597
+
+query II
+SELECT n, payload FROM t ORDER BY n DESC NULLS FIRST, payload DESC LIMIT 3
+----
+NULL	100001
+NULL	99998
+NULL	99996
+
+# grouping compresses the group key
+query II
+EXPLAIN (FORMAT yaml) SELECT count(*) FROM t GROUP BY n
+----
+logical_opt	<REGEX>:.*(__internal_compress_integral|AS SMALLINT).*
+
+query III
+SELECT n, count(*), sum(payload) FROM t GROUP BY n ORDER BY n NULLS FIRST LIMIT 3
+----
+NULL	42857	2142778277
+-500	257	12591533
+-499	257	12919880
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT n FROM t)
+----
+1001
+
+# the results equal those without the optimization
+statement ok
+CREATE TABLE expected_groups AS SELECT n, count(*) AS c, sum(payload) AS s FROM t GROUP BY n;
+
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
+query I
+SELECT count(*) FROM (SELECT n, count(*) AS c, sum(payload) AS s FROM t GROUP BY n EXCEPT ALL SELECT * FROM expected_groups)
+----
+0
+
+statement ok
+SET disabled_optimizers = '';
+
+# joining on NUMERIC keys compresses both sides to one representation
+statement ok
+CREATE TABLE dim AS SELECT (i - 250)::SMALLINT::NUMERIC AS n, i AS label FROM range(500) tbl(i);
+
+query II
+EXPLAIN (FORMAT yaml) SELECT t.payload, dim.label FROM t JOIN dim USING (n)
+----
+logical_opt	<REGEX>:.*(__internal_compress_integral|AS SMALLINT).*
+
+query II
+SELECT count(*), sum(label) FROM t JOIN dim USING (n)
+----
+128572	32078642
+
+# values of different representations across row groups share the widest representation
+statement ok
+INSERT INTO t SELECT (i % 100) * 0.25, i FROM range(10000) tbl(i);
+
+query I
+SELECT stats(n)['representation'] FROM t LIMIT 1;
+----
+DECIMAL(5,2)
+
+query II
+EXPLAIN (FORMAT yaml) SELECT n FROM t ORDER BY n
+----
+logical_opt	<REGEX>:.*AS DECIMAL\(5,2\).*
+
+query II
+SELECT n, count(*) FROM t GROUP BY n ORDER BY n DESC NULLS LAST LIMIT 4
+----
+499	258
+498	257
+497	257
+496	257
+
+query II
+SELECT n, count(*) FROM t WHERE n BETWEEN 0.5 AND 2 GROUP BY ALL ORDER BY n
+----
+0.5	100
+0.75	100
+1	357
+1.25	100
+1.5	100
+1.75	100
+2	358
+
+# the statistics survive a checkpoint and a restart
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+query III
+SELECT stats(n)['representation'], stats(n)['exact_min'], stats(n)['exact_max'] FROM t LIMIT 1;
+----
+DECIMAL(5,2)	-500	499
+
+query II
+EXPLAIN (FORMAT yaml) SELECT count(*) FROM t GROUP BY n
+----
+logical_opt	<REGEX>:.*AS DECIMAL\(5,2\).*
+
+query II
+SELECT n, count(*) FROM t WHERE n < -497 GROUP BY n ORDER BY n
+----
+-500	257
+-499	257
+-498	257
+
+# rows appended in the transaction widen the representation that the plan uses
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (123456789012345678901234567.5, 0), (-1, 1);
+
+query I
+SELECT list(n ORDER BY n DESC) FROM t WHERE payload < 2 AND n NOT BETWEEN -500 AND 499
+----
+[123456789012345678901234567.5]
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT n FROM t)
+----
+1077
+
+query I
+SELECT stats(n)['representation'] FROM t LIMIT 1;
+----
+DECIMAL(29,2)
+
+statement ok
+ROLLBACK
+
+# wide decimals are not of a fixed size: no compression, the canonical blobs are used
+statement ok
+CREATE TABLE wide AS SELECT (i::VARCHAR || '1234567890123456789012345678901234567890.5')::NUMERIC AS n, i AS payload FROM range(5) tbl(i);
+
+query I
+SELECT stats(n)['representation'] FROM wide LIMIT 1;
+----
+DECIMAL(42,1)
+
+query II
+EXPLAIN (FORMAT yaml) SELECT n FROM wide ORDER BY n
+----
+logical_opt	<!REGEX>:.*AS DECIMAL.*
+
+query I
+SELECT list(n ORDER BY n DESC) FROM wide
+----
+[41234567890123456789012345678901234567890.5, 31234567890123456789012345678901234567890.5, 21234567890123456789012345678901234567890.5, 11234567890123456789012345678901234567890.5, 1234567890123456789012345678901234567890.5]
+
+query II
+SELECT n, count(*) FROM wide GROUP BY n ORDER BY n LIMIT 1
+----
+1234567890123456789012345678901234567890.5	1
+
+# empty and all-NULL columns
+statement ok
+CREATE TABLE empty_t (n NUMERIC, payload INTEGER);
+
+query I
+SELECT count(*) FROM (SELECT n FROM empty_t ORDER BY n)
+----
+0
+
+statement ok
+INSERT INTO empty_t VALUES (NULL, 1), (NULL, 2);
+
+query II
+SELECT n, count(*) FROM empty_t GROUP BY n
+----
+NULL	2
+
+query II
+SELECT n, payload FROM empty_t ORDER BY n, payload DESC
+----
+NULL	2
+NULL	1
+
+# expressions have no statistics: sorting and grouping go through the canonical blobs
+query I
+SELECT list(n + 0.5 ORDER BY n + 0.5) FROM (SELECT DISTINCT n FROM t WHERE n BETWEEN -2 AND 1)
+----
+[-1.5, -0.5, 0.5, 0.75, 1, 1.25, 1.5]
+
+query II
+SELECT n * 2, count(*) FROM t WHERE n BETWEEN 497 AND 499 GROUP BY 1 ORDER BY 1 DESC
+----
+998	258
+996	257
+994	257
+
+# sort keys of NUMERIC values, with and without the representation
+query I
+SELECT list(n ORDER BY n DESC) FROM (SELECT (i * 123456789 - 500000000)::NUMERIC AS n FROM range(9) tbl(i))
+----
+[487654312, 364197523, 240740734, 117283945, -6172844, -129629633, -253086422, -376543211, -500000000]
+
+query I
+SELECT list(n ORDER BY n) FROM (VALUES (0::NUMERIC), (-0.001::NUMERIC), (0.001::NUMERIC), (-10000000000000000000::NUMERIC), (10000000000000000000::NUMERIC), (NULL::NUMERIC), ('12345678901234567890123456789012345678901234567890.25'::NUMERIC)) t(n)
+----
+[-10000000000000000000, -0.001, 0, 0.001, 10000000000000000000, 12345678901234567890123456789012345678901234567890.25, NULL]
+
+query I
+SELECT arg_min(payload, n) FROM (SELECT (i % 3) * 1.5 - 1 AS n, i AS payload FROM range(10) tbl(i))
+----
+0

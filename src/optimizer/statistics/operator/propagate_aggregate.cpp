@@ -80,7 +80,9 @@ unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name) {
 unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name, const LogicalType &type) {
 	if (type == LogicalType::VARCHAR) {
 		return GetComparator<StringStats>(fun_name);
-	} else if (type.IsNumeric() || type.IsTemporal()) {
+	} else if ((type.IsNumeric() || type.IsTemporal()) &&
+	           BaseStatistics::GetStatsType(type) == StatisticsType::NUMERIC_STATS) {
+		// wide decimals are numeric but carry string statistics
 		return GetComparator<NumericStats>(fun_name);
 	}
 	return nullptr;

@@ -127,6 +127,9 @@ protected:
 	void AppendValueInternal(Vector &vector, SRC input);
 	template <class SRC, class DST>
 	void AppendDecimalValueInternal(Vector &vector, SRC input);
+	//! Appends to a decimal wider than 38 digits, whose values are stored as BIGNUM blobs
+	template <class SRC>
+	void AppendWideDecimalValueInternal(Vector &vector, SRC input);
 
 	void AppendRowRecursive() {
 		EndRow();

@@ -1,6 +1,11 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database.hpp"
+
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/radix.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
@@ -19,17 +24,46 @@ namespace duckdb {
 // Bound index
 //-------------------------------------------------------------------------------
 
+//! Whether the expression or one of its children carries a NUMERIC value, whose kernels are bound at run time
+static bool ContainsNumeric(const Expression &expr) {
+	if (TypeVisitor::Contains(expr.GetReturnType(), LogicalTypeId::NUMERIC)) {
+		return true;
+	}
+	bool found = false;
+	ExpressionIterator::EnumerateChildren(expr,
+	                                      [&](const Expression &child) { found = found || ContainsNumeric(child); });
+	return found;
+}
+
+static bool NeedsContext(const vector<unique_ptr<Expression>> &expressions) {
+	for (auto &expr : expressions) {
+		if (ContainsNumeric(*expr)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexConstraintType index_constraint_type,
                        const vector<column_t> &column_ids, TableIOManager &table_io_manager,
                        const vector<unique_ptr<Expression>> &unbound_expressions_p, AttachedDatabase &db)
     : Index(column_ids, table_io_manager, db), name(name), index_type(index_type),
-      index_constraint_type(index_constraint_type), executor(db.GetDatabase()) {
+      index_constraint_type(index_constraint_type) {
+	if (NeedsContext(unbound_expressions_p)) {
+		// binding the NUMERIC kernels needs a client context, which the index owns. The index is part of the database,
+		// so its context must not keep the database alive: it refers to the instance without owning it
+		shared_ptr<DatabaseInstance> instance(shared_ptr<DatabaseInstance>(), &db.GetDatabase());
+		expression_context = make_shared_ptr<ClientContext>(std::move(instance));
+		executor = make_uniq<ExpressionExecutor>(*expression_context);
+	} else {
+		executor = make_uniq<ExpressionExecutor>(db.GetDatabase());
+	}
 	for (auto &expr : unbound_expressions_p) {
 		types.push_back(expr->GetReturnType().InternalType());
 		logical_types.push_back(expr->GetReturnType());
 		unbound_expressions.emplace_back(expr->Copy());
 		bound_expressions.push_back(BindExpression(expr->Copy()));
-		executor.AddExpression(*bound_expressions.back());
+		executor->AddExpression(*bound_expressions.back());
 	}
 }
 
@@ -143,7 +177,7 @@ idx_t BoundIndex::GetInMemorySize() const {
 }
 
 void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result) const {
-	executor.Execute(input, result);
+	executor->Execute(input, result);
 }
 
 idx_t BoundIndex::UnboundExpressionCount() const {

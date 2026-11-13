@@ -10,6 +10,7 @@ add_library_unity(
   map_vector.cpp
   sequence_vector.cpp
   shredded_vector.cpp
+  numeric_vector.cpp
   string_vector.cpp
   struct_vector.cpp
   unified_vector_format.cpp

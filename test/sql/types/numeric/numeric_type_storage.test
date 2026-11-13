@@ -1,0 +1,168 @@
+# name: test/sql/types/numeric/numeric_type_storage.test
+# description: Each row group of a NUMERIC column is stored in the narrowest representation that fits its values
+# group: [numeric]
+
+load {TEST_DIR}/numeric_type_storage.db
+
+statement ok
+CREATE TABLE t(id INTEGER, n NUMERIC);
+
+statement ok
+INSERT INTO t SELECT i, i % 100 FROM range(100000) tbl(i);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+CHECKPOINT;
+
+# the row groups are stored as TINYINT
+query I
+SELECT DISTINCT segment_type FROM pragma_storage_info('t') WHERE column_name = 'n' AND segment_type <> 'VALIDITY';
+----
+TINYINT
+
+restart
+
+query I
+SELECT column_type FROM (DESCRIBE t) WHERE column_name = 'n';
+----
+NUMERIC
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query III
+SELECT count(*), min(n), max(n) FROM t;
+----
+100000	0	99
+
+# a wider value in a new row group widens the bound type but not the stored row groups
+statement ok
+INSERT INTO t VALUES (100000, 1000000);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT DISTINCT segment_type FROM pragma_storage_info('t') WHERE column_name = 'n' AND segment_type <> 'VALIDITY' ORDER BY 1;
+----
+INTEGER
+TINYINT
+
+restart
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query II
+SELECT count(*), sum(n) FROM t;
+----
+100001	5950000
+
+query I
+SELECT n FROM t WHERE id = 100000;
+----
+1000000
+
+# filters prune on the statistics of every row group, whatever its representation
+query I
+SELECT count(*) FROM t WHERE n > 500;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE n = 42;
+----
+1000
+
+# fractional values
+statement ok
+INSERT INTO t VALUES (100001, 0.5);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT sum(n) FROM t;
+----
+5950000.5
+
+query I
+SELECT n FROM t WHERE n < 1 AND n > 0;
+----
+0.5
+
+# updates that fit the stored representation
+statement ok
+UPDATE t SET n = 50 WHERE id = 100001;
+
+query I
+SELECT n FROM t WHERE id = 100001;
+----
+50
+
+query I
+SELECT sum(n) FROM t;
+----
+5950050
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT sum(n) FROM t;
+----
+5950050
+
+# deleting the wide values and checkpointing lets the next statistics narrow the type again
+statement ok
+DELETE FROM t WHERE id >= 100000;
+
+query II
+SELECT count(*), max(n) FROM t;
+----
+100000	99
+
+# the write-ahead log replays NUMERIC appends
+statement ok
+INSERT INTO t VALUES (200000, -12345.678);
+
+restart
+
+# the row groups whose rows were all deleted are dropped by the checkpoint before the restart, so their values no
+# longer count
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM t WHERE id = 200000;
+----
+-12345.678

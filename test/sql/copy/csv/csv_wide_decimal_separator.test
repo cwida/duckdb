@@ -1,0 +1,54 @@
+# name: test/sql/copy/csv/csv_wide_decimal_separator.test
+# description: Wide decimals in CSV files with the decimal_separator and thousands options
+# group: [csv]
+
+statement ok
+CREATE TABLE wide AS SELECT (i::VARCHAR || '1234567890123456789012345678901234567890.' || (i % 100)::VARCHAR)::DECIMAL(50,2) AS d FROM range(5000) t(i);
+
+statement ok
+COPY (SELECT replace(d::VARCHAR, '.', ',') AS d FROM wide) TO '{TEST_DIR}/wide_comma.csv' (HEADER, DELIMITER ';');
+
+# explicit column type
+query II
+SELECT count(*), count(DISTINCT d) FROM read_csv('{TEST_DIR}/wide_comma.csv', columns={'d': 'DECIMAL(50,2)'}, header=true, decimal_separator=',', delim=';')
+----
+5000	5000
+
+query I
+SELECT count(*) FROM (SELECT d FROM read_csv('{TEST_DIR}/wide_comma.csv', columns={'d': 'DECIMAL(50,2)'}, header=true, decimal_separator=',', delim=';') EXCEPT SELECT d FROM wide)
+----
+0
+
+# sniffed type over more than one sample chunk
+query I
+SELECT typeof(d) FROM read_csv('{TEST_DIR}/wide_comma.csv', auto_type_candidates=['DECIMAL(50,2)'], decimal_separator=',', delim=';') LIMIT 1
+----
+DECIMAL(50,2)
+
+query I
+SELECT count(*) FROM (SELECT d FROM read_csv('{TEST_DIR}/wide_comma.csv', auto_type_candidates=['DECIMAL(50,2)'], decimal_separator=',', delim=';') EXCEPT SELECT d FROM wide)
+----
+0
+
+# values written with the period as the decimal separator do not parse with the comma
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/wide_comma.csv', columns={'d': 'DECIMAL(50,2)'}, header=true, decimal_separator='.', delim=';')
+----
+Could not convert
+
+# thousands separators are removed before parsing
+statement ok
+COPY (SELECT * FROM (VALUES ('1.234.567.890.123.456.789.012.345.678.901.234.567.890,25'), ('-1,5'), ('0,125'), ('42')) t(d)) TO '{TEST_DIR}/wide_thousands.csv' (HEADER, DELIMITER ';');
+
+query I
+SELECT d FROM read_csv('{TEST_DIR}/wide_thousands.csv', columns={'d': 'DECIMAL(50,2)'}, header=true, decimal_separator=',', thousands='.', delim=';')
+----
+1234567890123456789012345678901234567890.25
+-1.50
+0.13
+42.00
+
+query I
+SELECT typeof(d) FROM read_csv('{TEST_DIR}/wide_thousands.csv', auto_type_candidates=['DECIMAL(50,2)'], decimal_separator=',', thousands='.', delim=';') LIMIT 1
+----
+DECIMAL(50,2)

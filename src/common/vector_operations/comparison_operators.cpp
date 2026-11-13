@@ -10,6 +10,7 @@
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/numeric_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
@@ -30,6 +31,13 @@ static bool TryPrimitiveComparisonExecute(const Vector &left, const Vector &righ
 	return false;
 #else
 	D_ASSERT(left.GetType().InternalType() == right.GetType().InternalType());
+	if (left.GetType().id() == LogicalTypeId::NUMERIC) {
+		// NUMERIC values compare natively when both sides have a typed representation
+		unique_ptr<Vector> left_typed, right_typed;
+		if (NumericVector::TryNativePair(left, right, left_typed, right_typed)) {
+			return TryPrimitiveComparisonExecute<OP>(*left_typed, *right_typed, result);
+		}
+	}
 	switch (left.GetType().InternalType()) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8:

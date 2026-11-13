@@ -1,0 +1,19 @@
+# name: test/sql/copy/parquet/wide_decimal_delta_length_byte_array.test
+# description: A wide DECIMAL stored as BYTE_ARRAY with DELTA_LENGTH_BYTE_ARRAY encoding is read through the wide decimal reader
+# group: [parquet]
+
+require parquet
+
+# one BYTE_ARRAY DECIMAL(39,2) value (1.25) in a DELTA_LENGTH_BYTE_ARRAY page
+statement ok
+COPY (SELECT from_hex('50415231' || '1500150c150c2c1502150c15061506000080010401027d' || '1502192c4806736368656d61150200' || '150c2500180178250a1504154e00' || '1602191c191c26081c150c19250c061918017815001602162e162e26080000162e16020000' || '4200000050415231')) TO '{TEST_DIR}/wide_dlba.parquet' (FORMAT BLOB)
+
+query I
+SELECT x FROM read_parquet('{TEST_DIR}/wide_dlba.parquet')
+----
+1.25
+
+query I
+SELECT typeof(x) FROM read_parquet('{TEST_DIR}/wide_dlba.parquet')
+----
+DECIMAL(39,2)

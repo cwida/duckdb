@@ -171,6 +171,8 @@ public:
 	DUCKDB_API static Value DECIMAL(int32_t value, uint32_t width, uint32_t scale);
 	DUCKDB_API static Value DECIMAL(int64_t value, uint32_t width, uint32_t scale);
 	DUCKDB_API static Value DECIMAL(hugeint_t value, uint32_t width, uint32_t scale);
+	//! Create a wide decimal (width > Decimal::MAX_WIDTH_INT128) from the BIGNUM blob of its unscaled value
+	DUCKDB_API static Value WIDEDECIMAL(const string &unscaled_bignum, uint32_t width, uint32_t scale);
 	//! Create a float Value from a specified value
 	DUCKDB_API static Value FLOAT(float value);
 	//! Create a double Value from a specified value
@@ -218,6 +220,10 @@ public:
 	DUCKDB_API static Value BIT(const string &data);
 	DUCKDB_API static Value BIGNUM(const_data_ptr_t data, idx_t len);
 	DUCKDB_API static Value BIGNUM(const string &data);
+	//! Create a NUMERIC value from decimal text ([-]digits[.digits])
+	DUCKDB_API static Value NUMERIC(const string &text);
+	//! Create a NUMERIC value from its canonical blob
+	DUCKDB_API static Value NUMERICBLOB(const string &blob);
 
 	DUCKDB_API static Value GEOMETRY(const_data_ptr_t data, idx_t len);
 	DUCKDB_API static Value GEOMETRY(const_data_ptr_t data, idx_t len, const CoordinateReferenceSystem &crs);

@@ -5,6 +5,7 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/index_map.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/execution/index/art/art.hpp"
@@ -91,6 +92,35 @@ static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDataba
 				auto current = GetStorageVersionName(storage_version, false);
 
 				throw InvalidInputException("TUPLE columns are not supported in storage versions prior to %s "
+				                            "(database %s is using storage version %s)",
+				                            required, db.GetName(), current);
+			}
+		} break;
+		case LogicalTypeId::DECIMAL: {
+			// decimals wider than 38 digits are stored as BIGNUM blobs, which older engines cannot read
+			const auto storage_version = db.GetStorageManager().GetStorageVersion();
+
+			// (the width decides, not Decimal::IsWide: a database written with debug_force_wide_decimal is only
+			// meant to be read by the process that wrote it)
+			if (storage_version < StorageVersion::V2_0_0 && DecimalType::GetWidth(type) > Decimal::MAX_WIDTH_INT128) {
+				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
+				auto current = GetStorageVersionName(storage_version, false);
+
+				throw InvalidInputException(
+				    "DECIMAL columns wider than %d digits are not supported in storage versions "
+				    "prior to %s (database %s is using storage version %s)",
+				    Decimal::MAX_WIDTH_INT128, required, db.GetName(), current);
+			}
+		} break;
+		case LogicalTypeId::NUMERIC: {
+			// NUMERIC is a new type id with its own column format, which older engines cannot read
+			const auto storage_version = db.GetStorageManager().GetStorageVersion();
+
+			if (storage_version < StorageVersion::V2_0_0) {
+				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
+				auto current = GetStorageVersionName(storage_version, false);
+
+				throw InvalidInputException("NUMERIC columns are not supported in storage versions prior to %s "
 				                            "(database %s is using storage version %s)",
 				                            required, db.GetName(), current);
 			}

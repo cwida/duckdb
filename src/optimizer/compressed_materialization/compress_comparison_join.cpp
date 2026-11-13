@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/storage/statistics/numeric_range_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 
 namespace duckdb {
@@ -23,9 +24,10 @@ static void PopulateBindingMap(CompressedMaterializationInfo &info, const vector
 }
 
 #ifndef DEBUG
-static bool HasVariantType(LogicalOperator &op) {
+//! Types whose materialization is so much more expensive than their compressed form that compressing always pays off
+static bool HasAlwaysCompressedType(LogicalOperator &op) {
 	for (const auto &type : op.types) {
-		if (type.id() == LogicalTypeId::VARIANT) {
+		if (type.id() == LogicalTypeId::VARIANT || type.id() == LogicalTypeId::NUMERIC) {
 			return true;
 		}
 	}
@@ -114,6 +116,43 @@ bool CompressedMaterialization::TryCompressVariantComparisonJoinKey(JoinConditio
 	return true;
 }
 
+bool CompressedMaterialization::TryCompressNumericComparisonJoinKey(JoinCondition &condition) {
+	auto &lhs = condition.GetLHS();
+	auto &rhs = condition.GetRHS();
+	if (lhs.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+	    rhs.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+	    lhs.GetReturnType().id() != LogicalTypeId::NUMERIC || rhs.GetReturnType().id() != LogicalTypeId::NUMERIC) {
+		return false;
+	}
+	auto lhs_it = statistics_map.find(lhs.Cast<BoundColumnRefExpression>().Binding());
+	auto rhs_it = statistics_map.find(rhs.Cast<BoundColumnRefExpression>().Binding());
+	if (lhs_it == statistics_map.end() || rhs_it == statistics_map.end() || !lhs_it->second || !rhs_it->second) {
+		return false;
+	}
+	auto lhs_range = NumericRangeStats::TryGet(*lhs_it->second);
+	auto rhs_range = NumericRangeStats::TryGet(*rhs_it->second);
+	if (!lhs_range || !rhs_range) {
+		return false;
+	}
+	// both sides are compared in the representation that holds the values of both
+	auto range = *lhs_range;
+	range.Merge(*rhs_range);
+	auto representation = range.ResolveType();
+	if (!TypeIsConstantSize(representation.InternalType())) {
+		return false;
+	}
+	auto lhs_stats = lhs_range->ToTyped(representation).ToUnique();
+	lhs_stats->CopyValidity(*lhs_it->second);
+	auto rhs_stats = rhs_range->ToTyped(representation).ToUnique();
+	rhs_stats->CopyValidity(*rhs_it->second);
+	// the casts cannot fail: as try casts, filters rebuilt on top of them need not preserve cast errors
+	condition.LeftReference() = BoundCastExpression::AddCastToType(context, lhs.Copy(), representation, true);
+	condition.RightReference() = BoundCastExpression::AddCastToType(context, rhs.Copy(), representation, true);
+	condition.SetLeftStats(std::move(lhs_stats));
+	condition.SetRightStats(std::move(rhs_stats));
+	return true;
+}
+
 void CompressedMaterialization::CompressComparisonJoin(unique_ptr<LogicalOperator> &op) {
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	if (join.join_type == JoinType::MARK) {
@@ -127,8 +166,8 @@ void CompressedMaterialization::CompressComparisonJoin(unique_ptr<LogicalOperato
 #ifndef DEBUG
 	// In debug mode, we always apply compressed materialization to joins regardless of cardinalities,
 	// so that it is well-tested. In release mode, we use the thresholds defined in the header
-	// If any of the inputs has VARIANT, we skip these checks: compressing is assumed to always be better
-	if (!HasVariantType(left_child) && !HasVariantType(right_child)) {
+	// If any of the inputs has VARIANT or NUMERIC, we skip these checks: compressing is assumed to always be better
+	if (!HasAlwaysCompressedType(left_child) && !HasAlwaysCompressedType(right_child)) {
 		const auto build_cardinality = right_child.has_estimated_cardinality ? right_child.estimated_cardinality
 		                                                                     : right_child.EstimateCardinality(context);
 		if (build_cardinality < JOIN_BUILD_CARDINALITY_THRESHOLD) {
@@ -164,7 +203,10 @@ void CompressedMaterialization::CompressComparisonJoin(unique_ptr<LogicalOperato
 	}
 
 	for (auto &condition : join.conditions) {
-		if (join.conditions.size() == 1 && join.type != LogicalOperatorType::LOGICAL_DELIM_JOIN) {
+		if (condition.IsComparison() && join.type != LogicalOperatorType::LOGICAL_DELIM_JOIN &&
+		    TryCompressNumericComparisonJoinKey(condition)) {
+			// NUMERIC keys are compared in their representation; the referenced bindings are marked below
+		} else if (join.conditions.size() == 1 && join.type != LogicalOperatorType::LOGICAL_DELIM_JOIN) {
 			const bool compressed_variant_key =
 			    condition.IsComparison() && TryCompressVariantComparisonJoinKey(condition);
 			if (compressed_variant_key) {

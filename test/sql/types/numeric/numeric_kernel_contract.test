@@ -1,0 +1,176 @@
+# name: test/sql/types/numeric/numeric_kernel_contract.test
+# description: NUMERIC overloads compute exact results whatever the representation: abs widens from its result
+# group: [numeric]
+
+# range, whole numbers round to themselves, wide decimals round exactly
+
+load {TEST_DIR}/numeric_kernel_contract.db
+
+# the alternative verification delivers scanned NUMERIC values as canonical blobs: the representations asserted here
+# are those of the regular scan
+require no_alternative_verify
+
+statement ok
+CREATE TABLE t(n NUMERIC);
+
+statement ok
+INSERT INTO t VALUES (-128), (127), (NULL), (0);
+
+# before and after the checkpoint narrows the column to TINYINT, where -(-128) does not fit
+loop i 0 2
+
+query I
+SELECT abs(n) FROM t ORDER BY n;
+----
+128
+0
+127
+NULL
+
+query I
+SELECT -n FROM t ORDER BY n;
+----
+128
+0
+-127
+NULL
+
+query I
+SELECT ceil(n) FROM t ORDER BY n;
+----
+-128
+0
+127
+NULL
+
+# the checkpoint stores the rows in the narrowest representation that holds them (before it, the representation
+# depends on the storage configuration: in-memory rows, a persistent file or a replayed WAL)
+statement ok
+CHECKPOINT;
+
+query I
+SELECT numeric_representation(ceil(n)) FROM t LIMIT 1;
+----
+TINYINT
+
+query I
+SELECT round(n, -1) FROM t ORDER BY n;
+----
+-130
+0
+130
+NULL
+
+statement ok
+CHECKPOINT;
+
+endloop
+
+query I
+SELECT numeric_representation(n) FROM t LIMIT 1;
+----
+TINYINT
+
+# abs of the most negative value of each representation
+query IIII
+SELECT abs((-32768)::NUMERIC), abs((-2147483648)::NUMERIC), abs((-9223372036854775808)::NUMERIC), abs('-99.99'::NUMERIC);
+----
+32768	2147483648	9223372036854775808	99.99
+
+query I
+SELECT abs(('-1' || repeat('0', 50) || '.5')::NUMERIC);
+----
+100000000000000000000000000000000000000000000000000.5
+
+# rounding of decimals in fixed-size representations
+query IIII
+SELECT ceil('9.5'::NUMERIC), floor('-9.5'::NUMERIC), round('9.5'::NUMERIC), trunc('-9.5'::NUMERIC);
+----
+10	-10	10	-9
+
+# rounding of wide decimals is exact (no DOUBLE kernel)
+query I
+SELECT ceil(('1' || repeat('0', 40) || '.5')::NUMERIC);
+----
+10000000000000000000000000000000000000001
+
+query I
+SELECT floor(('-1' || repeat('0', 40) || '.5')::NUMERIC);
+----
+-10000000000000000000000000000000000000001
+
+query I
+SELECT trunc(('-1' || repeat('0', 40) || '.5')::NUMERIC);
+----
+-10000000000000000000000000000000000000000
+
+query II
+SELECT round(('1' || repeat('0', 40) || '.5')::NUMERIC), round(('1' || repeat('0', 40) || '.49')::NUMERIC);
+----
+10000000000000000000000000000000000000001	10000000000000000000000000000000000000000
+
+query II
+SELECT round(('-1' || repeat('0', 40) || '.5')::NUMERIC), round(('-1' || repeat('0', 40) || '.49')::NUMERIC);
+----
+-10000000000000000000000000000000000000001	-10000000000000000000000000000000000000000
+
+# the exact digits survive where a DOUBLE would have lost them
+query I
+SELECT ceil('12345678901234567890123456789012345678901234567890.25'::NUMERIC);
+----
+12345678901234567890123456789012345678901234567891
+
+query I
+SELECT floor('12345678901234567890123456789012345678901234567890.75'::NUMERIC);
+----
+12345678901234567890123456789012345678901234567890
+
+# wide decimals rounding to a precision
+query III
+SELECT round(x, 2), round(x, 0), round(x, -2) FROM (SELECT '12345678901234567890123456789012345678901234567890.125'::NUMERIC x);
+----
+12345678901234567890123456789012345678901234567890.13	12345678901234567890123456789012345678901234567890	12345678901234567890123456789012345678901234567900
+
+query I
+SELECT round(x, 5) FROM (SELECT '12345678901234567890123456789012345678901234567890.125'::NUMERIC x);
+----
+12345678901234567890123456789012345678901234567890.125
+
+query I
+SELECT round(('9' || repeat('9', 49))::NUMERIC, -1);
+----
+100000000000000000000000000000000000000000000000000
+
+query II
+SELECT round_even('12345678901234567890123456789012345678901234567890.5'::NUMERIC::DECIMAL(51,1), 0), round_even('12345678901234567890123456789012345678901234567891.5'::DECIMAL(51,1), 0);
+----
+12345678901234567890123456789012345678901234567890	12345678901234567890123456789012345678901234567892
+
+# plain wide DECIMAL rounding is exact as well
+query II
+SELECT ceil('12345678901234567890123456789012345678901234567890.25'::DECIMAL(52,2)), typeof(ceil('1.5'::DECIMAL(52,2)));
+----
+12345678901234567890123456789012345678901234567891	DECIMAL(52,0)
+
+query I
+SELECT round('12345678901234567890123456789012345678901234567890.125'::DECIMAL(53,3), -2);
+----
+12345678901234567890123456789012345678901234567900
+
+# sign of every representation
+query IIII
+SELECT sign((-5)::NUMERIC), sign('0.5'::NUMERIC), sign(0::NUMERIC), sign(('-1' || repeat('0', 50))::NUMERIC);
+----
+-1	1	0	-1
+
+# unsigned representations run their kernels in a signed one
+statement ok
+CREATE TABLE u(u UTINYINT, ub UBIGINT);
+
+statement ok
+INSERT INTO u VALUES (255, 18446744073709551615);
+
+query IIII
+SELECT abs(u::NUMERIC), ceil(ub::NUMERIC), round(u::NUMERIC, -1), sign(ub::NUMERIC) FROM u;
+----
+255	18446744073709551615	260	1

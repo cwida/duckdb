@@ -48,6 +48,11 @@ static bool IsJoinFilterPushdownIntegralCast(const LogicalType &src, const Logic
 	return IsJoinFilterPushdownIntegralType(src) && IsJoinFilterPushdownIntegralType(tgt);
 }
 
+//! A NUMERIC column compared in an integral representation: the filter is rebuilt on top of the cast
+static bool IsJoinFilterPushdownNumericIntegralCast(const LogicalType &src, const LogicalType &tgt) {
+	return src.id() == LogicalTypeId::NUMERIC && IsJoinFilterPushdownIntegralType(tgt);
+}
+
 static bool IsJoinFilterPushdownVariantIntegralCast(const LogicalType &src, const LogicalType &tgt) {
 	if (src.id() == LogicalTypeId::VARIANT) {
 		return IsJoinFilterPushdownIntegralType(tgt);
@@ -111,6 +116,7 @@ static bool PushdownJoinFilterExpressionInternal(const Expression &expr, JoinFil
 			const auto &source = BoundCastExpression::Child(function).GetReturnType();
 			const auto &target = function.GetReturnType();
 			if ((!IsJoinFilterPushdownIntegralCast(source, target) &&
+			     !IsJoinFilterPushdownNumericIntegralCast(source, target) &&
 			     !IsJoinFilterPushdownVariantIntegralCast(source, target)) ||
 			    !PushdownJoinFilterExpressionInternal(BoundCastExpression::Child(function), path)) {
 				return false;

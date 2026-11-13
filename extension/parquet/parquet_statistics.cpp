@@ -12,6 +12,7 @@
 #include "reader/string_column_reader.hpp"
 #include "reader/variant_column_reader.hpp"
 #include "zstd/common/xxhash.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -87,6 +88,31 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::CreateNumericStats(const Logi
 	}
 	NumericStats::SetMin(stats, min);
 	NumericStats::SetMax(stats, max);
+	return stats.ToUnique();
+}
+
+//! Wide decimals (width > 38) carry string statistics on their BIGNUM blobs, whose byte order is the numeric order
+static unique_ptr<BaseStatistics> CreateWideDecimalStats(const LogicalType &type, const ParquetColumnSchema &schema_ele,
+                                                         const duckdb_parquet::Statistics &parquet_stats) {
+	auto stats = StringStats::CreateUnknown(type);
+	Value min;
+	Value max;
+	if (parquet_stats.__isset.min_value) {
+		min = ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.min_value);
+	} else if (parquet_stats.__isset.min) {
+		min = ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.min);
+	}
+	if (parquet_stats.__isset.max_value) {
+		max = ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.max_value);
+	} else if (parquet_stats.__isset.max) {
+		max = ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.max);
+	}
+	if (!min.IsNull()) {
+		StringStats::SetMin(stats, string_t(StringValue::Get(min)), StringStatsType::EXACT_STATS);
+	}
+	if (!max.IsNull()) {
+		StringStats::SetMax(stats, string_t(StringValue::Get(max)), StringStatsType::EXACT_STATS);
+	}
 	return stats.ToUnique();
 }
 
@@ -234,6 +260,14 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<hugeint_t>(stats_data, stats.size(), schema_ele), width,
 				    scale);
+			case PhysicalType::VARCHAR: {
+				// wide decimal stored as a BIGNUM blob
+				auto blob = ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size());
+				if (!BignumDecimal::FitsWidth(string_t(blob), width)) {
+					return Value();
+				}
+				return Value::WIDEDECIMAL(blob, width, scale);
+			}
 			default:
 				throw InvalidInputException("Unsupported internal type for decimal");
 			}
@@ -522,8 +556,12 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
-	case LogicalTypeId::DECIMAL:
 	case LogicalTypeId::UUID:
+		return CreateNumericStats(type, schema, parquet_stats);
+	case LogicalTypeId::DECIMAL:
+		if (type.InternalType() == PhysicalType::VARCHAR) {
+			return CreateWideDecimalStats(type, schema, parquet_stats);
+		}
 		return CreateNumericStats(type, schema, parquet_stats);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:

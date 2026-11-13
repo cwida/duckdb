@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/vector/shredded_numeric_range.hpp"
+#include "duckdb/common/types/vector_cache.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
@@ -134,6 +136,13 @@ struct ColumnScanState {
 	UpdateScanType update_scan_type = UpdateScanType::STANDARD;
 	//! Whether scans and selects copy strings into the result instead of pointing into the scanned blocks
 	StringScanType string_scan_type = StringScanType::STANDARD;
+	//! The column a NUMERIC column scan reads from - pinned when the scan is initialized so that the row group's
+	//! storage type can change underneath a running scan
+	shared_ptr<ColumnData> pinned_column;
+	//! The value range of the pinned NUMERIC column at the start of the scan, handed to the scanned vectors
+	ShreddedNumericRange numeric_range;
+	//! The buffer the representation of a NUMERIC column is scanned into, reused across vectors
+	unique_ptr<VectorCache> numeric_cache;
 
 public:
 	void PushDownCast(const LogicalType &original_type, const LogicalType &cast_type);

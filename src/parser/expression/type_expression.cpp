@@ -13,8 +13,8 @@ namespace duckdb {
 
 bool TypeExpression::IsSQLType(LogicalTypeId id) {
 	static const auto admitted_ids = [] {
-		// TYPE has SQL syntax but is not included in AllTypes.
-		unordered_set<LogicalTypeId> ids {LogicalTypeId::SQLNULL, LogicalTypeId::TYPE};
+		// TYPE and NUMERIC have SQL syntax but are not included in AllTypes.
+		unordered_set<LogicalTypeId> ids {LogicalTypeId::SQLNULL, LogicalTypeId::TYPE, LogicalTypeId::NUMERIC};
 		for (auto &type : LogicalType::AllTypes()) {
 			ids.insert(type.id());
 		}
@@ -254,6 +254,8 @@ const char *BuiltinTypeName(LogicalTypeId id) {
 		return "MAP";
 	case LogicalTypeId::UNION:
 		return "UNION";
+	case LogicalTypeId::NUMERIC:
+		return "NUMERIC";
 	default:
 		return nullptr;
 	}

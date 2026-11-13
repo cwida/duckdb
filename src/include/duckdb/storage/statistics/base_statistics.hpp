@@ -13,6 +13,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/storage/storage_index.hpp"
 
+#include "duckdb/storage/statistics/extra_stats_data.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
@@ -47,24 +48,10 @@ enum class StatisticsType : uint8_t {
 	VARIANT_STATS
 };
 
-struct ExtraStatsData {
-	virtual ~ExtraStatsData() = default;
-
-	template <class TARGET>
-	TARGET &Cast() {
-		DynamicCastCheck<TARGET>(this);
-		return reinterpret_cast<TARGET &>(*this);
-	}
-	template <class TARGET>
-	const TARGET &Cast() const {
-		DynamicCastCheck<TARGET>(this);
-		return reinterpret_cast<const TARGET &>(*this);
-	}
-};
-
 class BaseStatistics {
 	friend struct NumericStats;
 	friend struct StringStats;
+	friend struct NumericRangeStats;
 	friend struct StructStats;
 	friend struct ListStats;
 	friend struct ArrayStats;
@@ -139,8 +126,9 @@ public:
 	void Verify(const Vector &vector, idx_t count) const;
 
 	//! The statistics as a struct, by default the rendering stats() shows. With exact, the statistics as they are:
-	//! string bounds are VARCHAR / BLOB values holding their bytes instead of text with \xNN escapes, and geometry
-	//! statistics list the geometry types the column holds
+	//! the bounds of text columns are VARCHAR / BLOB values holding their bytes instead of text with \xNN escapes
+	//! (those of other columns are BLOB values either way), and geometry statistics list the geometry types the
+	//! column holds
 	Value ToStruct(bool exact = false) const;
 	string ToString() const;
 	//! Sets the parts of the statistics a struct (or VARIANT object) in the shape ToStruct produces describes;

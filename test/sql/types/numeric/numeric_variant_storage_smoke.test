@@ -1,0 +1,111 @@
+# name: test/sql/types/numeric/numeric_variant_storage_smoke.test
+# description: NUMERIC columns: the row group representation follows the values, scans deliver it
+# group: [numeric]
+
+load {TEST_DIR}/numeric_variant_storage_smoke.db
+
+# the storage layout the test asserts (one row group holding every row) depends on the vector size: with tiny vectors the
+# re-inserted row of the update is moved into its own row group instead of being copied into the last one
+require vector_size 2048
+
+statement ok
+CREATE TABLE t(id INTEGER, n NUMERIC);
+
+statement ok
+INSERT INTO t VALUES (1, 1), (2, 2), (3, NULL);
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	1
+2	2
+3	NULL
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+# widening appends
+statement ok
+INSERT INTO t VALUES (4, 1000000), (5, '1.25'), (6, '12345678901234567890123456789012345678901234567890.5');
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	1
+2	2
+3	NULL
+4	1000000
+5	1.25
+6	12345678901234567890123456789012345678901234567890.5
+
+query II
+SELECT min(n), max(n) FROM t;
+----
+1	12345678901234567890123456789012345678901234567890.5
+
+# filters prune on the canonical statistics and compare canonical values
+query I
+SELECT id FROM t WHERE n > 100 ORDER BY id;
+----
+4
+6
+
+query I
+SELECT count(*) FROM t WHERE n = '1.25'::NUMERIC;
+----
+1
+
+# grouping and ordering on NUMERIC keys
+query II
+SELECT n, count(*) FROM t GROUP BY n ORDER BY n;
+----
+1	1
+1.25	1
+2	1
+1000000	1
+12345678901234567890123456789012345678901234567890.5	1
+NULL	1
+
+# updates and deletes
+statement ok
+UPDATE t SET n = '99999999999999999999' WHERE id = 1;
+
+statement ok
+DELETE FROM t WHERE id = 6;
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	99999999999999999999
+2	2
+3	NULL
+4	1000000
+5	1.25
+
+restart
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	99999999999999999999
+2	2
+3	NULL
+4	1000000
+5	1.25
+
+# the row group is stored in the narrowest representation that holds the values it has seen (the range of a row group
+# keeps deleted values until the row group is rewritten)
+query I
+SELECT DISTINCT segment_type FROM pragma_storage_info('t') WHERE column_name = 'n' AND segment_type <> 'VALIDITY';
+----
+DECIMAL(52,2)
+
+statement ok
+INSERT INTO t VALUES (7, 3);
+
+query I
+SELECT sum(id) FROM t WHERE n < 10;
+----
+14

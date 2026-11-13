@@ -1,0 +1,160 @@
+# name: test/sql/types/numeric/numeric_variant_arithmetic.test
+# description: Arithmetic over NUMERIC is exact: the kernel is sized by the run-time representations of the operands
+# group: [numeric]
+
+load {TEST_DIR}/numeric_variant_arithmetic.db
+
+# the alternative verification delivers scanned NUMERIC values as canonical blobs: the representations asserted here
+# are those of the regular scan
+require no_alternative_verify
+
+statement ok
+CREATE TABLE t(a NUMERIC, b NUMERIC, i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (100, 100, 100), (-3, 7, 7);
+
+# the type is NUMERIC; the checkpoint stores the rows in the narrowest representation that holds them, results take the
+# representation of the kernel, which is sized by the values of the operands
+statement ok
+CHECKPOINT;
+
+query IIII
+SELECT typeof(a + b), numeric_representation(a), numeric_representation(a + b), numeric_representation(a * b) FROM t LIMIT 1;
+----
+NUMERIC	TINYINT	SMALLINT	SMALLINT
+
+query III
+SELECT a + b, a * b, a - b FROM t ORDER BY a;
+----
+4	-21	-10
+200	10000	0
+
+# wider values widen the representation; the products of the largest INTEGER values are exact
+statement ok
+INSERT INTO t VALUES (2147483647, 2147483647, 1);
+
+query II
+SELECT a * b, a + b FROM t WHERE a > 1000000;
+----
+4611686014132420609	4294967294
+
+# a native exact operand is promoted to NUMERIC, native arithmetic is unchanged
+query III
+SELECT typeof(a * i), a * i, typeof(i * i) FROM t WHERE a = -3;
+----
+NUMERIC	-21	INTEGER
+
+# constants are sized by their value
+query I
+SELECT a * 10000000000 FROM t WHERE a > 1000000;
+----
+21474836470000000000
+
+query II
+SELECT (a + b) * (a - b), -a FROM t WHERE a > 1000000;
+----
+0	-2147483647
+
+# beyond 64 and 128 bits
+statement ok
+INSERT INTO t VALUES (9223372036854775807, 9223372036854775807, 1);
+
+query I
+SELECT a * b FROM t WHERE a > 1000000000000;
+----
+85070591730234615847396907784232501249
+
+statement ok
+INSERT INTO t VALUES (170141183460469231731687303715884105727, 2, 1);
+
+query II
+SELECT a * b, a + b FROM t WHERE a > 1000000000000000000000;
+----
+340282366920938463463374607431768211454	170141183460469231731687303715884105729
+
+# decimals: scales add up in products
+statement ok
+CREATE TABLE d(x NUMERIC, y NUMERIC);
+
+statement ok
+INSERT INTO d VALUES (123.45, 0.5), (-99.99, 2.25);
+
+query III
+SELECT x * y, x + y, x - y FROM d ORDER BY x;
+----
+-224.9775	-97.74	-102.24
+61.725	123.95	122.95
+
+# the product takes the scales of the stored representations (DECIMAL(5,2) and DECIMAL(3,2) after the checkpoint)
+statement ok
+CHECKPOINT;
+
+query I
+SELECT numeric_representation(x * y) FROM d WHERE x < 0;
+----
+DECIMAL(7,4)
+
+# division goes through DOUBLE, as for DECIMAL
+query II
+SELECT x / y, typeof(x / y) FROM d WHERE y = 0.5;
+----
+246.9	DOUBLE
+
+# results derived from NUMERIC stay NUMERIC in CREATE TABLE AS
+statement ok
+CREATE TABLE products AS SELECT a * b AS p, i AS plain FROM t;
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE products) ORDER BY column_name;
+----
+p	NUMERIC
+plain	INTEGER
+
+query I
+SELECT max(p) FROM products;
+----
+340282366920938463463374607431768211454
+
+# NULLs
+query II
+SELECT NULL::NUMERIC + 1, typeof(NULL::NUMERIC + 1);
+----
+NULL	NUMERIC
+
+# the same query never fails depending on the stored values
+statement ok
+CREATE TABLE r(n NUMERIC);
+
+statement ok
+INSERT INTO r VALUES (5000000000);
+
+query III
+SELECT n * n, n + n, n + 100 FROM r;
+----
+25000000000000000000	10000000000	5000000100
+
+# more rows than one vector: the typed kernels are cached per signature and reused across vectors
+statement ok
+CREATE TABLE big AS SELECT range::NUMERIC AS a, (range % 7)::NUMERIC AS b FROM range(10000);
+
+query IIII
+SELECT sum(a * b), max(a + b), sum(a), count(*) FROM big;
+----
+149965004	10002	49995000	10000
+
+query I
+SELECT count(*) FROM big WHERE a * b > 50000;
+----
+238
+
+query II
+SELECT b, sum(a) FROM big GROUP BY b ORDER BY b;
+----
+0	7142142
+1	7143571
+2	7145000
+3	7146429
+4	7137858
+5	7139286
+6	7140714

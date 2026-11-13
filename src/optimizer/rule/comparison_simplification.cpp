@@ -90,7 +90,8 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	}
 	// The constant must round-trip exactly; the column side is checked by the caller.
 	if (BoundCastExpression::IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
-	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL)) {
+	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL) ||
+	    (cast_type.id() == LogicalTypeId::NUMERIC && BoundCastExpression::CastIsInvertible(target_type, cast_type))) {
 		auto roundtrip = cast_constant.TryCastAs(context, cast_type, nullptr, true);
 		return roundtrip && *roundtrip == constant_value;
 	}

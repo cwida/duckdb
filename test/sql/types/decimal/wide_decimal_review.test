@@ -1,0 +1,238 @@
+# name: test/sql/types/decimal/wide_decimal_review.test
+# description: Wide decimal edge cases: shared operands, negated constants, casts, stored expressions and storage versions
+# group: [decimal]
+
+load {TEST_DIR}/wide_decimal_review.db
+
+# subtraction leaves the right operand intact, its bytes can be shared with the left operand
+statement ok
+CREATE TABLE t AS SELECT '123456789012345678901234567890.12'::DECIMAL(50,2) AS d;
+
+query I
+SELECT d - d FROM t
+----
+0.00
+
+query II
+SELECT d + d - d, d - '0.12'::DECIMAL(50,2) FROM t
+----
+123456789012345678901234567890.12	123456789012345678901234567890.00
+
+# multi-threaded hash joins on subtraction results
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE lhs AS SELECT (i::VARCHAR || '12345678901234567890123456789012345.5')::DECIMAL(50,1) AS d, i FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE rhs AS SELECT d, i FROM lhs;
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.d - '0.5'::DECIMAL(50,1) = rhs.d - '0.5'::DECIMAL(50,1)
+----
+5000
+
+query I
+SELECT count(*) FROM lhs JOIN rhs USING (i) WHERE lhs.d - rhs.d <> 0
+----
+0
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.d - rhs.d = 0 AND lhs.i = rhs.i
+----
+5000
+
+# negated wide decimal constants in comparisons
+statement ok
+CREATE TABLE wide AS SELECT '1'::DECIMAL(40,0) AS d UNION ALL SELECT '-1'::DECIMAL(40,0) UNION ALL SELECT '123456789012345678901234567890'::DECIMAL(40,0);
+
+query I
+SELECT d FROM wide WHERE -d = '-1'::DECIMAL(40,0)
+----
+1
+
+query I
+SELECT d FROM wide WHERE -d = '-123456789012345678901234567890'::DECIMAL(40,0)
+----
+123456789012345678901234567890
+
+query I
+SELECT d FROM wide WHERE -d < '-100'::DECIMAL(40,0)
+----
+123456789012345678901234567890
+
+query I
+SELECT d FROM wide WHERE -d > '0'::DECIMAL(40,0)
+----
+-1
+
+# decimal_division does not support wide arguments
+statement error
+SELECT decimal_division('0.1'::DECIMAL(39,39), 1::DECIMAL(1,0), 1)
+----
+Not implemented Error
+
+statement error
+SELECT decimal_division('1'::DECIMAL(38,0), '1'::DECIMAL(39,0))
+----
+Not implemented Error
+
+# DOUBLE casts round half away from zero, like the fixed-size decimals
+query IIII
+SELECT 2.5::DOUBLE::DECIMAL(38,0), 2.5::DOUBLE::DECIMAL(39,0), 0.125::DOUBLE::DECIMAL(38,2), 0.125::DOUBLE::DECIMAL(39,2)
+----
+3	3	0.13	0.13
+
+query IIII
+SELECT (-2.5)::DOUBLE::DECIMAL(39,0), (-0.125)::DOUBLE::DECIMAL(39,2), 0.5::DOUBLE::DECIMAL(39,0), (-0.5)::DOUBLE::DECIMAL(39,0)
+----
+-3	-0.13	1	-1
+
+# the exact binary expansion of the double is used
+query III
+SELECT 1e30::DOUBLE::DECIMAL(40,0), 0.1::DOUBLE::DECIMAL(39,20), power(2, 100)::DECIMAL(39,0)
+----
+1000000000000000019884624838656	0.10000000000000000555	1267650600228229401496703205376
+
+query III
+SELECT 2.675::DOUBLE::DECIMAL(39,2), 5e-324::DECIMAL(39,38), 0.0::DOUBLE::DECIMAL(39,5)
+----
+2.67	0.00000000000000000000000000000000000000	0.00000
+
+query II
+SELECT 1e200::DOUBLE::DECIMAL(255,10)::VARCHAR = '99999999999999996973312221251036165947450327545502362648241750950346848435554075534196338404706251868027512415973882408182135734368278484639385041047239877871023591066789981811181813306167128854888448.0000000000', power(2, 200)::DECIMAL(255,0)
+----
+true	1606938044258990275541962092341162602522202993782792835301376
+
+statement error
+SELECT 1e40::DOUBLE::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT 1e300::DOUBLE::DECIMAL(255,10)
+----
+Conversion Error
+
+# underscores between digits are accepted like in the fixed-size cast
+query II
+SELECT '1_000.5'::DECIMAL(38,1), '1_000.5'::DECIMAL(39,1)
+----
+1000.5	1000.5
+
+query II
+SELECT '1_000.000_5'::DECIMAL(50,4), '-1_2_3e1_0'::DECIMAL(50,0)
+----
+1000.0005	-1230000000000
+
+statement error
+SELECT '1__000'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '1000_'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '_1000'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '1000._5'::DECIMAL(39,1)
+----
+Conversion Error
+
+# stored expressions (index keys, CHECK constraints, generated columns) can have wide results
+statement ok
+CREATE TABLE prod(a DECIMAL(38,0), b DECIMAL(38,0));
+
+query I
+SELECT typeof(a * b) FROM (VALUES (1::DECIMAL(38,0), 1::DECIMAL(38,0))) t(a, b)
+----
+DECIMAL(76,0)
+
+statement ok
+CREATE UNIQUE INDEX prod_idx ON prod((a * b))
+
+statement ok
+CREATE TABLE checked(a DECIMAL(38,0), b DECIMAL(38,0), CHECK (a * b > 0))
+
+statement ok
+CREATE TABLE generated(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
+
+statement ok
+INSERT INTO prod VALUES (2, 3)
+
+statement error
+INSERT INTO prod VALUES (3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO checked VALUES (3, 2)
+
+statement error
+INSERT INTO checked VALUES (-3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO generated VALUES (repeat('9', 38)::DECIMAL(38,0), repeat('9', 38)::DECIMAL(38,0))
+
+query II
+SELECT c, typeof(c) FROM generated
+----
+9999999999999999999999999999999999999800000000000000000000000000000000000001	DECIMAL(76,0)
+
+# the stored expressions are bound again after a restart
+restart
+
+statement error
+INSERT INTO prod VALUES (3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement error
+INSERT INTO checked VALUES (-3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO prod VALUES (repeat('9', 38)::DECIMAL(38,0), repeat('9', 38)::DECIMAL(38,0))
+
+query I
+SELECT count(*) FROM prod WHERE a * b = repeat('9', 38)::DECIMAL(38,0) * repeat('9', 38)::DECIMAL(38,0)
+----
+1
+
+# wide decimal columns need storage version v2.0.0
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_v1.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+statement error
+CREATE TABLE old.t(d DECIMAL(39,0)[])
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement ok
+CREATE TABLE old.t(d DECIMAL(38,0))
+
+statement error
+ALTER TABLE old.t ALTER d TYPE DECIMAL(39,0)
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement error
+ALTER TABLE old.t ADD COLUMN e DECIMAL(40,2)
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement ok
+CREATE TABLE old.fixed(d DECIMAL(38,2))
+
+statement ok
+ALTER TABLE old.fixed ALTER d TYPE DECIMAL(38,0)

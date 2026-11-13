@@ -1,0 +1,375 @@
+# name: test/sql/types/numeric/numeric_type_nested.test
+# description: NUMERIC nested in LIST, STRUCT, MAP and ARRAY columns
+# group: [numeric]
+
+load {TEST_DIR}/numeric_type_nested.db
+
+#----------------------------------------------------------------------------------------------------------------------
+# lists
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE lists(l NUMERIC[]);
+
+statement ok
+INSERT INTO lists VALUES ([1, 2, 3]), ([]), (NULL), ([-100]);
+
+# the elements are stored in the narrowest representation that holds them
+query I
+SELECT typeof(l) FROM lists LIMIT 1;
+----
+NUMERIC[]
+
+query I
+SELECT l FROM lists ORDER BY ALL;
+----
+[]
+[-100]
+[1, 2, 3]
+NULL
+
+# the catalog keeps the declared type
+query I
+SELECT column_type FROM (DESCRIBE lists);
+----
+NUMERIC[]
+
+# wider elements widen the representation of the whole column
+statement ok
+INSERT INTO lists VALUES ([100000, 2]);
+
+query I
+SELECT typeof(l) FROM lists LIMIT 1;
+----
+NUMERIC[]
+
+query I
+SELECT sum(x) FROM (SELECT unnest(l) AS x FROM lists);
+----
+99908
+
+# unnested elements are exact numeric values: arithmetic is sized so it cannot overflow
+query II
+SELECT typeof(x), typeof(x * x) FROM (SELECT unnest(l) AS x FROM lists) LIMIT 1;
+----
+NUMERIC	NUMERIC
+
+query I
+SELECT max(x * x) FROM (SELECT unnest(l) AS x FROM lists);
+----
+10000000000
+
+# so are extracted elements
+query I
+SELECT typeof(l[1] + l[2]) FROM lists LIMIT 1;
+----
+NUMERIC
+
+# lists of decimals
+statement ok
+CREATE TABLE prices(p NUMERIC[]);
+
+statement ok
+INSERT INTO prices VALUES ([1.5, 2.25]), ([100]);
+
+query I
+SELECT typeof(p) FROM prices LIMIT 1;
+----
+NUMERIC[]
+
+query I
+SELECT p FROM prices ORDER BY ALL;
+----
+[1.5, 2.25]
+[100]
+
+# floating point values convert through their shortest round-trip text
+statement ok
+INSERT INTO prices VALUES ([1.5::DOUBLE]);
+
+statement ok
+DELETE FROM prices WHERE p = [1.5::DOUBLE];
+
+#----------------------------------------------------------------------------------------------------------------------
+# structs
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE structs(s STRUCT(a NUMERIC, b VARCHAR));
+
+statement ok
+INSERT INTO structs VALUES ({'a': 1, 'b': 'x'}), ({'a': 12345.5, 'b': 'y'}), (NULL);
+
+query I
+SELECT typeof(s) FROM structs LIMIT 1;
+----
+STRUCT(a NUMERIC, b VARCHAR)
+
+query I
+SELECT column_type FROM (DESCRIBE structs);
+----
+STRUCT(a NUMERIC, b VARCHAR)
+
+query I
+SELECT s.a FROM structs ORDER BY ALL;
+----
+1
+12345.5
+NULL
+
+# the other fields keep their declared type
+query I
+SELECT typeof(s.b) FROM structs LIMIT 1;
+----
+VARCHAR
+
+# fields are exact numeric values
+query I
+SELECT typeof(s.a * 10) FROM structs LIMIT 1;
+----
+NUMERIC
+
+# filters on fields (pushed down into the scan)
+query I
+SELECT s.b FROM structs WHERE s.a > 100;
+----
+y
+
+query I
+SELECT count(*) FROM structs WHERE s.a < 0;
+----
+0
+
+# fields of other types are cast as usual
+statement ok
+INSERT INTO structs VALUES ({'a': 7, 'b': 8});
+
+query I
+SELECT s FROM structs WHERE s.b = '8';
+----
+{'a': 7, 'b': 8}
+
+#----------------------------------------------------------------------------------------------------------------------
+# maps
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE maps(m MAP(VARCHAR, NUMERIC));
+
+statement ok
+INSERT INTO maps VALUES (MAP {'a': 1, 'b': 2}), (MAP {'c': 300});
+
+query I
+SELECT typeof(m) FROM maps LIMIT 1;
+----
+MAP(VARCHAR, NUMERIC)
+
+query I
+SELECT map_values(m) FROM maps ORDER BY ALL;
+----
+[1, 2]
+[300]
+
+query I
+SELECT m['c'] FROM maps ORDER BY ALL;
+----
+300
+NULL
+
+#----------------------------------------------------------------------------------------------------------------------
+# arrays
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE arrays(a NUMERIC[2]);
+
+statement ok
+INSERT INTO arrays VALUES ([1, 2]), ([3, 4000000000]);
+
+query I
+SELECT typeof(a) FROM arrays LIMIT 1;
+----
+NUMERIC[2]
+
+query I
+SELECT a[2] FROM arrays ORDER BY ALL;
+----
+2
+4000000000
+
+query I
+SELECT a FROM arrays WHERE a[1] = 3;
+----
+[3, 4000000000]
+
+#----------------------------------------------------------------------------------------------------------------------
+# deeper nesting
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE deep(d STRUCT(v NUMERIC, tags VARCHAR[])[]);
+
+statement ok
+INSERT INTO deep VALUES ([{'v': 1.25, 'tags': ['a']}, {'v': -7, 'tags': []}]), ([]);
+
+query I
+SELECT typeof(d) FROM deep LIMIT 1;
+----
+STRUCT(v NUMERIC, tags VARCHAR[])[]
+
+query I
+SELECT d FROM deep ORDER BY ALL;
+----
+[]
+[{'v': 1.25, 'tags': [a]}, {'v': -7, 'tags': []}]
+
+query I
+SELECT sum(e.v) FROM (SELECT unnest(d) AS e FROM deep);
+----
+-5.75
+
+#----------------------------------------------------------------------------------------------------------------------
+# updates and deletes
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+UPDATE lists SET l = [1, 2, 3, 99999999999] WHERE l = [1, 2, 3];
+
+query I
+SELECT typeof(l) FROM lists LIMIT 1;
+----
+NUMERIC[]
+
+query I
+SELECT l FROM lists WHERE len(l) = 4;
+----
+[1, 2, 3, 99999999999]
+
+statement ok
+DELETE FROM lists WHERE l IS NULL;
+
+query I
+SELECT count(*) FROM lists;
+----
+4
+
+statement ok
+UPDATE structs SET s = {'a': 2, 'b': 'z'} WHERE s.b = 'x';
+
+query I
+SELECT s.a FROM structs WHERE s.b = 'z';
+----
+2
+
+#----------------------------------------------------------------------------------------------------------------------
+# CREATE TABLE AS keeps NUMERIC where the values derive from NUMERIC columns
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE lists_copy AS SELECT l FROM lists;
+
+query I
+SELECT column_type FROM (DESCRIBE lists_copy);
+----
+NUMERIC[]
+
+statement ok
+CREATE TABLE structs_copy AS SELECT s FROM structs;
+
+query I
+SELECT column_type FROM (DESCRIBE structs_copy);
+----
+STRUCT(a NUMERIC, b VARCHAR)
+
+statement ok
+CREATE TABLE fields AS SELECT s.a * 2 AS doubled, s.b AS label FROM structs;
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE fields) ORDER BY column_name;
+----
+doubled	NUMERIC
+label	VARCHAR
+
+#----------------------------------------------------------------------------------------------------------------------
+# persistence: the representation of every nested NUMERIC is recorded with the row group
+#----------------------------------------------------------------------------------------------------------------------
+restart
+
+query I
+SELECT typeof(l) FROM lists LIMIT 1;
+----
+NUMERIC[]
+
+query I
+SELECT l FROM lists ORDER BY ALL;
+----
+[]
+[-100]
+[1, 2, 3, 99999999999]
+[100000, 2]
+
+query I
+SELECT typeof(s) FROM structs LIMIT 1;
+----
+STRUCT(a NUMERIC, b VARCHAR)
+
+query I
+SELECT s.b FROM structs WHERE s.a > 100;
+----
+y
+
+query I
+SELECT typeof(m) FROM maps LIMIT 1;
+----
+MAP(VARCHAR, NUMERIC)
+
+query I
+SELECT typeof(a) FROM arrays LIMIT 1;
+----
+NUMERIC[2]
+
+query I
+SELECT d FROM deep ORDER BY ALL;
+----
+[]
+[{'v': 1.25, 'tags': [a]}, {'v': -7, 'tags': []}]
+
+query I
+SELECT typeof(p) FROM prices LIMIT 1;
+----
+NUMERIC[]
+
+# appending after the restart widens again
+statement ok
+INSERT INTO prices VALUES ([123456.789]);
+
+query I
+SELECT typeof(p) FROM prices LIMIT 1;
+----
+NUMERIC[]
+
+#----------------------------------------------------------------------------------------------------------------------
+# unions, indexes and schema changes
+#----------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE unions(u UNION(n NUMERIC, s VARCHAR));
+
+statement ok
+INSERT INTO unions VALUES (1.5::NUMERIC), ('text'), ('123456789012345678901234567890'::NUMERIC);
+
+query II
+SELECT union_tag(u), u FROM unions ORDER BY union_tag(u), u::VARCHAR;
+----
+n	1.5
+n	123456789012345678901234567890
+s	text
+
+# lists are not index keys, whatever their element type
+statement error
+CREATE INDEX idx ON lists(l);
+----
+<REGEX>:.*Invalid type for index key.*
+
+statement ok
+ALTER TABLE structs ADD COLUMN more NUMERIC[];
+
+statement ok
+UPDATE structs SET more = [s.a, 1];
+
+query I
+SELECT more FROM structs WHERE s.b = 'y';
+----
+[12345.5, 1]

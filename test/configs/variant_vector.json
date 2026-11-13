@@ -12,6 +12,50 @@
 			]
 		},
 		{
+			"reason": "NUMERIC values come back from VARIANT in another representation, and NUMERIC values wider than 38 digits are not supported in VARIANT",
+			"paths": [
+				"test/sql/types/numeric/numeric_aggregates.test",
+				"test/sql/types/numeric/numeric_canonical_encoding.test",
+				"test/sql/types/numeric/numeric_casts.test",
+				"test/sql/types/numeric/numeric_kernel_contract.test",
+				"test/sql/types/numeric/numeric_kernel_sizing.test",
+				"test/sql/types/numeric/numeric_no_common_representation.test",
+				"test/sql/types/numeric/numeric_to_float_rounding.test",
+				"test/sql/types/numeric/numeric_to_float_rounding_representation.test",
+				"test/sql/types/numeric/numeric_type_arithmetic.test",
+				"test/sql/types/numeric/numeric_type.test",
+				"test/sql/types/numeric/numeric_variant_arithmetic.test",
+				"test/sql/types/numeric/numeric_variant_smoke.test",
+				"test/sql/types/numeric/numeric_variant_storage_smoke.test",
+				"test/sql/types/variant/variant_numeric_ordering.test",
+				"test/sql/types/numeric/postgres_numeric_big.test",
+				"test/sql/types/numeric/numeric_limits_review.test",
+				"test/sql/types/numeric/numeric_magnitude_overflow.test",
+				"test/sql/storage/types/numeric/numeric_storage_version.test",
+				"test/optimizer/compressed_materialization_numeric.test"
+			]
+		},
+		{
+			"reason": "DECIMAL values wider than 38 digits are not supported in VARIANT",
+			"paths": [
+				"test/fuzzer/afl/limit_out_of_range.test",
+				"test/sql/copy/csv/csv_wide_decimal_separator.test",
+				"test/sql/copy/parquet/bigdecimal.test",
+				"test/sql/copy/parquet/test_parquet_decimal_gt38.test",
+				"test/sql/json/scalar/json_transform_wide_decimal.test",
+				"test/sql/json/test_json_execute_serialized_types.test",
+				"test/sql/types/decimal/decimal_zero_to_float.test",
+				"test/sql/types/decimal/large_decimal_constants.test",
+				"test/sql/types/decimal/wide_decimal_arithmetic.test",
+				"test/sql/types/decimal/wide_decimal_casts.test",
+				"test/sql/types/decimal/wide_decimal_literals.test",
+				"test/sql/types/decimal/wide_decimal_quantiles.test",
+				"test/sql/types/decimal/wide_decimal_statistics.test",
+				"test/sql/types/decimal/wide_decimal_review.test",
+				"test/sql/types/decimal/wide_decimal_storage.test"
+			]
+		},
+		{
 			"reason": "Roundtrip is not possible (MAP type)",
 			"paths": [
 				"test/parquet/test_parquet_schema.test",

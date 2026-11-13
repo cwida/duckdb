@@ -1,0 +1,103 @@
+# name: test/sql/types/decimal/wide_decimal_statistics.test
+# description: Statistics propagation through arithmetic on decimals wider than 38 digits, which carry string statistics
+# group: [decimal]
+
+statement ok
+CREATE TABLE t(w DECIMAL(40,2), n DECIMAL(10,2));
+
+statement ok
+INSERT INTO t VALUES ('123456789012345678901234567890.12', 1.25), ('-7.50', -10.75), ('0.00', 3.00), (NULL, NULL);
+
+# wide decimals are stored as BIGNUM blobs: the column itself has string statistics
+query IIII
+SELECT s.min IS NOT NULL, s.max IS NOT NULL, s.has_null, s.has_no_null FROM (SELECT STATS(w) s FROM t LIMIT 1);
+----
+true	true	true	true
+
+# arithmetic on wide decimals propagates only the validity, never numeric bounds
+foreach expr w%7 w+w w-n w*n -w w+1 7%w
+
+query IIII
+SELECT s.min IS NULL, s.max IS NULL, s.has_null, s.has_no_null FROM (SELECT STATS({expr}) s FROM t LIMIT 1);
+----
+true	true	true	true
+
+endloop
+
+# the same operators on fixed-size decimals keep their numeric bounds
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n % 7) s FROM t LIMIT 1);
+----
+-6.99	3.00
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n + n) s FROM t LIMIT 1);
+----
+-21.50	6.00
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n - n) s FROM t LIMIT 1);
+----
+-13.75	13.75
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n * n) s FROM t LIMIT 1);
+----
+-32.2500	115.5625
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(-n) s FROM t LIMIT 1);
+----
+-3.00	10.75
+
+# the results are checked against the propagated statistics when debug_verify_stats is on
+query IIIIIIII
+SELECT w % 7, w + w, w - n, w * n, -w, n % 7, n + n, -n FROM t ORDER BY w NULLS LAST;
+----
+-0.50	-15.00	3.25	80.6250	7.50	-3.75	-21.50	10.75
+0.00	0.00	-3.00	0.0000	0.00	3.00	6.00	-3.00
+0.12	246913578024691357802469135780.24	123456789012345678901234567888.87	154320986265432098626543209862.6500	-123456789012345678901234567890.12	1.25	2.50	-1.25
+NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+# filters and join conditions on wide decimals do not tighten numeric bounds
+query I
+SELECT count(*) FROM t WHERE w > 0 AND w % 7 > 0;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE w % 7 > 5;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE n % 7 > 5;
+----
+0
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.w AND t1.w + 1 >= t2.w;
+----
+6
+
+# equality and cast join keys on wide decimals derive no filters from the join statistics
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w = t2.w;
+----
+3
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.n;
+----
+5
+
+query IIII
+SELECT min(w), max(w), min(w % 7), max(w % 7) FROM t WHERE w % 7 <> 0;
+----
+-7.50	123456789012345678901234567890.12	-0.50	0.12
+
+# modulo by a wide zero divisor still raises
+statement error
+SELECT w % '0'::DECIMAL(40,2) FROM t;
+----
+Division by zero

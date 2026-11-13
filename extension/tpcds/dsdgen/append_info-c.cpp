@@ -3,6 +3,7 @@
 #include "append_info.h"
 #include "config.h"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -74,6 +75,9 @@ tpcds_append_information::tpcds_append_information(duckdb::ClientContext &contex
 				break;
 			case duckdb::PhysicalType::INT128:
 				append_types.push_back(TPCDSAppendType::DECIMAL128);
+				break;
+			case duckdb::PhysicalType::VARCHAR:
+				append_types.push_back(TPCDSAppendType::DECIMAL_WIDE);
 				break;
 			default:
 				throw duckdb::InternalException("Unexpected TPC-DS decimal column type");
@@ -328,6 +332,13 @@ void tpcds_append_information::AppendDecimal(int64_t value) {
 	case TPCDSAppendType::DECIMAL128:
 		duckdb::FlatVector::GetDataMutable<duckdb::hugeint_t>(vector)[active_row] = value;
 		break;
+	case TPCDSAppendType::DECIMAL_WIDE: {
+		// the unscaled value as a BIGNUM blob
+		auto blob = duckdb::BignumDecimal::FromInteger(duckdb::hugeint_t(value));
+		duckdb::FlatVector::GetDataMutable<duckdb::string_t>(vector)[active_row] =
+		    duckdb::StringVector::AddStringOrBlob(vector, blob);
+		break;
+	}
 	default:
 		throw duckdb::InternalException("Unexpected TPC-DS decimal column type");
 	}

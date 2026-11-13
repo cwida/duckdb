@@ -151,9 +151,9 @@ SELECT '0.1'::DECIMAL((-17));
 
 # width/scale out of range
 statement error
-SELECT '0.1'::DECIMAL(40);
+SELECT '0.1'::DECIMAL(0);
 ----
-<REGEX>:Binder Error.*DECIMAL type width must be between 1 and 38.*
+<REGEX>:Binder Error.*DECIMAL type width must be between 1 and 255.*
 
 statement error
 SELECT '0.1'::DECIMAL(1, 2, 3);

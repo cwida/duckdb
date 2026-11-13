@@ -1,0 +1,260 @@
+# name: test/sql/types/numeric/numeric_no_common_representation.test
+# description: NUMERIC values that are valid on their own but have no common representation (more than 255 digits
+# group: [numeric]
+
+# between them) are kept as canonical values: in columns, comparisons, joins, functions and nested types
+
+load {TEST_DIR}/numeric_no_common_representation.db
+
+statement ok
+CREATE TABLE t(id INTEGER, n NUMERIC);
+
+# 10^254 and 0.1 each fit a representation, together they would need a DECIMAL wider than 255 digits
+statement ok
+INSERT INTO t VALUES (1, ('1' || repeat('0', 254))::NUMERIC);
+
+statement ok
+INSERT INTO t VALUES (2, '0.1'), (3, NULL), (4, 42);
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2	0.1
+3	NULL
+4	42
+
+query I
+SELECT numeric_representation(n) FROM t LIMIT 1;
+----
+CANONICAL
+
+# comparisons between values with no common representation
+query I
+SELECT ('1' || repeat('0', 254))::NUMERIC > '0.1'::NUMERIC;
+----
+true
+
+query I
+SELECT '0.1'::NUMERIC < ('1' || repeat('0', 254))::NUMERIC;
+----
+true
+
+query I
+SELECT id FROM t WHERE n > 1 ORDER BY id;
+----
+1
+4
+
+query I
+SELECT id FROM t WHERE n < 1 ORDER BY id;
+----
+2
+
+query I
+SELECT id FROM t WHERE n = '0.1'::NUMERIC;
+----
+2
+
+query II
+SELECT min(n), max(n) FROM t;
+----
+0.1	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query II
+SELECT n, count(*) FROM t GROUP BY n ORDER BY n;
+----
+0.1	1
+42	1
+100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000	1
+NULL	1
+
+# a column with values that have a common representation joins against one that does not
+statement ok
+CREATE TABLE s(id INTEGER, m NUMERIC);
+
+statement ok
+INSERT INTO s VALUES (1, 42), (2, '0.1'), (3, 7);
+
+query II
+SELECT t.id, s.id FROM t JOIN s ON t.n = s.m ORDER BY 1;
+----
+2	2
+4	1
+
+# functions process the rows in groups that share a representation
+query II
+SELECT id, n + 1 FROM t ORDER BY id;
+----
+1	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+2	1.1
+3	NULL
+4	43
+
+query II
+SELECT id, ceil(n) FROM t ORDER BY id;
+----
+1	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2	1
+3	NULL
+4	42
+
+query II
+SELECT id, sign(-n) FROM t ORDER BY id;
+----
+1	-1
+2	-1
+3	NULL
+4	-1
+
+# casts of canonical values report the rows that do not fit
+query II
+SELECT id, TRY_CAST(n AS INTEGER) FROM t ORDER BY id;
+----
+1	NULL
+2	0
+3	NULL
+4	42
+
+statement error
+SELECT n::INTEGER FROM t;
+----
+<REGEX>:.*Conversion Error.*
+
+query II
+SELECT id, n::DOUBLE FROM t ORDER BY id;
+----
+1	1e+254
+2	0.1
+3	NULL
+4	42.0
+
+# the row group keeps its canonical values across a checkpoint and restart
+restart
+
+query I
+SELECT numeric_representation(n) FROM t LIMIT 1;
+----
+CANONICAL
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+1	100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2	0.1
+3	NULL
+4	42
+
+query I
+SELECT id FROM t WHERE n > 1 ORDER BY id;
+----
+1
+4
+
+# further appends stay canonical, and a rollback leaves the stored values alone
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t VALUES (5, '0.5');
+
+query I
+SELECT count(*) FROM t WHERE n = '0.5'::NUMERIC;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM t;
+----
+4
+
+statement ok
+INSERT INTO t VALUES (6, ('-1' || repeat('0', 200)));
+
+query I
+SELECT id FROM t WHERE n < 0;
+----
+6
+
+# deleting the wide value lets the checkpoint narrow the rest
+statement ok
+DELETE FROM t WHERE id IN (1, 6);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT id, n FROM t ORDER BY id;
+----
+2	0.1
+3	NULL
+4	42
+
+# a scale-255 fraction goes into an empty column: the default representation does not constrain it
+statement ok
+CREATE TABLE f(n NUMERIC);
+
+statement ok
+INSERT INTO f VALUES ('0.' || repeat('0', 254) || '1');
+
+query I
+SELECT n FROM f;
+----
+0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+
+query I
+SELECT numeric_representation(n) FROM f;
+----
+DECIMAL(255,255)
+
+# and a whole number appended to it has no representation in common with it
+statement ok
+INSERT INTO f VALUES (1);
+
+query I
+SELECT n FROM f ORDER BY n DESC;
+----
+1
+0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+
+# text with no common representation casts to canonical values
+statement ok
+CREATE TABLE texts AS SELECT s FROM (VALUES ('1' || repeat('0', 254)), ('0.1')) v(s);
+
+query I
+SELECT DISTINCT numeric_representation(s::NUMERIC) FROM texts;
+----
+CANONICAL
+
+query I
+SELECT s::NUMERIC = ('1' || repeat('0', 254))::NUMERIC FROM (VALUES ('1' || repeat('0', 254)), ('0.1')) v(s) ORDER BY 1;
+----
+false
+true
+
+# nested columns
+statement ok
+CREATE TABLE nested(l NUMERIC[], s STRUCT(a NUMERIC));
+
+statement ok
+INSERT INTO nested VALUES ([('1' || repeat('0', 254))::NUMERIC, '0.1'::NUMERIC], {'a': ('1' || repeat('0', 254))::NUMERIC});
+
+statement ok
+INSERT INTO nested VALUES ([1, 2], {'a': '0.1'::NUMERIC});
+
+query II
+SELECT l[2], s.a > 1 FROM nested ORDER BY s.a;
+----
+2	false
+0.1	true
+
+restart
+
+query II
+SELECT l[2], s.a > 1 FROM nested ORDER BY s.a;
+----
+2	false
+0.1	true

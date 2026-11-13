@@ -6,6 +6,8 @@
 #include "duckdb/common/vector_operations/selection_helpers.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/numeric_vector.hpp"
+#include "duckdb/common/types/numeric_type.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -268,6 +270,50 @@ private:
 	Value constant;
 	SelectionVector result_sel;
 	idx_t current_capacity = 0;
+};
+
+//! Compares a NUMERIC column with a constant on the typed representation of the scanned vectors
+class NumericComparisonFilterExecutor final : public ExpressionFilterExecutor {
+public:
+	NumericComparisonFilterExecutor(ExpressionType comparison_type_p, Value constant_p)
+	    : comparison_type(comparison_type_p), constant(std::move(constant_p)),
+	      canonical_executor(comparison_type, constant) {
+		Vector constant_vector(constant, count_t(1));
+		unique_ptr<Vector> typed;
+		if (NumericVector::TryGetTyped(constant_vector, typed)) {
+			typed_constant = typed->GetValue(0);
+		}
+	}
+
+	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
+	                      idx_t &approved_tuple_count) override {
+		unique_ptr<Vector> typed;
+		LogicalType common;
+		if (constant.IsNull() || !NumericVector::TryGetTyped(vector, typed) ||
+		    !NumericType::TryWiden(typed->GetType(), typed_constant.type(), common)) {
+			// canonical values, or values with no common representation, compare as strings
+			return canonical_executor.FilterSelection(sel, vector, scan_count, approved_tuple_count);
+		}
+		// compare in a representation that holds the values of both sides
+		if (!typed_executor || common != executor_type) {
+			typed_executor = make_uniq<ComparisonFilterExecutor>(comparison_type, typed_constant.DefaultCastAs(common));
+			executor_type = common;
+		}
+		if (typed->GetType() == common) {
+			return typed_executor->FilterSelection(sel, *typed, scan_count, approved_tuple_count);
+		}
+		Vector widened(common, scan_count);
+		VectorOperations::DefaultCast(*typed, widened, scan_count, true);
+		return typed_executor->FilterSelection(sel, widened, scan_count, approved_tuple_count);
+	}
+
+private:
+	ExpressionType comparison_type;
+	Value constant;
+	Value typed_constant;
+	ComparisonFilterExecutor canonical_executor;
+	unique_ptr<ComparisonFilterExecutor> typed_executor;
+	LogicalType executor_type;
 };
 
 class SelectivityOptionalFilterExecutor final : public ExpressionFilterExecutor {
@@ -620,6 +666,12 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const Bo
 	const auto constant_type = constant->GetValue().type().InternalType();
 	if (column_type != constant_type || !IsSupportedComparisonType(column_type)) {
 		return nullptr;
+	}
+	if (column->GetReturnType().id() == LogicalTypeId::NUMERIC) {
+		if (constant->GetValue().type().id() != LogicalTypeId::NUMERIC) {
+			return nullptr;
+		}
+		return make_uniq<NumericComparisonFilterExecutor>(comparison_type, constant->GetValue());
 	}
 	return make_uniq<ComparisonFilterExecutor>(comparison_type, constant->GetValue());
 }

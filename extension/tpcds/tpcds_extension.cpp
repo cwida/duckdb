@@ -294,6 +294,8 @@ static string PragmaTpcdsQuery(ClientContext &context, const FunctionParameters 
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
+	// the generators build DECIMAL table types: follow the process-wide switches of the database
+	loader.TakeOverProcessWideSettings();
 	TableFunction dsdgen_func("dsdgen", {}, DsdgenFunction, DsdgenBind, DsdgenInit);
 	dsdgen_func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 		options.Add("sf", LogicalType::DOUBLE)

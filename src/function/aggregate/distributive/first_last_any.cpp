@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/function/aggregate/numeric_aggregates.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -416,12 +417,18 @@ AggregateFunction GetDecimalFirstFunction(const LogicalType &type) {
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::INTEGER);
 	case PhysicalType::INT64:
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::BIGINT);
+	case PhysicalType::VARCHAR:
+		// wide decimals are BIGNUM blobs
+		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::VARCHAR);
 	default:
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::HUGEINT);
 	}
 }
 template <bool LAST, bool SKIP_NULLS>
 AggregateFunction GetFirstFunction(const LogicalType &type) {
+	if (type.id() == LogicalTypeId::NUMERIC) {
+		return NumericAggregates::GetFirst(LAST, SKIP_NULLS);
+	}
 	if (type.id() == LogicalTypeId::DECIMAL) {
 		type.Verify();
 		AggregateFunction function = GetDecimalFirstFunction<LAST, SKIP_NULLS>(type);

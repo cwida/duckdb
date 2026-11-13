@@ -1,0 +1,36 @@
+# name: test/sql/types/decimal/wide_decimal_sum.test
+# description: SUM of decimals wider than 38 digits accumulates in a hugeint until it overflows, then in a wide value
+# group: [decimal]
+
+# the first value fills the hugeint, the next one moves the sum to the wide value, and it comes back into range
+query I
+SELECT sum(x)::VARCHAR FROM (VALUES (1701411834604692317316873037158841057.27::DECIMAL(50,2)), (0.01::DECIMAL(50,2)), (-1701411834604692317316873037158841057.27::DECIMAL(50,2)), (-0.02::DECIMAL(50,2))) t(x);
+----
+-0.01
+
+# the sum moves to the wide value in a single call with a constant
+query I
+SELECT sum(x)::VARCHAR FROM (SELECT 1701411834604692317316873037158841057.27::DECIMAL(50,2) x FROM range(3));
+----
+5104235503814076951950619111476523171.81
+
+statement ok
+SET threads=4;
+
+# the partial sums of the threads fit a hugeint, their combination does not
+query I
+SELECT sum(2835686391007820528861455061931.40::DECIMAL(50,2) + (i % 3)::DECIMAL(50,2))::VARCHAR FROM range(1000000) t(i);
+----
+2835686391007820528861455061932399999.00
+
+# windowed sums combine and subtract partial sums around the hugeint limit
+query II
+SELECT max(s)::VARCHAR, min(s)::VARCHAR FROM (SELECT sum(x) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) s FROM (SELECT i, (CASE WHEN i % 2 = 0 THEN 1701411834604692317316873037158841057.27 ELSE -1701411834604692317316873037158841057.26 END)::DECIMAL(50,2) x FROM range(100) t(i)));
+----
+1701411834604692317316873037158841057.28	-1701411834604692317316873037158841057.25
+
+# the running sum crosses the hugeint limit with every other row
+query III
+SELECT min(s)::VARCHAR, max(s)::VARCHAR, last(s ORDER BY i)::VARCHAR FROM (SELECT i, sum(x) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) s FROM (SELECT i, (CASE WHEN i % 2 = 0 THEN 1701411834604692317316873037158841057.27 ELSE -1701411834604692317316873037158841057.26 END)::DECIMAL(50,2) x FROM range(100) t(i)));
+----
+0.01	1701411834604692317316873037158841057.76	0.50

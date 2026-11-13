@@ -218,6 +218,9 @@ functions:
     return_type: type
     description: |
       Retrieves the internal storage type of a decimal type.
+
+      Decimals of up to 38 digits are stored as SMALLINT, INTEGER, BIGINT or HUGEINT. Wider decimals store their
+      unscaled value as BIGNUM, which is what their vectors hold.
     return_description: The internal type of the decimal type
   enum_internal_type:
     offset: 170

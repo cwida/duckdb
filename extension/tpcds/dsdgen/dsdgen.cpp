@@ -251,8 +251,9 @@ static void CreateTPCDSTable(ClientContext &context, const Identifier &catalog_n
 	info->SetQualifiedName(QualifiedName(catalog_name, schema, Identifier(T::Name + suffix)));
 	info->on_conflict = overwrite ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
 	info->temporary = false;
+	const auto types = T::Types();
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
-		info->columns.AddColumn(ColumnDefinition(T::Columns[i], T::Types[i]));
+		info->columns.AddColumn(ColumnDefinition(T::Columns[i], types[i]));
 	}
 	if (keys) {
 		duckdb::vector<duckdb::Identifier> pk_columns;

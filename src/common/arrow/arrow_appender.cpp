@@ -10,8 +10,33 @@
 #include "duckdb/common/arrow/appender/list.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 
 namespace duckdb {
+
+//! A 32-byte little-endian two's complement Arrow decimal256 value
+struct ArrowDecimal256 {
+	uint64_t words[4];
+};
+
+//! Converts the BIGNUM blob of a wide decimal into an Arrow decimal256
+struct ArrowWideDecimalConverter {
+	template <class TGT, class SRC>
+	static TGT Operation(SRC input) {
+		TGT result;
+		BignumDecimal::ToTwosComplement(input, data_ptr_cast(&result), sizeof(TGT), false);
+		return result;
+	}
+
+	static bool SkipNulls() {
+		return true;
+	}
+
+	template <class TGT>
+	static void SetNull(TGT &value) {
+		memset(&value, 0, sizeof(TGT));
+	}
+};
 
 //===--------------------------------------------------------------------===//
 // ArrowAppender
@@ -250,6 +275,11 @@ static void InitializeFunctionPointers(ArrowAppendData &append_data, const Logic
 			break;
 		case PhysicalType::INT128:
 			InitializeAppenderForType<ArrowScalarData<hugeint_t>>(append_data);
+			break;
+		case PhysicalType::VARCHAR:
+			// wide decimals become Arrow decimal256 (the schema conversion rejects widths above 76 digits)
+			InitializeAppenderForType<ArrowScalarData<ArrowDecimal256, string_t, ArrowWideDecimalConverter>>(
+			    append_data);
 			break;
 		default:
 			throw InternalException("Unsupported internal decimal type");

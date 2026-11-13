@@ -1,0 +1,241 @@
+# name: test/sql/types/decimal/wide_decimal_storage.test
+# description: Decimals wider than 38 digits in tables: storage, filters, aggregates, joins and persistence
+# group: [decimal]
+
+load {TEST_DIR}/wide_decimal.db
+
+statement ok
+CREATE TABLE t AS
+SELECT (i::VARCHAR || '12345678901234567890123456789012345678901234567890.' || (i % 100)::VARCHAR)::DECIMAL(60,2) AS d, i
+FROM range(10000) r(i);
+
+statement ok
+INSERT INTO t VALUES (NULL, 10000), ('-1.5', 10001), ('0', 10002);
+
+query IIII
+SELECT count(*), count(d), min(d), max(d) FROM t
+----
+10003	10002	-1.50	999912345678901234567890123456789012345678901234567890.99
+
+query I
+SELECT sum(d) FROM t
+----
+4999623456789012345678901234567890123456789012345678905353.50
+
+query I
+SELECT typeof(sum(d)) FROM t
+----
+DECIMAL(255,2)
+
+# filters, including ones that can be pruned with the (string) zonemaps
+query I
+SELECT count(*) FROM t WHERE d > '500012345678901234567890123456789012345678901234567890.00'::DECIMAL(60,2)
+----
+4999
+
+query I
+SELECT count(*) FROM t WHERE d < 0
+----
+1
+
+query II
+SELECT d, i FROM t WHERE d = '4212345678901234567890123456789012345678901234567890.42'::DECIMAL(60,2)
+----
+4212345678901234567890123456789012345678901234567890.42	42
+
+query I
+SELECT i FROM t WHERE d BETWEEN -2 AND 1 ORDER BY i
+----
+10001
+10002
+
+# ordering is numeric, not lexicographic
+query I
+SELECT d FROM t WHERE i >= 9998 ORDER BY d
+----
+-1.50
+0.00
+999812345678901234567890123456789012345678901234567890.98
+999912345678901234567890123456789012345678901234567890.99
+NULL
+
+query I
+SELECT d FROM t WHERE i >= 9998 ORDER BY d DESC NULLS LAST
+----
+999912345678901234567890123456789012345678901234567890.99
+999812345678901234567890123456789012345678901234567890.98
+0.00
+-1.50
+NULL
+
+# distinct, grouping, hashing and joins
+query I
+SELECT count(DISTINCT d) FROM t
+----
+10002
+
+query II
+SELECT d % 7, count(*) FROM t WHERE d IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 3
+----
+-1.50	1
+0.00	15
+0.10	30
+
+query II
+SELECT a.i, b.i FROM t a JOIN t b ON a.d = b.d + 0 WHERE a.i < 3 ORDER BY a.i
+----
+0	0
+1	1
+2	2
+
+query II
+SELECT a.i, b.i FROM t a JOIN t b ON a.d = b.d - 1 WHERE a.i < 3 ORDER BY a.i
+----
+
+query I
+SELECT hash('1.5'::DECIMAL(45,2)) = hash('1.50'::DECIMAL(45,2))
+----
+true
+
+# aggregates that work on the blob representation
+query IIII
+SELECT first(d ORDER BY d), last(d ORDER BY d), arg_max(i, d), arg_min(i, d) FROM t WHERE d IS NOT NULL
+----
+-1.50	999912345678901234567890123456789012345678901234567890.99	9999	10001
+
+query I
+SELECT any_value(d) IS NOT NULL FROM t
+----
+true
+
+query III
+SELECT min(d), max(d), sum(d) FROM t WHERE d BETWEEN -2 AND 1
+----
+-1.50	0.00	-1.50
+
+# window functions and nested types
+query II
+SELECT d, lag(d) OVER (ORDER BY i) FROM t WHERE i < 3 ORDER BY i
+----
+12345678901234567890123456789012345678901234567890.00	NULL
+112345678901234567890123456789012345678901234567890.10	12345678901234567890123456789012345678901234567890.00
+212345678901234567890123456789012345678901234567890.20	112345678901234567890123456789012345678901234567890.10
+
+query II
+SELECT list(d ORDER BY i), {'x': min(d)} FROM t WHERE i < 2
+----
+[12345678901234567890123456789012345678901234567890.00, 112345678901234567890123456789012345678901234567890.10]	{'x': 12345678901234567890123456789012345678901234567890.00}
+
+# SUM overflows when the result exceeds 255 digits
+statement error
+SELECT sum(x) FROM (VALUES (repeat('9', 255)::DECIMAL(255,0)), (repeat('9', 255)::DECIMAL(255,0))) t(x)
+----
+Overflow in SUM
+
+# persistence
+statement ok
+CHECKPOINT
+
+restart
+
+query IIII
+SELECT count(*), count(d), min(d), max(d) FROM t
+----
+10003	10002	-1.50	999912345678901234567890123456789012345678901234567890.99
+
+query I
+SELECT typeof(d) FROM t LIMIT 1
+----
+DECIMAL(60,2)
+
+query I
+SELECT sum(d) FROM t
+----
+4999623456789012345678901234567890123456789012345678905353.50
+
+# updates and deletes
+statement ok
+UPDATE t SET d = d + 1 WHERE i = 0
+
+query I
+SELECT d FROM t WHERE i = 0
+----
+12345678901234567890123456789012345678901234567891.00
+
+statement ok
+DELETE FROM t WHERE d < 0
+
+query I
+SELECT count(*) FROM t
+----
+10002
+
+# indexes: the blob encoding is a valid ART key
+statement ok
+CREATE TABLE keyed(d DECIMAL(60,2) PRIMARY KEY, i INTEGER);
+
+statement ok
+INSERT INTO keyed VALUES ('999912345678901234567890123456789012345678901234567890.99', 1), ('-1.5', 2);
+
+query I
+SELECT i FROM keyed WHERE d = '-1.5'::DECIMAL(60,2)
+----
+2
+
+statement error
+INSERT INTO keyed VALUES ('-1.50', 3)
+----
+Duplicate key "d: -1.50"
+
+# CSV round trip
+statement ok
+COPY (SELECT d FROM t WHERE i < 3) TO '{TEST_DIR}/wide_decimal.csv'
+
+query I
+SELECT d FROM read_csv('{TEST_DIR}/wide_decimal.csv', types={'d': 'DECIMAL(60,2)'}) ORDER BY d
+----
+12345678901234567890123456789012345678901234567891.00
+112345678901234567890123456789012345678901234567890.10
+212345678901234567890123456789012345678901234567890.20
+
+query I
+SELECT typeof(d) FROM read_csv('{TEST_DIR}/wide_decimal.csv', types={'d': 'DECIMAL(60,2)'}) LIMIT 1
+----
+DECIMAL(60,2)
+
+# Parquet round trip: FIXED_LEN_BYTE_ARRAY two's complement with statistics
+require parquet
+
+statement ok
+COPY t TO '{TEST_DIR}/wide_decimal.parquet'
+
+query I
+SELECT typeof(d) FROM '{TEST_DIR}/wide_decimal.parquet' LIMIT 1
+----
+DECIMAL(60,2)
+
+query IIII
+SELECT count(*), count(d), min(d), max(d) FROM '{TEST_DIR}/wide_decimal.parquet'
+----
+10002	10001	0.00	999912345678901234567890123456789012345678901234567890.99
+
+query I
+SELECT count(*) FROM t a JOIN '{TEST_DIR}/wide_decimal.parquet' p USING (i) WHERE a.d IS DISTINCT FROM p.d
+----
+0
+
+query II
+SELECT type, precision FROM parquet_schema('{TEST_DIR}/wide_decimal.parquet') WHERE name = 'd'
+----
+FIXED_LEN_BYTE_ARRAY	60
+
+query II
+SELECT stats_min_value, stats_max_value FROM parquet_metadata('{TEST_DIR}/wide_decimal.parquet') WHERE path_in_schema = 'd' AND row_group_id = 0
+----
+0.00	999912345678901234567890123456789012345678901234567890.99
+
+# a BigQuery BIGDECIMAL(77,38) column reads exactly
+query I
+SELECT max(bigdec) FROM '{DATA_DIR}/parquet-testing/bigdecimal.parquet'
+----
+578960446186580977117854925043439539266.34992332820282019728792003956564819967

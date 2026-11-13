@@ -154,18 +154,17 @@ static Value NumberToValue(const string &val) {
 		auto width = NumericCast<uint32_t>(str_val.GetSize() - 1 - num_underscores);
 		// a well-formed decimal has a single '.', so its position never sits past the width; a second (e.g. trailing)
 		// dot pushes decimal_position beyond width and would underflow the scale computation below
-		if (decimal_position.GetIndex() > NumericCast<idx_t>(width) + num_integer_underscores) {
+		if (decimal_position.GetIndex() > width + num_integer_underscores) {
 			throw ParserException("Could not convert string \"%s\" to a decimal value", val);
 		}
 		auto scale = NumericCast<uint32_t>(width - decimal_position.GetIndex() + num_integer_underscores);
 		if (val[0] == '-') {
 			width--;
 		}
-		if (width <= Decimal::MAX_WIDTH_DECIMAL) {
-			return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(width, scale));
-		}
+		// literals wider than 38 digits become wide decimals, which keep every digit
+		return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(width, scale));
 	}
-	// there is an exponent, or the value is too wide for a decimal
+	// there is an exponent, or the value is too wide for any decimal
 	double dbl_value = Cast::Operation<string_t, double>(str_val);
 	return Value::DOUBLE(dbl_value);
 }

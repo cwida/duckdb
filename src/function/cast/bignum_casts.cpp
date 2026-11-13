@@ -302,6 +302,7 @@ BoundCastInfo Bignum::NumericToBignumCastSwitch(const LogicalType &source) {
 	case LogicalTypeId::HUGEINT:
 		return BoundCastInfo(&VectorCastHelpers::StringCast<hugeint_t, HugeintCastToBignum, bignum_t>);
 	case LogicalTypeId::DECIMAL:
+		return BoundCastInfo(&DefaultCasts::DecimalToBignumCast);
 	default:
 		return DefaultCasts::TryVectorNullCast;
 	}
@@ -371,6 +372,9 @@ BoundCastInfo DefaultCasts::BignumCastSwitch(BindCastInput &input, const Logical
 		return BoundCastInfo(&Bignum::BignumToVarcharCast);
 	case LogicalTypeId::DOUBLE:
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, double, BignumToDoubleErrorCast>);
+	case LogicalTypeId::DECIMAL:
+		// a BIGNUM is a decimal with scale 0
+		return FromWideDecimalCastSwitch(input, source, target);
 	default:
 		return TryVectorNullCast;
 	}

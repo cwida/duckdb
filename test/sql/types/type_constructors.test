@@ -59,9 +59,9 @@ SELECT NULL::no_modifiers(1);
 # (error locations are covered by type_constructor_error_location.test)
 
 statement error
-SELECT NULL::DECIMAL(99);
+SELECT NULL::DECIMAL(0);
 ----
-<REGEX>:.*DECIMAL type width must be between 1 and 38.*
+<REGEX>:.*DECIMAL type width must be between 1 and 255.*
 
 statement error
 SELECT NULL::MAP;

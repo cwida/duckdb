@@ -1,0 +1,318 @@
+# name: test/sql/types/numeric/numeric_type_widening.test
+# description: Widening NUMERIC columns inside transactions, from other tables and through prepared statements
+# group: [numeric]
+
+statement ok
+CREATE TABLE t(n NUMERIC);
+
+# two appends of different representations into the same row group of a transaction
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO t SELECT i FROM range(3000) tbl(i);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO t SELECT i * 1000000000000 FROM range(10) tbl(i);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query III
+SELECT count(*), sum(n), max(n) FROM t;
+----
+3010	45000004498500	9000000000000
+
+statement ok
+INSERT INTO t VALUES (-0.5);
+
+query I
+SELECT typeof(n) FROM t LIMIT 1;
+----
+NUMERIC
+
+query III
+SELECT count(*), sum(n), min(n) FROM t;
+----
+3011	45000004498499.5	-0.5
+
+statement ok
+COMMIT;
+
+query III
+SELECT count(*), sum(n), min(n) FROM t;
+----
+3011	45000004498499.5	-0.5
+
+query I
+SELECT n FROM t WHERE n > 100 AND n < 110 ORDER BY n;
+----
+101
+102
+103
+104
+105
+106
+107
+108
+109
+
+# a rolled back append does not change the column
+statement ok
+CREATE TABLE r(n NUMERIC);
+
+statement ok
+INSERT INTO r VALUES (1);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO r VALUES (123456789012345678901234567890);
+
+query I
+SELECT typeof(n) FROM r LIMIT 1;
+----
+NUMERIC
+
+statement ok
+ROLLBACK;
+
+query II
+SELECT typeof(n), count(*) FROM r GROUP BY ALL;
+----
+NUMERIC	1
+
+# inserting from another table
+statement ok
+CREATE TABLE source(b BIGINT, d DECIMAL(20, 4));
+
+statement ok
+INSERT INTO source VALUES (1, 1.0001), (-5000000000, 99999999999999.9999);
+
+statement ok
+INSERT INTO r SELECT b FROM source;
+
+query I
+SELECT typeof(n) FROM r LIMIT 1;
+----
+NUMERIC
+
+statement ok
+INSERT INTO r SELECT d FROM source;
+
+query I
+SELECT typeof(n) FROM r LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM r ORDER BY n;
+----
+-5000000000
+1
+1
+1.0001
+99999999999999.9999
+
+# prepared statements take the representation of the bound value
+statement ok
+CREATE TABLE p(n NUMERIC);
+
+statement ok
+PREPARE ins AS INSERT INTO p VALUES ($1);
+
+statement ok
+EXECUTE ins(5);
+
+query I
+SELECT typeof(n) FROM p LIMIT 1;
+----
+NUMERIC
+
+statement ok
+EXECUTE ins(2.5);
+
+query I
+SELECT typeof(n) FROM p LIMIT 1;
+----
+NUMERIC
+
+statement ok
+EXECUTE ins(NULL);
+
+query I
+SELECT n FROM p ORDER BY n NULLS LAST;
+----
+2.5
+5
+NULL
+
+# updates are executed as a delete and an insert, so the new values may need a wider representation
+statement ok
+UPDATE p SET n = 7 WHERE n = 5;
+
+query I
+SELECT n FROM p ORDER BY n NULLS LAST;
+----
+2.5
+7
+NULL
+
+statement ok
+UPDATE p SET n = 123456789012345678901234567890 WHERE n = 7;
+
+query I
+SELECT typeof(n) FROM p LIMIT 1;
+----
+NUMERIC
+
+query I
+SELECT n FROM p ORDER BY n NULLS LAST;
+----
+2.5
+123456789012345678901234567890
+NULL
+
+statement ok
+UPDATE p SET n = n * 2 WHERE n > 1000;
+
+query I
+SELECT n FROM p ORDER BY n NULLS LAST;
+----
+2.5
+246913578024691357802469135780
+NULL
+
+# joins and grouping use the bound representation
+query II
+SELECT r.n, count(*) FROM r JOIN p ON r.n = p.n GROUP BY ALL ORDER BY ALL;
+----
+
+query II
+SELECT n, count(*) FROM r GROUP BY n ORDER BY n;
+----
+-5000000000	1
+1	2
+1.0001	1
+99999999999999.9999	1
+
+query I
+INSERT INTO p VALUES (1) RETURNING n;
+----
+1
+
+# schema changes and indexes work like for any other type
+statement ok
+ALTER TABLE p ADD COLUMN m NUMERIC;
+
+statement ok
+UPDATE p SET m = n * 2;
+
+query I
+SELECT max(m) FROM p;
+----
+493827156049382715604938271560
+
+statement ok
+ALTER TABLE p DROP COLUMN m;
+
+statement ok
+CREATE INDEX idx ON p(n);
+
+query I
+SELECT count(*) FROM p WHERE n = 1;
+----
+1
+
+statement ok
+DROP INDEX idx;
+
+statement ok
+CREATE TABLE pk(n NUMERIC PRIMARY KEY);
+
+statement ok
+INSERT INTO pk VALUES (1), (2.5), ('123456789012345678901234567890');
+
+statement error
+INSERT INTO pk VALUES (2.50);
+----
+<REGEX>:.*Duplicate key.*
+
+query I
+SELECT n FROM pk ORDER BY n;
+----
+1
+2.5
+123456789012345678901234567890
+
+# indexes on the other columns of a table with NUMERIC columns work
+statement ok
+CREATE TABLE keyed(id INTEGER PRIMARY KEY, n NUMERIC);
+
+statement ok
+INSERT INTO keyed VALUES (1, 1.5), (2, 300000);
+
+statement error
+INSERT INTO keyed VALUES (1, 2);
+----
+<REGEX>:.*Duplicate key.*
+
+statement ok
+UPDATE keyed SET n = 99999999999 WHERE id = 2;
+
+statement ok
+DELETE FROM keyed WHERE id = 1;
+
+query II
+SELECT id, n FROM keyed;
+----
+2	99999999999
+
+# the same holds for CHECK constraints on the other columns
+statement ok
+CREATE TABLE checked(id INTEGER CHECK (id > 0), n NUMERIC);
+
+statement ok
+INSERT INTO checked VALUES (1, 1.5), (2, 300000);
+
+statement error
+INSERT INTO checked VALUES (0, 1);
+----
+<REGEX>:.*CHECK constraint failed.*
+
+statement ok
+UPDATE checked SET n = 99999999999 WHERE id = 2;
+
+statement ok
+UPDATE checked SET id = 5 WHERE id = 1;
+
+query II
+SELECT id, n FROM checked ORDER BY id;
+----
+2	99999999999
+5	1.5
+
+# constraints over NUMERIC columns
+statement ok
+CREATE TABLE chk(n NUMERIC CHECK (n > 0));
+
+statement ok
+INSERT INTO chk VALUES (1), (0.5), ('123456789012345678901234567890');
+
+statement error
+INSERT INTO chk VALUES (-1);
+----
+<REGEX>:.*CHECK constraint failed.*
+
+query I
+SELECT count(*) FROM chk;
+----
+3

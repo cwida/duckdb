@@ -198,8 +198,15 @@ select list_transform([4, 0, 2], lambda x: TRY(10 // x));
 ----
 [2, NULL, 5]
 
-# the originally reported query: decimal overflow caught per-element via TRY
+# the originally reported query: the comparison used to overflow at 38 digits; the common type now grows past it,
+# so there is nothing to catch and the elements compare as unequal
 query I
 select list_transform([100.00, 101.21], lambda x: TRY(x = 1234567890123456789012345678901234567.8));
+----
+[false, false]
+
+# decimal overflow caught per-element via TRY
+query I
+select list_transform([100.00, 101.21], lambda x: TRY(x::DECIMAL(4, 2)));
 ----
 [NULL, NULL]

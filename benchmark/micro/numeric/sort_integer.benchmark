@@ -1,0 +1,13 @@
+# name: benchmark/micro/numeric/sort_integer.benchmark
+# description: NUMERIC vs native types: ordering on both columns over 10M rows of INTEGER
+# group: [numeric]
+
+name sort integer
+group micro
+subgroup numeric
+
+load
+CREATE TABLE t AS SELECT ((i * 9582398353) % 100000)::INTEGER AS a, ((i * 847892347987) % 1000)::INTEGER AS b FROM range(0, 10000000) tbl(i);
+
+run
+SELECT a, b FROM t ORDER BY a, b LIMIT 10

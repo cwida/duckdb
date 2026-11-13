@@ -22,7 +22,10 @@ module: value
 # else through the default cast set, on a copy, so a read never alters the
 # value it reads. Three do not convert: value_get_varchar and value_get_blob
 # hand back a pointer into the value, which a converted copy could not outlive,
-# and value_get_decimal reports storage rather than a converted number.
+# and value_get_decimal reports storage rather than a converted number. A
+# DECIMAL wider than 38 digits stores its unscaled value as BIGNUM bytes;
+# value_get_decimal reports it when it fits in 128 bits, and value_get_blob
+# hands back the exact storage bytes for bignum_decode.
 #
 # The typed set covers the built-ins whose payload is a plain C scalar or byte
 # string. Every other kind — ENUM, UNION, VARIANT, extension types — is reached
@@ -402,8 +405,9 @@ functions:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Returns the value as a byte string: a BLOB, or the storage bytes of a BIT
-      or BIGNUM.
+      Returns the value as a byte string: a BLOB, or the storage bytes of a BIT,
+      a BIGNUM, or a DECIMAL wider than 38 digits (the BIGNUM storage of its
+      unscaled value, for bignum_decode).
 
       The string is borrowed from the value and stays valid until the value is
       destroyed. That borrow is why this getter does not convert: a converted
@@ -859,7 +863,10 @@ functions:
       value_get_bigint is its numeric value with the fraction dropped; this one
       always reports storage instead, together with the scale needed to
       interpret it. A value of any other type id, and a NULL value, return
-      ERROR_INPUT_INVALID.
+      ERROR_INPUT_INVALID. A DECIMAL wider than 38 digits (stored as BIGNUM)
+      is reported the same way as long as its backing integer fits in 128 bits;
+      beyond that the call fails and the exact storage is available through
+      value_get_blob and bignum_decode, or through value_cast.
     role: getter
     belongs_to: value
     parameters:
@@ -1773,11 +1780,12 @@ functions:
       Creates a DECIMAL value from its backing integer.
 
       The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is
-      the total digit count and must be 1..38; scale is the number of digits
+      the total digit count and must be 1..255; scale is the number of digits
       after the point and must not exceed width. Violating either returns
       ERROR_INPUT_INVALID, as does a value too wide for the storage tier the
-      width selects. The value itself is not range-checked against the width;
-      value_cast is the validating path.
+      width selects. Widths above 38 build a wide decimal stored as BIGNUM, for
+      which the 128-bit backing integer always fits. The value itself is not
+      range-checked against the width; value_cast is the validating path.
     role: constructor
     belongs_to: value
     parameters:
@@ -1791,7 +1799,7 @@ functions:
         description: The backing integer, scaled by 10^scale.
       width:
         type: u8
-        description: Total digit count, 1..38.
+        description: Total digit count, 1..255.
       scale:
         type: u8
         description: Digits after the decimal point; must not exceed width.

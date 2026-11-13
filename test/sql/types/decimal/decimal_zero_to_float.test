@@ -19,8 +19,14 @@ SELECT CAST(0::DECIMAL(18, 15) AS FLOAT), signbit(CAST(0::DECIMAL(18, 15) AS FLO
 ----
 0.0	false
 
-# the original fuzzer query: a zero DECIMAL(24, 23) multiplied with a DOUBLE
+# the original fuzzer query: a zero DECIMAL(24, 23) multiplied with a 39-digit literal, which is an exact wide decimal
 query I
 SELECT .00000000000000000000000 * 0 * 340282366920938463463374607431766427829. - 4
+----
+-4.00000000000000000000000
+
+# the same multiplication with a DOUBLE
+query I
+SELECT .00000000000000000000000 * 0 * 3.40282366920938463463374607431766427829e38 - 4
 ----
 -4.0

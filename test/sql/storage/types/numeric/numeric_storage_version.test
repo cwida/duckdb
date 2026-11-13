@@ -1,0 +1,57 @@
+# name: test/sql/storage/types/numeric/numeric_storage_version.test
+# description: NUMERIC columns require storage version v2.0.0
+# group: [numeric]
+
+statement ok
+attach '{TEST_DIR}/numeric_old.db' (STORAGE_VERSION 'v1.4.4');
+
+statement ok
+use numeric_old;
+
+statement error
+create table t1 (n NUMERIC);
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+statement error
+create table t2 as select '1'::NUMERIC n;
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+statement ok
+create table t3 (i INT);
+
+statement error
+alter table t3 add column n NUMERIC;
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+statement error
+alter table t3 alter column i set type NUMERIC;
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+statement error
+create table t4 (s STRUCT(n NUMERIC));
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+statement error
+create table t5 (l NUMERIC[]);
+----
+Invalid Input Error: NUMERIC columns are not supported in storage versions prior to v2.0.0
+
+# the same database with the current storage version accepts NUMERIC
+statement ok
+attach '{TEST_DIR}/numeric_new.db' (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+create table numeric_new.t1 (n NUMERIC);
+
+statement ok
+insert into numeric_new.t1 values (1), (0.01), ('1e254'::NUMERIC);
+
+query I
+select count(*) from numeric_new.t1;
+----
+3

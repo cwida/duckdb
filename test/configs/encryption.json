@@ -5,6 +5,11 @@
   "on_load": "skip",
   "skip_compiled": "true",
   "inherit_skip_tests": "test/configs/force_storage.json",
+  "skip_error_messages": [
+    "HTTP",
+    "Unable to connect",
+    "NUMERIC columns are not supported in storage versions prior to v2.0.0"
+  ],
   "statically_loaded_extensions": [
     "core_functions",
     "httpfs"

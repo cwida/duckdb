@@ -10,12 +10,14 @@ add_library_unity(
   cast_function_set.cpp
   cast_statistics.cpp
   decimal_cast.cpp
+  wide_decimal_cast.cpp
   default_casts.cpp
   enum_casts.cpp
   geo_casts.cpp
   list_casts.cpp
   map_cast.cpp
   numeric_casts.cpp
+  numeric_type_casts.cpp
   pointer_cast.cpp
   string_cast.cpp
   struct_cast.cpp

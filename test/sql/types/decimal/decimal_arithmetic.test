@@ -54,11 +54,11 @@ SELECT ('0.5'::DECIMAL(1,1) + 10000)::VARCHAR,
 10000.54321543215432154321
 10000.5432154321543215432154321
 
-# out of range
-statement error
+# wide result
+query I
 SELECT ('0.54321543215432154321543215432154321'::DECIMAL(35,35) + 10000)::VARCHAR
 ----
-<REGEX>:Conversion Error.*Could not cast value.*
+10000.54321543215432154321543215432154321
 
 # different types
 query IIIII
@@ -173,9 +173,15 @@ SELECT '0.001'::DECIMAL * 100::TINYINT,
 100000.000
 10000000.000
 
-# multiplication could not be performed exactly: throw error
-statement error
+# the multiplication is performed exactly as a wide decimal
+query I
 SELECT '0.000000000000000000000000000001'::DECIMAL(38,30) * '0.000000000000000000000000000001'::DECIMAL(38,30)
+----
+0.000000000000000000000000000000000000000000000000000000000001
+
+# beyond 255 digits the needed scale cannot be represented
+statement error
+SELECT '0.1'::DECIMAL(200,150) * '0.1'::DECIMAL(200,150)
 ----
 <REGEX>:Out of Range Error.*Needed scale.*
 

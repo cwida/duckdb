@@ -2,6 +2,7 @@
 #include "duckdb/common/smaller_binary.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/numeric_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -23,6 +24,14 @@ static bool TryPrimitiveSelectOperation(const Vector &left, const Vector &right,
 #if DUCKDB_SMALLER_BINARY(primitive_select_execute)
 	return false;
 #else
+	if (left.GetType().id() == LogicalTypeId::NUMERIC) {
+		// NUMERIC values compare natively when both sides have a typed representation
+		unique_ptr<Vector> left_typed, right_typed;
+		if (NumericVector::TryNativePair(left, right, left_typed, right_typed)) {
+			return TryPrimitiveSelectOperation<OP>(*left_typed, *right_typed, sel, count, true_sel, false_sel,
+			                                       null_mask, result);
+		}
+	}
 	if (null_mask) {
 		auto left_validity = left.Validity();
 		auto right_validity = right.Validity();

@@ -223,6 +223,9 @@ duckdb_type duckdb_decimal_internal_type(duckdb_logical_type type) {
 		return DUCKDB_TYPE_BIGINT;
 	case duckdb::PhysicalType::INT128:
 		return DUCKDB_TYPE_HUGEINT;
+	case duckdb::PhysicalType::VARCHAR:
+		// decimals wider than 38 digits store their unscaled value as BIGNUM storage
+		return DUCKDB_TYPE_BIGNUM;
 	default:
 		return DUCKDB_TYPE_INVALID;
 	}

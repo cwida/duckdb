@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -113,6 +114,16 @@ void BaseAppender::AppendDecimalValueInternal(Vector &col, SRC input) {
 	}
 }
 
+template <class SRC>
+void BaseAppender::AppendWideDecimalValueInternal(Vector &col, SRC input) {
+	auto &type = col.GetType();
+	D_ASSERT(type.id() == LogicalTypeId::DECIMAL && type.InternalType() == PhysicalType::VARCHAR);
+	// every source type is converted with its regular cast to the column type
+	auto value = Value::CreateValue<SRC>(input).DefaultCastAs(type);
+	FlatVector::GetDataMutable<string_t>(col)[chunk.size()] =
+	    StringVector::AddStringOrBlob(col, StringValue::Get(value));
+}
+
 template <class T>
 void BaseAppender::AppendValueInternal(T input) {
 	if (column >= GetActiveTypes().size()) {
@@ -172,6 +183,9 @@ void BaseAppender::AppendValueInternal(T input) {
 			break;
 		case PhysicalType::INT128:
 			AppendDecimalValueInternal<T, hugeint_t>(col, input);
+			break;
+		case PhysicalType::VARCHAR:
+			AppendWideDecimalValueInternal<T>(col, input);
 			break;
 		default:
 			InternalException::Throw("Internal type not recognized for Decimal");

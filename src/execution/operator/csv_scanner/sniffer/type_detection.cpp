@@ -7,6 +7,7 @@
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/types/time.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_casting.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 
 namespace duckdb {
@@ -249,6 +250,11 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 	case LogicalTypeId::DECIMAL: {
 		uint32_t width, scale;
 		type.GetDecimalProperties(width, scale);
+		if (type.InternalType() == PhysicalType::VARCHAR) {
+			// wide decimal
+			string dummy_value;
+			return CSVCast::TryParseWideDecimal(value_ptr, value_size, decimal_separator, width, scale, dummy_value);
+		}
 		if (decimal_separator == ',') {
 			switch (type.InternalType()) {
 			case PhysicalType::INT16: {

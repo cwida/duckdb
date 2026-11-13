@@ -373,12 +373,53 @@ TEST_CASE("Test DECIMAL value", "[capi]") {
 		duckdb_destroy_value(&value);
 	}
 	{
+		// decimals wider than 38 digits store a BIGNUM blob; duckdb_decimal still carries values that fit in 128 bits
+		auto hugeint = -(Hugeint::POWERS_OF_TEN[38] - hugeint_t(1));
+		duckdb_decimal input {60, 10, {hugeint.lower, hugeint.upper}};
+		auto value = duckdb_create_decimal(input);
+		auto type = duckdb_get_value_type(value);
+		REQUIRE(duckdb_get_type_id(type) == DUCKDB_TYPE_DECIMAL);
+		REQUIRE(duckdb_decimal_width(type) == input.width);
+		REQUIRE(duckdb_decimal_scale(type) == input.scale);
+		REQUIRE(duckdb_decimal_internal_type(type) == DUCKDB_TYPE_BIGNUM);
+		auto output = duckdb_get_decimal(value);
+		REQUIRE(output.width == input.width);
+		REQUIRE(output.scale == input.scale);
+		REQUIRE(output.value.lower == input.value.lower);
+		REQUIRE(output.value.upper == input.value.upper);
+		auto text = duckdb_get_varchar(value);
+		REQUIRE(string(text) == "-9999999999999999999999999999.9999999999");
+		duckdb_free(text);
+		duckdb_destroy_value(&value);
+	}
+	{
+		// a wide decimal beyond 128 bits cannot be reported as a duckdb_decimal and yields the zero default, the
+		// exact value is available through the string fetch
+		CAPITester tester;
+		REQUIRE(tester.OpenDatabase(nullptr));
+		auto result = tester.Query("SELECT '12345678901234567890123456789012345678901234567890.5'::DECIMAL(60,1) AS "
+		                           "huge, '-12345.5'::DECIMAL(60,1) AS small");
+		REQUIRE_NO_FAIL(*result);
+		auto huge = result->Fetch<duckdb_decimal>(0, 0);
+		REQUIRE(huge.value.lower == 0);
+		REQUIRE(huge.value.upper == 0);
+		REQUIRE(result->Fetch<string>(0, 0) == "12345678901234567890123456789012345678901234567890.5");
+		auto small = result->Fetch<duckdb_decimal>(1, 0);
+		REQUIRE(small.width == 60);
+		REQUIRE(small.scale == 1);
+		REQUIRE(small.value.lower == static_cast<uint64_t>(-123455));
+		REQUIRE(small.value.upper == -1);
+		REQUIRE(result->Fetch<string>(1, 0) == "-12345.5");
+		REQUIRE(result->Fetch<int64_t>(1, 0) == -12346);
+		REQUIRE(result->Fetch<double>(1, 0) == -12345.5);
+	}
+	{
 		// invalid width/scale combinations return nullptr instead of throwing or returning a malformed value
 		duckdb::vector<std::pair<uint8_t, uint8_t>> invalid = {
-		    {0, 0},  // width below the minimum
-		    {39, 0}, // width above the maximum (MAX_WIDTH_DECIMAL == 38)
-		    {4, 5},  // scale greater than width
-		    {255, 255}};
+		    {0, 0},   // width below the minimum
+		    {4, 5},   // scale greater than width
+		    {60, 61}, // scale greater than width of a wide decimal
+		};
 		for (auto &entry : invalid) {
 			duckdb_decimal input {entry.first, entry.second, {0, 0}};
 			REQUIRE(duckdb_create_decimal(input) == nullptr);

@@ -15732,7 +15732,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle 
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Returns the value as a byte string: a BLOB, or the storage bytes of a BIT or BIGNUM.
+ * Returns the value as a byte string: a BLOB, or the storage bytes of a BIT, a BIGNUM, or a DECIMAL wider than 38
+ * digits (the BIGNUM storage of its unscaled value, for bignum_decode).
  *
  * The string is borrowed from the value and stays valid until the value is destroyed. That borrow is why this getter
  * does not convert: a converted copy would not outlive the call. A value of any other type id, and a NULL value, return
@@ -16049,7 +16050,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_uuid(duckdb_v2_value_handle val
  * The integer is the value scaled by 10^scale — the dual of value_create_decimal — widened to 128 bits from whatever
  * storage tier the width selects. The integer getters convert, so a DECIMAL read through value_get_bigint is its
  * numeric value with the fraction dropped; this one always reports storage instead, together with the scale needed to
- * interpret it. A value of any other type id, and a NULL value, return ERROR_INPUT_INVALID.
+ * interpret it. A value of any other type id, and a NULL value, return ERROR_INPUT_INVALID. A DECIMAL wider than 38
+ * digits (stored as BIGNUM) is reported the same way as long as its backing integer fits in 128 bits; beyond that the
+ * call fails and the exact storage is available through value_get_blob and bignum_decode, or through value_cast.
  *
  * history:
  * - unstable: v2.0.0
@@ -16673,17 +16676,18 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_interval(duckdb_v2_factory_h
 /*!
  * Creates a DECIMAL value from its backing integer.
  *
- * The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is the total digit count and must be 1..38; scale
- * is the number of digits after the point and must not exceed width. Violating either returns ERROR_INPUT_INVALID, as
- * does a value too wide for the storage tier the width selects. The value itself is not range-checked against the
- * width; value_cast is the validating path.
+ * The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is the total digit count and must be 1..255;
+ * scale is the number of digits after the point and must not exceed width. Violating either returns
+ * ERROR_INPUT_INVALID, as does a value too wide for the storage tier the width selects. Widths above 38 build a wide
+ * decimal stored as BIGNUM, for which the 128-bit backing integer always fits. The value itself is not range-checked
+ * against the width; value_cast is the validating path.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param factory The factory to create with.
  * @param in_value The backing integer, scaled by 10^scale.
- * @param width Total digit count, 1..38.
+ * @param width Total digit count, 1..255.
  * @param scale Digits after the decimal point; must not exceed width.
  * @param out_value Receives the new DECIMAL value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.

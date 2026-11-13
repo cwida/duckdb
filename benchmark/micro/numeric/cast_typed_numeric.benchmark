@@ -1,0 +1,13 @@
+# name: benchmark/micro/numeric/cast_typed_numeric.benchmark
+# description: NUMERIC vs native types: explicit cast of two columns to their representation, summed, over 10M rows of NUMERIC
+# group: [numeric]
+
+name cast_typed numeric
+group micro
+subgroup numeric
+
+load
+CREATE TABLE t AS SELECT ((i * 9582398353) % 100000)::INTEGER::NUMERIC AS a, ((i * 847892347987) % 1000)::INTEGER::NUMERIC AS b FROM range(0, 10000000) tbl(i);
+
+run
+SELECT sum(a::INTEGER), sum(b::INTEGER) FROM t

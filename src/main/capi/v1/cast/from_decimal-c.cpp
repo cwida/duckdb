@@ -1,5 +1,6 @@
 #include "duckdb/main/capi/cast/from_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 
 namespace duckdb {
 
@@ -30,6 +31,15 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_string &result, idx_t co
 	case duckdb::PhysicalType::INT128:
 		result_string = duckdb::StringCastFromDecimal::Operation<hugeint_t>(source_value, width, scale, heap);
 		break;
+	case duckdb::PhysicalType::VARCHAR: {
+		// the materialized duckdb_decimal only holds 128-bit values, so format the original value instead
+		auto value = query_result->Collection().GetValue(col, row);
+		if (value.IsNull()) {
+			return false;
+		}
+		result_string = heap.AddString(value.ToString());
+		break;
+	}
 	default:
 		InternalException::Throw("Unimplemented internal type for decimal");
 	}

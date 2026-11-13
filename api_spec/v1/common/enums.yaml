@@ -54,6 +54,7 @@ enums:
       TYPE_GEOMETRY: {value: 40, description: "GEOMETRY type, WKB blob"}
       TYPE_VARIANT: {value: 41, description: "VARIANT type"}
       TYPE_TIMESTAMP_TZ_NS: {value: 42, description: "duckdb_timestamp (nanoseconds)"}
+      TYPE_NUMERIC: {value: 43, description: "NUMERIC: an exact number of up to 255 digits. Fetched through the value functions as its decimal text (duckdb_value_varchar) or converted (duckdb_value_double, the integer fetches when the value fits); in a chunk, duckdb_vector_get_data yields duckdb_string_t values holding the canonical binary encoding, so cast the column to VARCHAR, DOUBLE or DECIMAL in SQL to read it from a vector"}
   pending_state:
     lifecycle:
       - ["stable", "v0.5.0", "2022-09-04"]

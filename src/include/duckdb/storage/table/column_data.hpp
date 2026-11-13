@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/table/numeric_range.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/table/persistent_table_data.hpp"
 #include "duckdb/storage/statistics/segment_statistics.hpp"
@@ -231,8 +232,8 @@ public:
 	                                  vector<ColumnSegmentInfo> &result, const ColumnSegmentInfoScanOptions &options);
 	virtual void Verify(RowGroup &parent);
 
-	FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
-	                                   TableFilter &filter);
+	virtual FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
+	                                           TableFilter &filter);
 
 	static shared_ptr<ColumnData> CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
 	                                           const LogicalType &type,
@@ -242,6 +243,9 @@ public:
 	void MergeStatistics(const BaseStatistics &other);
 	void MergeIntoStatistics(BaseStatistics &other);
 	unique_ptr<BaseStatistics> GetStatistics() const;
+	//! A copy of the statistics of a segment of this column (NUMERIC columns check them against differently typed
+	//! filters)
+	unique_ptr<BaseStatistics> GetSegmentStatistics(SegmentNode<ColumnSegment> &segment);
 	const BaseStatistics &GetStatisticsRef() const;
 
 protected:
@@ -323,6 +327,7 @@ enum class ExtraPersistentColumnDataType : uint8_t {
 	VARIANT = 1,
 	GEOMETRY = 2,
 	LIST = 3,
+	NUMERIC = 4,
 };
 
 class ExtraPersistentColumnData {
@@ -383,6 +388,21 @@ public:
 	}
 
 	GeometryStorageType storage_type;
+};
+
+class NumericPersistentColumnData final : public ExtraPersistentColumnData {
+public:
+	static constexpr auto TYPE = ExtraPersistentColumnDataType::NUMERIC;
+	NumericPersistentColumnData() : ExtraPersistentColumnData(TYPE) {
+	}
+	NumericPersistentColumnData(const LogicalType &storage_type_p, NumericRange range_p)
+	    : ExtraPersistentColumnData(TYPE), storage_type(storage_type_p), range(std::move(range_p)) {
+	}
+
+	//! The representation the rows of this row group are stored in
+	LogicalType storage_type;
+	//! The exact value range of the row group (the segments only carry statistics of the storage type)
+	NumericRange range;
 };
 
 struct PersistentColumnData {

@@ -236,8 +236,10 @@ protected:
 	vector<unique_ptr<Expression>> bound_expressions;
 
 private:
+	//! The context the index expressions run in, only when they need one (NUMERIC kernels are bound at run time)
+	shared_ptr<ClientContext> expression_context;
 	//! Expression executor to execute the index expressions
-	mutable ExpressionExecutor executor;
+	mutable unique_ptr<ExpressionExecutor> executor;
 
 	//! Bind the unbound expressions of the index
 	unique_ptr<Expression> BindExpression(unique_ptr<Expression> expr);

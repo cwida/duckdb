@@ -12,6 +12,7 @@
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 
 namespace duckdb {
@@ -101,7 +102,38 @@ class CSVCast {
 		return all_converted;
 	}
 
+	//! Parses wide (BIGNUM-backed) decimals written with a comma as the decimal separator
+	static bool TryCastWideDecimalVectorCommaSeparated(Vector &input_vector, Vector &result_vector, idx_t count,
+	                                                   uint32_t width, uint32_t scale, idx_t &line_error) {
+		D_ASSERT(input_vector.GetType().id() == LogicalTypeId::VARCHAR);
+		bool all_converted = true;
+		auto &validity_mask = FlatVector::ValidityMutable(result_vector);
+		idx_t cur_line = 0;
+		UnaryExecutor::Execute<string_t, string_t>(input_vector, result_vector, count, [&](string_t input) {
+			string blob;
+			if (!TryParseWideDecimal(input.GetData(), input.GetSize(), ',', width, scale, blob)) {
+				if (all_converted) {
+					line_error = cur_line;
+				}
+				validity_mask.SetInvalid(cur_line);
+				all_converted = false;
+				cur_line++;
+				return string_t();
+			}
+			cur_line++;
+			return StringVector::AddStringOrBlob(result_vector, blob.data(), blob.size());
+		});
+		return all_converted;
+	}
+
 public:
+	//! Parses a wide (BIGNUM-backed) decimal from text written with the given decimal separator
+	static bool TryParseWideDecimal(const char *value_ptr, idx_t size, char decimal_separator, uint32_t width,
+	                                uint32_t scale, string &result) {
+		// like the fixed-size decimals: a period is not a valid character when the comma separates
+		return BignumDecimal::TryParse(value_ptr, size, width, scale, result, decimal_separator);
+	}
+
 	static bool TryCastDateVector(const map<LogicalTypeId, CSVOption<StrpTimeFormat>> &options, Vector &input_vector,
 	                              Vector &result_vector, idx_t count, CastParameters &parameters, idx_t &line_error,
 	                              bool nullify_error = false) {
@@ -148,6 +180,8 @@ public:
 		case PhysicalType::INT128:
 			return TemplatedTryCastDecimalVector<TryCastToDecimalCommaSeparated, hugeint_t>(
 			    options, input_vector, result_vector, count, parameters, width, scale, line_error);
+		case PhysicalType::VARCHAR:
+			return TryCastWideDecimalVectorCommaSeparated(input_vector, result_vector, count, width, scale, line_error);
 		default:
 			throw InternalException("Unimplemented physical type for decimal");
 		}

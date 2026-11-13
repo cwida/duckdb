@@ -1,0 +1,119 @@
+# name: test/sql/types/numeric/numeric_filter_pushdown.test
+# description: Table filters on NUMERIC columns compare on the stored representation of every row group
+# group: [numeric]
+
+load {TEST_DIR}/numeric_filter_pushdown.db
+
+# three row groups of integers, a batch of decimals and two wide values
+statement ok
+CREATE TABLE t AS SELECT i::NUMERIC AS n FROM range(-100000, 200000) tbl(i);
+
+statement ok
+INSERT INTO t SELECT (i / 100.0)::DECIMAL(10,2)::NUMERIC FROM range(0, 1000) tbl(i);
+
+statement ok
+INSERT INTO t VALUES (NULL), ('123456789012345678901234567890.5'), ('-123456789012345678901234567890.5');
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE n > 50000;
+----
+physical_plan	<REGEX>:.*Filters:.*n > 50000.*
+
+# the same queries before and after the checkpoint re-picks the representations
+loop i 0 2
+
+query I
+SELECT count(*) FROM t WHERE n > 50000;
+----
+150000
+
+query I
+SELECT count(*) FROM t WHERE n < 3;
+----
+100304
+
+query I
+SELECT count(*) FROM t WHERE n = 1.5;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE n = '1.5'::NUMERIC;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE n = 1;
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE n >= 100000000000000000000000000000;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE n <= -100000;
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE n <> 0;
+----
+301000
+
+query I
+SELECT count(*) FROM t WHERE n > 0 AND n < 1;
+----
+99
+
+query I
+SELECT count(*) FROM t WHERE n > NULL;
+----
+0
+
+# comparisons evaluated as expressions, not as table filters
+query I
+SELECT count(*) FROM t WHERE (n < 0) <> (n > 5);
+----
+300495
+
+query I
+SELECT count(*) FROM t WHERE (n > 50000) = (n > 50000.5);
+----
+301002
+
+query I
+SELECT n FROM t WHERE n > 199998 ORDER BY n;
+----
+199999
+123456789012345678901234567890.5
+
+query I
+SELECT n FROM t WHERE n < -99999 ORDER BY n;
+----
+-123456789012345678901234567890.5
+-100000
+
+query I
+SELECT n FROM t WHERE n > 9.97 AND n < 10 ORDER BY n;
+----
+9.98
+9.99
+
+statement ok
+CHECKPOINT
+
+endloop
+
+restart
+
+query I
+SELECT count(*) FROM t WHERE n > 50000;
+----
+150000
+
+query I
+SELECT count(*) FROM t WHERE n > 0 AND n < 1;
+----
+99

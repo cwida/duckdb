@@ -149,6 +149,7 @@
 #include "duckdb/function/match_recognize.hpp"
 #include "duckdb/function/partition_stats.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
+#include "duckdb/function/scalar/numeric_dispatch.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "duckdb/function/table/arrow/arrow_type_info.hpp"
 #include "duckdb/function/table/arrow/enum/arrow_datetime_type.hpp"
@@ -2681,19 +2682,20 @@ const StringUtil::EnumStringLiteral *GetExtraPersistentColumnDataTypeValues() {
 		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::INVALID), "INVALID" },
 		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::VARIANT), "VARIANT" },
 		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::GEOMETRY), "GEOMETRY" },
-		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::LIST), "LIST" }
+		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::LIST), "LIST" },
+		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::NUMERIC), "NUMERIC" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExtraPersistentColumnDataType>(ExtraPersistentColumnDataType value) {
-	return StringUtil::EnumToString(GetExtraPersistentColumnDataTypeValues(), 4, "ExtraPersistentColumnDataType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExtraPersistentColumnDataTypeValues(), 5, "ExtraPersistentColumnDataType", static_cast<uint32_t>(value));
 }
 
 template<>
 ExtraPersistentColumnDataType EnumUtil::FromString<ExtraPersistentColumnDataType>(const char *value) {
-	return static_cast<ExtraPersistentColumnDataType>(StringUtil::StringToEnum(GetExtraPersistentColumnDataTypeValues(), 4, "ExtraPersistentColumnDataType", value));
+	return static_cast<ExtraPersistentColumnDataType>(StringUtil::StringToEnum(GetExtraPersistentColumnDataTypeValues(), 5, "ExtraPersistentColumnDataType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetFileBufferTypeValues() {
@@ -3997,19 +3999,20 @@ const StringUtil::EnumStringLiteral *GetLogicalTypeIdValues() {
 		{ static_cast<uint32_t>(LogicalTypeId::UNION), "UNION" },
 		{ static_cast<uint32_t>(LogicalTypeId::ARRAY), "ARRAY" },
 		{ static_cast<uint32_t>(LogicalTypeId::VARIANT), "VARIANT" },
-		{ static_cast<uint32_t>(LogicalTypeId::TUPLE), "TUPLE" }
+		{ static_cast<uint32_t>(LogicalTypeId::TUPLE), "TUPLE" },
+		{ static_cast<uint32_t>(LogicalTypeId::NUMERIC), "NUMERIC" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<LogicalTypeId>(LogicalTypeId value) {
-	return StringUtil::EnumToString(GetLogicalTypeIdValues(), 54, "LogicalTypeId", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetLogicalTypeIdValues(), 55, "LogicalTypeId", static_cast<uint32_t>(value));
 }
 
 template<>
 LogicalTypeId EnumUtil::FromString<LogicalTypeId>(const char *value) {
-	return static_cast<LogicalTypeId>(StringUtil::StringToEnum(GetLogicalTypeIdValues(), 54, "LogicalTypeId", value));
+	return static_cast<LogicalTypeId>(StringUtil::StringToEnum(GetLogicalTypeIdValues(), 55, "LogicalTypeId", value));
 }
 
 const StringUtil::EnumStringLiteral *GetLogicalTypeInfoTypeValues() {
@@ -4460,6 +4463,28 @@ const char* EnumUtil::ToChars<NewLineIdentifier>(NewLineIdentifier value) {
 template<>
 NewLineIdentifier EnumUtil::FromString<NewLineIdentifier>(const char *value) {
 	return static_cast<NewLineIdentifier>(StringUtil::StringToEnum(GetNewLineIdentifierValues(), 4, "NewLineIdentifier", value));
+}
+
+const StringUtil::EnumStringLiteral *GetNumericDispatchKindValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(NumericDispatchKind::ADD), "ADD" },
+		{ static_cast<uint32_t>(NumericDispatchKind::SUBTRACT), "SUBTRACT" },
+		{ static_cast<uint32_t>(NumericDispatchKind::MULTIPLY), "MULTIPLY" },
+		{ static_cast<uint32_t>(NumericDispatchKind::ABS), "ABS" },
+		{ static_cast<uint32_t>(NumericDispatchKind::ROUND), "ROUND" },
+		{ static_cast<uint32_t>(NumericDispatchKind::GENERIC), "GENERIC" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<NumericDispatchKind>(NumericDispatchKind value) {
+	return StringUtil::EnumToString(GetNumericDispatchKindValues(), 6, "NumericDispatchKind", static_cast<uint32_t>(value));
+}
+
+template<>
+NumericDispatchKind EnumUtil::FromString<NumericDispatchKind>(const char *value) {
+	return static_cast<NumericDispatchKind>(StringUtil::StringToEnum(GetNumericDispatchKindValues(), 6, "NumericDispatchKind", value));
 }
 
 const StringUtil::EnumStringLiteral *GetOnConflictActionValues() {

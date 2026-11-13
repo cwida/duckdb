@@ -226,13 +226,24 @@ struct DefaultCasts {
 
 	DUCKDB_API static bool NopCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	DUCKDB_API static bool TryVectorNullCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
+	//! Casts any supported source into a wide (BIGNUM-backed) DECIMAL
+	DUCKDB_API static bool ToWideDecimalCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
+	//! Casts a (fixed-size or wide) DECIMAL to a BIGNUM, rounding to an integer
+	DUCKDB_API static bool DecimalToBignumCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	DUCKDB_API static bool ReinterpretCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 
 private:
 	static BoundCastInfo BlobCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
+	static BoundCastInfo ToNumericCastSwitch(BindCastInput &input, const LogicalType &source,
+	                                         const LogicalType &target);
+	static BoundCastInfo FromNumericCastSwitch(BindCastInput &input, const LogicalType &source,
+	                                           const LogicalType &target);
 	static BoundCastInfo BitCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo DateCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo DecimalCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
+	//! Casts from a wide DECIMAL, or from a BIGNUM treated as a scale 0 decimal, to the target type
+	static BoundCastInfo FromWideDecimalCastSwitch(BindCastInput &input, const LogicalType &source,
+	                                               const LogicalType &target);
 	static BoundCastInfo EnumCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo IntervalCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo ListCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);

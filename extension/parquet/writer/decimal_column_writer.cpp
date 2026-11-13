@@ -1,4 +1,7 @@
 #include "writer/decimal_column_writer.hpp"
+#include "parquet_decimal_utils.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/string_type.hpp"
 
 #include <stdint.h>
 #include <utility>
@@ -127,6 +130,88 @@ void FixedDecimalColumnWriter::WriteVector(WriteStream &temp_writer, ColumnWrite
 idx_t FixedDecimalColumnWriter::GetRowSize(const Vector &vector, const idx_t index,
                                            const PrimitiveColumnWriterState &state) const {
 	return sizeof(hugeint_t);
+}
+
+//===--------------------------------------------------------------------===//
+// Wide decimals
+//===--------------------------------------------------------------------===//
+//! The BIGNUM encoding orders like the numeric value, so min/max can be tracked on the blobs themselves
+class WideDecimalStatistics : public ColumnWriterStatistics {
+public:
+	explicit WideDecimalStatistics(idx_t byte_length) : byte_length(byte_length) {
+	}
+
+	idx_t byte_length;
+	bool has_stats = false;
+	string min;
+	string max;
+
+public:
+	string GetStats(const string &blob) {
+		string result(byte_length, '\0');
+		ParquetDecimalUtils::WriteWideDecimal(string_t(blob), byte_length, data_ptr_cast(&result[0]));
+		return result;
+	}
+	bool HasStats() override {
+		return has_stats;
+	}
+	void Update(const string_t &val) {
+		if (!has_stats) {
+			min = val.GetString();
+			max = val.GetString();
+			has_stats = true;
+			return;
+		}
+		if (LessThan::Operation(val, string_t(min))) {
+			min = val.GetString();
+		}
+		if (GreaterThan::Operation(val, string_t(max))) {
+			max = val.GetString();
+		}
+	}
+	string GetMin() override {
+		return GetMinValue();
+	}
+	string GetMax() override {
+		return GetMaxValue();
+	}
+	string GetMinValue() override {
+		return HasStats() ? GetStats(min) : string();
+	}
+	string GetMaxValue() override {
+		return HasStats() ? GetStats(max) : string();
+	}
+};
+
+WideDecimalColumnWriter::WideDecimalColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_schema,
+                                                 vector<Identifier> schema_path_p)
+    : PrimitiveColumnWriter(writer, std::move(column_schema), std::move(schema_path_p)),
+      byte_length(ParquetDecimalUtils::WideDecimalByteLength(DecimalType::GetWidth(Schema().type))) {
+}
+
+unique_ptr<ColumnWriterStatistics> WideDecimalColumnWriter::InitializeStatsState() {
+	return make_uniq<WideDecimalStatistics>(byte_length);
+}
+
+void WideDecimalColumnWriter::WriteVector(WriteStream &temp_writer, ColumnWriterStatistics *stats_p,
+                                          ColumnWriterPageState *page_state, Vector &input_column, idx_t chunk_start,
+                                          idx_t chunk_end) {
+	auto &mask = FlatVector::ValidityMutable(input_column);
+	auto *ptr = FlatVector::GetData<string_t>(input_column);
+	auto &stats = stats_p->Cast<WideDecimalStatistics>();
+	vector<data_t> temp_buffer(byte_length);
+	for (idx_t r = chunk_start; r < chunk_end; r++) {
+		if (mask.RowIsValid(r)) {
+			stats.Update(ptr[r]);
+			ParquetDecimalUtils::WriteWideDecimal(ptr[r], byte_length, temp_buffer.data());
+			temp_writer.WriteData(temp_buffer.data(), byte_length);
+		}
+	}
+}
+
+idx_t WideDecimalColumnWriter::GetRowSize(const Vector &vector, const idx_t index,
+                                          const PrimitiveColumnWriterState &state) const {
+	return byte_length;
 }
 
 } // namespace duckdb

@@ -14,6 +14,7 @@
 #include "duckdb/execution/index/index_type_set.hpp"
 #include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/type_manager.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -348,6 +349,11 @@ void DatabaseInstance::InitializeInstance(const char *database_path, DBConfig *u
 	}
 
 	Configure(*config_ptr, database_path);
+	// the physical type of a DECIMAL is computed without a database, so this debug setting is process-wide: an
+	// instance that enables it turns it on, an instance without it (e.g. a helper database) leaves it alone
+	if (Settings::Get<DebugForceWideDecimalSetting>(config)) {
+		Decimal::SetForceWide(true);
+	}
 	// publish what this binary links, unless the config already carries a set handed to us
 	ExtensionHelper::RegisterLinkedExtensions(config);
 	for (auto &linked : config.linked_extensions) {

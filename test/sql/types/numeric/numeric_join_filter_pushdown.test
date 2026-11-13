@@ -1,0 +1,93 @@
+# name: test/sql/types/numeric/numeric_join_filter_pushdown.test
+# description: Join filters reach NUMERIC probe columns whose keys are compared in their representation
+# group: [numeric]
+
+statement ok
+SET explain_output = 'OPTIMIZED_ONLY';
+
+# the probe side spans three row groups of INTEGER keys, the build side is a narrow range of SMALLINT keys
+statement ok
+CREATE TABLE probe AS SELECT (i % 200000)::INTEGER::NUMERIC AS k, i AS payload FROM range(300000) tbl(i);
+
+statement ok
+CREATE TABLE build AS SELECT (1000 + i)::SMALLINT::NUMERIC AS k, i AS label FROM range(50) tbl(i);
+
+# the keys are compared in the representation that holds both sides
+query II
+EXPLAIN (FORMAT yaml) SELECT count(*) FROM probe JOIN build USING (k)
+----
+logical_opt	<REGEX>:.*TRY_CAST\(k AS INTEGER\).*
+
+query II
+SELECT count(*), sum(payload) FROM probe JOIN build USING (k)
+----
+100	10102450
+
+query II
+SELECT count(*), sum(payload) FROM probe JOIN build ON probe.k = build.k AND payload % 2 = 0
+----
+50	5051200
+
+# the same without the pushed filters and without compression
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown,compressed_materialization';
+
+query II
+SELECT count(*), sum(payload) FROM probe JOIN build USING (k)
+----
+100	10102450
+
+statement ok
+SET disabled_optimizers = '';
+
+# build keys of another representation: fractional keys match no integer probe key
+statement ok
+CREATE TABLE build_frac AS SELECT (1000 + i + 0.5)::DECIMAL(10,1)::NUMERIC AS k, i AS label FROM range(50) tbl(i);
+
+query I
+SELECT count(*) FROM probe JOIN build_frac USING (k)
+----
+0
+
+statement ok
+INSERT INTO build_frac VALUES (1005.0, 100), (NULL, 101), (199999, 102);
+
+query II
+SELECT count(*), sum(payload) FROM probe JOIN build_frac USING (k)
+----
+3	402009
+
+# build keys outside the probe representation
+statement ok
+CREATE TABLE build_wide AS SELECT k, label FROM (VALUES (12345678901234567890::HUGEINT::NUMERIC, 1), (5::NUMERIC, 2), (-7::NUMERIC, 3)) t(k, label);
+
+query II
+SELECT count(*), sum(payload) FROM probe JOIN build_wide USING (k)
+----
+2	200010
+
+# range conditions use the pushed bounds as well
+query II
+SELECT count(*), max(payload) FROM probe JOIN build ON probe.k < build.k WHERE build.label = 0
+----
+2000	200999
+
+# the statistics of the cast describe the exact range
+statement ok
+CREATE TABLE stats_t AS SELECT (i % 100 - 50)::NUMERIC AS n FROM range(1000) tbl(i);
+
+query III
+SELECT stats(n::INTEGER)['min'], stats(n::INTEGER)['max'], stats(n::BIGINT)['max'] FROM stats_t LIMIT 1
+----
+-50	49	49
+
+# filters on casts of the column prune on the exact range
+query I
+SELECT count(*) FROM stats_t WHERE n::INTEGER > 1000
+----
+0
+
+query I
+SELECT count(*) FROM stats_t WHERE n::SMALLINT BETWEEN 48 AND 60
+----
+20

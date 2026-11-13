@@ -1,0 +1,295 @@
+# name: test/sql/types/decimal/wide_decimal_arithmetic.test
+# description: Arithmetic on decimals wider than 38 digits
+# group: [decimal]
+
+# result types grow past 38 digits whenever the arithmetic needs it
+query IIII
+SELECT typeof('1'::DECIMAL(38,2) + '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(39,2) + '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(255,2) + 1), typeof('1'::DECIMAL(50,2) - '1'::DECIMAL(40,10))
+----
+DECIMAL(39,2)	DECIMAL(40,2)	DECIMAL(255,2)	DECIMAL(59,10)
+
+query IIII
+SELECT typeof('1'::DECIMAL(40,1) * '1'::DECIMAL(40,1)), typeof('1'::DECIMAL(200,0) * '1'::DECIMAL(100,0)), typeof('1'::DECIMAL(40,1) % '1'::DECIMAL(40,1)), typeof(-('1'::DECIMAL(40,1)))
+----
+DECIMAL(80,2)	DECIMAL(255,0)	DECIMAL(40,1)	DECIMAL(40,1)
+
+# addition and subtraction
+query III
+SELECT '123456789012345678901234567890123456789012345.678'::DECIMAL(50,3) + '1.001'::DECIMAL(50,3), '123456789012345678901234567890123456789012345.678'::DECIMAL(50,3) - '123456789012345678901234567890123456789012345.679'::DECIMAL(50,3), -('1.5'::DECIMAL(40,1))
+----
+123456789012345678901234567890123456789012346.679	-0.001	-1.5
+
+query II
+SELECT '1.5'::DECIMAL(40,1) + 1, 1 - '1.5'::DECIMAL(40,1)
+----
+2.5	-0.5
+
+query II
+SELECT '1.5'::DECIMAL(40,1) + 1.25::DECIMAL(5,2), '1.5'::DECIMAL(40,1) + NULL
+----
+2.75	NULL
+
+# the result of an addition gets one extra digit, so it never overflows below the maximum width
+query I
+SELECT (repeat('9', 40))::DECIMAL(40,0) + (repeat('9', 40))::DECIMAL(40,0)
+----
+19999999999999999999999999999999999999998
+
+# at the maximum width the result is checked
+statement error
+SELECT repeat('9', 255)::DECIMAL(255,0) + repeat('9', 255)::DECIMAL(255,0)
+----
+Overflow in addition of DECIMAL(255,0)
+
+query I
+SELECT repeat('9', 255)::DECIMAL(255,0) + ('-' || repeat('9', 255))::DECIMAL(255,0)
+----
+0
+
+statement error
+SELECT ('-' || repeat('9', 255))::DECIMAL(255,0) - repeat('9', 255)::DECIMAL(255,0)
+----
+Overflow in subtraction of DECIMAL(255,0)
+
+# multiplication
+query II
+SELECT '123456789012345678901234567890.5'::DECIMAL(40,1) * '2.5'::DECIMAL(40,1), '123456789012345678901234567890.5'::DECIMAL(40,1) * -2
+----
+308641972530864197253086419726.25	-246913578024691357802469135781.0
+
+query I
+SELECT repeat('9', 44)::DECIMAL(44,0) * repeat('9', 44)::DECIMAL(44,0)
+----
+9999999999999999999999999999999999999999999800000000000000000000000000000000000000000001
+
+query I
+SELECT repeat('9', 127)::DECIMAL(255,0) * repeat('9', 128)::DECIMAL(255,0)
+----
+999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999890000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+
+statement error
+SELECT repeat('9', 128)::DECIMAL(255,0) * repeat('9', 128)::DECIMAL(255,0)
+----
+Overflow in multiplication of DECIMAL(255,0)
+
+statement error
+SELECT '1'::DECIMAL(200,150) * '1'::DECIMAL(200,150)
+----
+Needed scale 300 to accurately represent the multiplication result
+
+# modulo and division
+query III
+SELECT '10.5'::DECIMAL(40,1) % '3'::DECIMAL(40,1), '-10.5'::DECIMAL(40,1) % '3'::DECIMAL(40,1), '10.5'::DECIMAL(40,1) % '-3'::DECIMAL(40,1)
+----
+1.5	-1.5	1.5
+
+query I
+SELECT '123456789012345678901234567890123456789012345.678'::DECIMAL(50,3) % '1000'::DECIMAL(50,3)
+----
+345.678
+
+statement error
+SELECT '1'::DECIMAL(40,1) % '0'::DECIMAL(40,1)
+----
+Division by zero
+
+query I
+SELECT TRY('1'::DECIMAL(40,1) % '0'::DECIMAL(40,1))
+----
+NULL
+
+# / keeps returning a DOUBLE like it does for fixed-size decimals
+query II
+SELECT '7'::DECIMAL(40,0) / '2'::DECIMAL(40,0), typeof('7'::DECIMAL(40,0) / '2'::DECIMAL(40,0))
+----
+3.5	DOUBLE
+
+# comparisons with other decimals and integers
+query IIIII
+SELECT '1.5'::DECIMAL(45,2) > 1.4::DECIMAL(5,1), '1.5'::DECIMAL(45,2) = 1.5, 2 > '1.5'::DECIMAL(45,2), '1.5'::DECIMAL(45,2) IN ('1.50', '2'), 1 BETWEEN '0.5'::DECIMAL(40,2) AND '1.5'::DECIMAL(40,2)
+----
+true	true	true	true	true
+
+query II
+SELECT greatest('1.5'::DECIMAL(45,2), '2.5'::DECIMAL(45,2)), least('1.5'::DECIMAL(45,2), '-2.5'::DECIMAL(45,2))
+----
+2.50	-2.50
+
+# combining types in a union follows the same promotion rule
+query I
+SELECT typeof(x) FROM (SELECT '1.5'::DECIMAL(45,2) AS x UNION ALL SELECT 1.25::DECIMAL(5,3)) LIMIT 1
+----
+DECIMAL(46,3)
+
+query I
+SELECT typeof(x) FROM (SELECT '1.5'::DECIMAL(45,2) AS x UNION ALL SELECT 1::HUGEINT) LIMIT 1
+----
+DECIMAL(45,2)
+
+query I
+SELECT typeof(x) FROM (SELECT '1.5'::DECIMAL(38,2) AS x UNION ALL SELECT 1::HUGEINT) LIMIT 1
+----
+DECIMAL(40,2)
+
+# abs
+query II
+SELECT abs('-1.5'::DECIMAL(40,1)), abs('1.5'::DECIMAL(40,1))
+----
+1.5	1.5
+
+# rounding is exact, on the BIGNUM unscaled values
+query IIII
+SELECT round('1.555'::DECIMAL(40,3), 2), ceil('1.555'::DECIMAL(40,3)), floor('-1.555'::DECIMAL(40,3)), trunc('1.555'::DECIMAL(40,3))
+----
+1.56	2	-2	1
+
+query IIII
+SELECT typeof(round('1.555'::DECIMAL(40,3), 2)), typeof(round('1.5'::DECIMAL(40,1))), typeof(ceil('1.5'::DECIMAL(40,1))), typeof(trunc('1.5'::DECIMAL(40,1), 0))
+----
+DECIMAL(40,2)	DECIMAL(40,0)	DECIMAL(40,0)	DECIMAL(40,0)
+
+query IIII
+SELECT round('1.5'::DECIMAL(40,1)), round_even('2.5'::DECIMAL(40,1), 0), trunc('-1.5'::DECIMAL(40,1), 0), round('1234.5'::DECIMAL(40,1), -2)
+----
+2	2	-1	1200
+
+query IIII
+SELECT round_even('3.5'::DECIMAL(40,1), 0), round('-2.5'::DECIMAL(40,1)), round('99'::DECIMAL(40,0), -2), typeof(round('99'::DECIMAL(40,0), -2))
+----
+4	-3	100	DECIMAL(41,0)
+
+query II
+SELECT round('12345678901234567890123456789012345678901234567890.125'::DECIMAL(53,3), 1), ceil('-0.001'::DECIMAL(40,3))
+----
+12345678901234567890123456789012345678901234567890.1	0
+
+query III
+SELECT avg(x), median(x), quantile_cont(x, 0.5) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
+----
+2.0	2.0	2.0
+
+query III
+SELECT typeof(avg(x)), typeof(median(x)), typeof(quantile_cont(x, 0.5)) FROM (VALUES ('1'::DECIMAL(40,3))) t(x)
+----
+DOUBLE	DOUBLE	DOUBLE
+
+query I
+SELECT quantile_cont(x, [0.25, 0.75]) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
+----
+[1.5, 2.5]
+
+query I
+SELECT avg(x) FROM (VALUES ('123456789012345678901234567890123456789012345678901234567890'::DECIMAL(60,0)), ('-123456789012345678901234567890123456789012345678901234567890'::DECIMAL(60,0))) t(x)
+----
+0.0
+
+query I
+SELECT round('123456789012345678901234567890.5'::DECIMAL(40,1))
+----
+123456789012345678901234567891
+
+# discrete quantiles stay exact
+query II
+SELECT quantile_disc(x, 0.5), typeof(quantile_disc(x, 0.5)) FROM (VALUES ('1'::DECIMAL(40,3)), ('123456789012345678901234567890'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
+----
+3.000	DECIMAL(40,3)
+
+# the division identity on a table of pseudo-random wide values
+statement ok
+CREATE TABLE pairs AS
+SELECT (CASE WHEN i % 3 = 0 THEN '-' ELSE '' END || hash(i)::VARCHAR || hash(i + 1000)::VARCHAR || '.' || substr(hash(i + 2000)::VARCHAR, 1, 4))::DECIMAL(60,4) AS a,
+       (CASE WHEN i % 5 = 0 THEN '-' ELSE '' END || substr(hash(i * 31)::VARCHAR, 1, 1 + i % 15) || '.' || substr(hash(i * 17)::VARCHAR, 1, 4))::DECIMAL(60,4) AS b
+FROM range(1000) t(i)
+WHERE b <> 0;
+
+query I
+SELECT count(*) FROM pairs WHERE a <> (a % b) + (a - (a % b))
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE (a % b) <> 0 AND (((a % b) < 0) <> (a < 0))
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE a * b <> b * a OR a + b <> b + a OR (a + b) - b <> a
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE abs((a * b)::DOUBLE - a::DOUBLE * b::DOUBLE) > abs(a::DOUBLE * b::DOUBLE) * 1e-10
+----
+0
+
+# fixed-size decimals grow past 38 digits instead of clamping
+query III
+SELECT typeof('1'::DECIMAL(38,2) + '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(38,2) * '1'::DECIMAL(38,2)), typeof('1'::DECIMAL(38,10) % '1'::DECIMAL(38,2))
+----
+DECIMAL(39,2)	DECIMAL(76,4)	DECIMAL(46,10)
+
+# results that fit in 38 digits keep their fixed-size representation, the int64 tier keeps its checked clamp
+query III
+SELECT typeof('1'::DECIMAL(18,2) * '1'::DECIMAL(18,2)), typeof('1'::DECIMAL(20,2) + '1'::DECIMAL(20,2)), typeof('1'::DECIMAL(19,2) * '1'::DECIMAL(19,2))
+----
+DECIMAL(18,4)	DECIMAL(21,2)	DECIMAL(38,4)
+
+query I
+SELECT repeat('9', 38)::DECIMAL(38,0) * repeat('9', 38)::DECIMAL(38,0)
+----
+9999999999999999999999999999999999999800000000000000000000000000000000000001
+
+query I
+SELECT repeat('9', 38)::DECIMAL(38,0) + repeat('9', 38)::DECIMAL(38,0)
+----
+199999999999999999999999999999999999998
+
+query I
+SELECT '1'::DECIMAL(38,2) * '1'::DECIMAL(38,2) * '1'::DECIMAL(38,2) * '1'::DECIMAL(38,2)
+----
+1.00000000
+
+# the product of two 255-digit decimals is clamped to 255 digits and checked for overflow
+query I
+SELECT typeof('1'::DECIMAL(255,0) * '1'::DECIMAL(255,0))
+----
+DECIMAL(255,0)
+
+statement error
+SELECT ('1' || repeat('0', 200))::DECIMAL(255,0) * ('1' || repeat('0', 200))::DECIMAL(255,0)
+----
+<REGEX>:.*Out of Range Error.*
+
+# comparisons and common types no longer truncate the scale
+query I
+SELECT '1.5'::DECIMAL(38,2) = '1.5000000000000000000000000000000000001'::DECIMAL(38,37)
+----
+false
+
+query I
+SELECT typeof(COALESCE('1.5'::DECIMAL(38,2), '1.5'::DECIMAL(38,37)))
+----
+DECIMAL(73,37)
+
+query I
+SELECT typeof(x) FROM (SELECT '1.5'::DECIMAL(38,2) AS x UNION ALL SELECT '1.5'::DECIMAL(38,4)) t LIMIT 1
+----
+DECIMAL(40,4)
+
+# window RANGE frames over wide decimals
+query II
+SELECT x, count(*) OVER (ORDER BY x RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES ('1'::DECIMAL(40,1)), (2), (3), (10), (repeat('9', 39)::DECIMAL(40,1))) t(x) ORDER BY x
+----
+1.0	2
+2.0	3
+3.0	2
+10.0	1
+999999999999999999999999999999999999999.0	1
+
+# a fixed-size decimal order key at the 38-digit boundary gets a wide range frame
+query II
+SELECT x::INTEGER, count(*) OVER (ORDER BY x RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES (1::DECIMAL(38,1)), (2), (3)) t(x) ORDER BY x
+----
+1	2
+2	3
+3	2

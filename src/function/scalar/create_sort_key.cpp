@@ -18,6 +18,7 @@
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/common/types/numeric_blob.hpp"
 
 namespace duckdb {
 
@@ -278,6 +279,48 @@ struct SortKeyVarcharOperator {
 		}
 		result_value.Finalize();
 		return pos + 1;
+	}
+};
+
+//! NUMERIC blobs are prefix-free: zero is a single byte that no other blob starts with, and every other blob ends with
+//! a terminator byte that never occurs among its digits. They are copied as they are, without escaping or delimiter.
+struct SortKeyNumericOperator {
+	using TYPE = string_t;
+
+	static idx_t GetEncodeLength(TYPE input) {
+		return input.GetSize();
+	}
+
+	template <bool FLIP_BYTES>
+	static idx_t Encode(data_ptr_t result, TYPE input) {
+		auto input_data = const_data_ptr_cast(input.GetDataUnsafe());
+		auto input_size = input.GetSize();
+		idx_t pos = 0;
+		for (; pos + SwarWord::SIZE <= input_size; pos += SwarWord::SIZE) {
+			Store<uint64_t>(SortKeyWord::FlipWord<FLIP_BYTES>(Load<uint64_t>(input_data + pos)), result + pos);
+		}
+		for (; pos < input_size; pos++) {
+			result[pos] = SortKeyWord::FlipByte<FLIP_BYTES>(input_data[pos]);
+		}
+		return input_size;
+	}
+
+	template <bool FLIP_BYTES>
+	static idx_t Decode(const_data_ptr_t input, idx_t input_size, Vector &result, TYPE &result_value) {
+		idx_t blob_size;
+		if (FLIP_BYTES) {
+			data_t flipped[NumericBlob::MAX_BLOB_SIZE];
+			auto available = MinValue<idx_t>(input_size, NumericBlob::MAX_BLOB_SIZE);
+			for (idx_t pos = 0; pos < available; pos++) {
+				flipped[pos] = static_cast<data_t>(~input[pos]);
+			}
+			blob_size = NumericBlob::BlobSize(flipped, available);
+			result_value = StringVector::AddStringOrBlob(result, const_char_ptr_cast(flipped), blob_size);
+		} else {
+			blob_size = NumericBlob::BlobSize(input, input_size);
+			result_value = StringVector::AddStringOrBlob(result, const_char_ptr_cast(input), blob_size);
+		}
+		return blob_size;
 	}
 };
 
@@ -562,6 +605,8 @@ void GetSortKeyLengthRecursive(SortKeyVectorData &vector_data, SortKeyChunk chun
 	case PhysicalType::VARCHAR:
 		if (vector_data.vec.GetType().id() == LogicalTypeId::VARCHAR) {
 			TemplatedGetSortKeyLength<SortKeyVarcharOperator>(vector_data, chunk, result);
+		} else if (vector_data.vec.GetType().id() == LogicalTypeId::NUMERIC) {
+			TemplatedGetSortKeyLength<SortKeyNumericOperator>(vector_data, chunk, result);
 		} else {
 			TemplatedGetSortKeyLength<SortKeyBlobOperator>(vector_data, chunk, result);
 		}
@@ -778,6 +823,8 @@ void ConstructSortKeyRecursive(SortKeyVectorData &vector_data, SortKeyChunk chun
 	case PhysicalType::VARCHAR:
 		if (vector_data.vec.GetType().id() == LogicalTypeId::VARCHAR) {
 			TemplatedConstructSortKey<SortKeyVarcharOperator>(vector_data, chunk, info);
+		} else if (vector_data.vec.GetType().id() == LogicalTypeId::NUMERIC) {
+			TemplatedConstructSortKey<SortKeyNumericOperator>(vector_data, chunk, info);
 		} else {
 			TemplatedConstructSortKey<SortKeyBlobOperator>(vector_data, chunk, info);
 		}
@@ -1378,6 +1425,8 @@ void DecodeSortKeyRecursive(DecodeSortKeyData decode_data[], DecodeSortKeyVector
 	case PhysicalType::VARCHAR:
 		if (result.GetType().id() == LogicalTypeId::VARCHAR) {
 			TemplatedDecodeSortKey<SortKeyVarcharOperator>(decode_data, vector_data, result, result_offset, count);
+		} else if (result.GetType().id() == LogicalTypeId::NUMERIC) {
+			TemplatedDecodeSortKey<SortKeyNumericOperator>(decode_data, vector_data, result, result_offset, count);
 		} else {
 			TemplatedDecodeSortKey<SortKeyBlobOperator>(decode_data, vector_data, result, result_offset, count);
 		}

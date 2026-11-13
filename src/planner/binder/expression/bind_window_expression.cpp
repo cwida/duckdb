@@ -44,6 +44,9 @@ static bool IsRangeType(const LogicalType &type) {
 	case PhysicalType::DOUBLE:
 	case PhysicalType::INTERVAL:
 		return true;
+	case PhysicalType::VARCHAR:
+		// wide decimals are BIGNUM blobs whose byte order is their numeric order
+		return type.id() == LogicalTypeId::DECIMAL;
 	default:
 		return false;
 	}

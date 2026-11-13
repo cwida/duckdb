@@ -47,6 +47,10 @@ public:
 
 	//! Returns the DatabaseInstance associated with this extension loader
 	DUCKDB_API DatabaseInstance &GetDatabaseInstance() const;
+	//! Takes the process-wide debug switches over from the database. A loadable extension is linked with its own copy
+	//! of the library, so it runs this with its own copy of the switches: an extension that builds types whose physical
+	//! representation depends on such a switch (DECIMAL under debug_force_wide_decimal) calls this when it loads
+	DUCKDB_API void TakeOverProcessWideSettings() const;
 
 public:
 	//! Set the description of the extension

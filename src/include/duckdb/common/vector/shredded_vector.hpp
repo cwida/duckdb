@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/shredded_numeric_range.hpp"
 
 namespace duckdb {
 
@@ -20,6 +21,12 @@ public:
 public:
 	Vector &GetChild() {
 		return *shredded_data;
+	}
+	const ShreddedNumericRange &GetNumericRange() const {
+		return numeric_range;
+	}
+	void SetNumericRange(const ShreddedNumericRange &range) {
+		numeric_range = range;
 	}
 
 public:
@@ -43,6 +50,8 @@ protected:
 
 private:
 	unique_ptr<Vector> shredded_data;
+	//! The value range of a NUMERIC vector, once known (a slice keeps the range of its source)
+	ShreddedNumericRange numeric_range;
 };
 
 struct ShreddedVector {
