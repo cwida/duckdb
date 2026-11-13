@@ -37,16 +37,19 @@ JSONTransformOptions::JSONTransformOptions(bool strict_cast_p, bool error_duplic
 }
 
 //! Forward declaration for recursion
-static LogicalType StructureStringToType(yyjson_val *val, ClientContext &context);
+static LogicalType StructureStringToType(yyjson_val *val, ClientContext &context,
+                                         const DecimalWidthLimit &decimal_width_limit);
 
-static LogicalType StructureStringToTypeArray(yyjson_val *arr, ClientContext &context) {
+static LogicalType StructureStringToTypeArray(yyjson_val *arr, ClientContext &context,
+                                              const DecimalWidthLimit &decimal_width_limit) {
 	if (yyjson_arr_size(arr) != 1) {
 		throw BinderException("Too many values in array of JSON structure");
 	}
-	return LogicalType::LIST(StructureStringToType(yyjson_arr_get_first(arr), context));
+	return LogicalType::LIST(StructureStringToType(yyjson_arr_get_first(arr), context, decimal_width_limit));
 }
 
-static LogicalType StructureToTypeObject(yyjson_val *obj, ClientContext &context) {
+static LogicalType StructureToTypeObject(yyjson_val *obj, ClientContext &context,
+                                         const DecimalWidthLimit &decimal_width_limit) {
 	// STRUCT field names are case-insensitive
 	identifier_set_t names;
 	child_list_t<LogicalType> child_types;
@@ -61,7 +64,7 @@ static LogicalType StructureToTypeObject(yyjson_val *obj, ClientContext &context
 		if (!names.insert(Identifier(key_str)).second) {
 			JSONCommon::ThrowValFormatError("Duplicate keys in object in JSON structure: %s", val);
 		}
-		child_types.emplace_back(key_str, StructureStringToType(val, context));
+		child_types.emplace_back(key_str, StructureStringToType(val, context, decimal_width_limit));
 	}
 	D_ASSERT(yyjson_obj_size(obj) == names.size());
 	if (child_types.empty()) {
@@ -70,15 +73,17 @@ static LogicalType StructureToTypeObject(yyjson_val *obj, ClientContext &context
 	return LogicalType::STRUCT(child_types);
 }
 
-static LogicalType StructureStringToType(yyjson_val *val, ClientContext &context) {
+// the type names of the structure are bound within the decimal width limit of the bind
+static LogicalType StructureStringToType(yyjson_val *val, ClientContext &context,
+                                         const DecimalWidthLimit &decimal_width_limit) {
 	switch (yyjson_get_tag(val)) {
 	case YYJSON_TYPE_ARR | YYJSON_SUBTYPE_NONE:
-		return StructureStringToTypeArray(val, context);
+		return StructureStringToTypeArray(val, context, decimal_width_limit);
 	case YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE:
-		return StructureToTypeObject(val, context);
+		return StructureToTypeObject(val, context, decimal_width_limit);
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NOESC:
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NONE:
-		return TransformStringToLogicalType(unsafe_yyjson_get_str(val), context);
+		return TransformStringToLogicalType(unsafe_yyjson_get_str(val), context, &decimal_width_limit);
 	default:
 		throw BinderException("invalid JSON structure");
 	}
@@ -100,7 +105,8 @@ static unique_ptr<FunctionData> JSONTransformBind(BindScalarFunctionInput &input
 		auto structure_string = json_structure_val->GetValueUnsafe<string_t>();
 		JSONAllocator json_allocator(Allocator::DefaultAllocator());
 		auto doc = JSONCommon::ReadDocument(structure_string, JSONCommon::READ_FLAG, json_allocator.GetYYAlc());
-		bound_function.SetReturnType(StructureStringToType(doc->root, context));
+		const auto decimal_width_limit = input.GetDecimalWidthLimit();
+		bound_function.SetReturnType(StructureStringToType(doc->root, context, decimal_width_limit));
 	}
 	return make_uniq<VariableReturnBindData>(bound_function.GetReturnType());
 }
