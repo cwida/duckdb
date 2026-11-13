@@ -1,4 +1,6 @@
 #include "capi_tester.hpp"
+
+#include <cmath>
 #include <regex>
 
 using namespace duckdb;
@@ -311,6 +313,13 @@ TEST_CASE("Test different types of C API", "[capi]") {
 	REQUIRE(duckdb_decimal_to_double(result->Fetch<duckdb_decimal>(2, 0)) == -320938.4298);
 	REQUIRE(duckdb_decimal_to_double(result->Fetch<duckdb_decimal>(3, 0)) == 49082094824.904820482094);
 	REQUIRE(duckdb_decimal_to_double(result->Fetch<duckdb_decimal>(4, 0)) == 0.0);
+	// a wide descriptor can carry the smallest 128-bit value, which cannot be negated
+	duckdb_decimal wide_minimum;
+	wide_minimum.width = 39;
+	wide_minimum.scale = 1;
+	wide_minimum.value.lower = 0;
+	wide_minimum.value.upper = INT64_MIN;
+	REQUIRE(duckdb_decimal_to_double(wide_minimum) == -std::ldexp(1.0, 127) / 10.0);
 
 	REQUIRE(!result->IsNull(0, 0));
 	REQUIRE(!result->IsNull(1, 0));

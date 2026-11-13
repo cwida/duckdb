@@ -32,12 +32,13 @@ LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector
 	LogicalType max_type = ExpressionBinder::GetExpressionReturnType(*children[0]);
 	bool is_in_operator = (op.GetExpressionType() == ExpressionType::COMPARE_IN ||
 	                       op.GetExpressionType() == ExpressionType::COMPARE_NOT_IN);
+	const auto decimal_width_limit = binder.GetDecimalWidthLimit();
 	for (idx_t i = 1; i < children.size(); i++) {
 		auto child_return = ExpressionBinder::GetExpressionReturnType(*children[i]);
 		if (is_in_operator) {
 			// If it's IN/NOT_IN operator, adjust DECIMAL and VARCHAR returned type.
 			if (!BoundComparisonExpression::TryBindComparison(context, max_type, child_return, max_type,
-			                                                  op.GetExpressionType())) {
+			                                                  op.GetExpressionType(), decimal_width_limit)) {
 				throw BinderException(op,
 				                      "Cannot mix values of type %s and %s in %s clause - an explicit cast is required",
 				                      max_type.ToString(), child_return.ToString(),
@@ -45,7 +46,7 @@ LogicalType ExpressionBinder::ResolveCoalesceType(OperatorExpression &op, vector
 			}
 		} else {
 			// If it's COALESCE operator, don't do extra adjustment.
-			if (!LogicalType::TryGetMaxLogicalType(context, max_type, child_return, max_type)) {
+			if (!LogicalType::TryGetMaxLogicalType(context, max_type, child_return, max_type, decimal_width_limit)) {
 				throw BinderException(
 				    op, "Cannot mix values of type %s and %s in COALESCE operator - an explicit cast is required",
 				    max_type.ToString(), child_return.ToString());

@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "core_functions/scalar/array_functions.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
@@ -56,7 +57,8 @@ void ArrayValueResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	// construct return type
 	LogicalType child_type = arguments[0]->GetReturnType();
 	for (idx_t i = 1; i < arguments.size(); i++) {
-		child_type = LogicalType::MaxLogicalType(context, child_type, arguments[i]->GetReturnType());
+		child_type = LogicalType::MaxLogicalType(context, child_type, arguments[i]->GetReturnType(),
+		                                         input.GetDecimalWidthLimit());
 	}
 
 	if (arguments.size() > ArrayType::MAX_ARRAY_SIZE) {

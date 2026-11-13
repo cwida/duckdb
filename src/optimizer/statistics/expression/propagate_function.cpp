@@ -129,7 +129,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	if (func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
-	if (BaseStatistics::GetStatsType(func.GetReturnType()) != StatisticsType::NUMERIC_STATS ||
+	const auto result_stats_type = BaseStatistics::GetStatsType(func.GetReturnType());
+	if ((result_stats_type != StatisticsType::NUMERIC_STATS && result_stats_type != StatisticsType::BIGNUM_STATS) ||
 	    func.GetReturnType().InternalType() == PhysicalType::BOOL) {
 		return nullptr;
 	}
@@ -158,11 +159,12 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		if (cs.CanHaveNull()) {
 			output_can_have_null = true;
 		}
-		if (cs.GetStatsType() != StatisticsType::NUMERIC_STATS || !NumericStats::HasMinMax(cs)) {
+		if ((cs.GetStatsType() != StatisticsType::NUMERIC_STATS && cs.GetStatsType() != StatisticsType::BIGNUM_STATS) ||
+		    !HasNumericMinMax(cs)) {
 			return nullptr;
 		}
-		Value lo = NumericStats::Min(cs);
-		Value hi = NumericStats::Max(cs);
+		Value lo = NumericMin(cs);
+		Value hi = NumericMax(cs);
 
 		if (!IsKnownMonotonic(m)) {
 			return nullptr;
@@ -212,9 +214,9 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		                        func.Function().GetName());
 	}
 
-	auto result = NumericStats::CreateEmpty(func.GetReturnType());
-	NumericStats::SetMin(result, out_lo);
-	NumericStats::SetMax(result, out_hi);
+	auto result = BaseStatistics::CreateEmpty(func.GetReturnType());
+	SetNumericMin(result, out_lo);
+	SetNumericMax(result, out_hi);
 
 	result.Set(StatsInfo::CAN_HAVE_VALID_VALUES);
 	if (output_can_have_null) {

@@ -105,9 +105,10 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 		bound_parameters.emplace_back(param->GetAlias().GetIdentifierName(), bound_param, location);
 	};
 
-	// Select the matching constructor and call it
-	auto result_type =
-	    type_entry.constructors.Bind(context, type_entry.user_type, bound_parameters, type_expr.GetQueryLocation());
+	// Select the matching constructor and call it, binding decimals within the limit of the binder
+	const auto decimal_width_limit = binder.GetDecimalWidthLimit();
+	auto result_type = type_entry.constructors.Bind(context, type_entry.user_type, bound_parameters,
+	                                                type_expr.GetQueryLocation(), &decimal_width_limit);
 
 	// Return the resulting type!
 	auto result_expr =

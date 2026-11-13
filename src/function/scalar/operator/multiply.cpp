@@ -1,6 +1,9 @@
 #include "duckdb/common/operator/multiply.hpp"
 
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/hugeint.hpp"
@@ -318,6 +321,12 @@ hugeint_t DecimalMultiplyOverflowCheck::Operation(hugeint_t left, hugeint_t righ
 		                          left.ToString(), right.ToString());
 	}
 	return result;
+}
+
+bignum_t MultiplyOperator::Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state) {
+	const BignumIntermediate lhs(left);
+	const BignumIntermediate rhs(right);
+	return bignum_t(BignumIntermediate::Multiply(heap, state, lhs, rhs));
 }
 
 } // namespace duckdb

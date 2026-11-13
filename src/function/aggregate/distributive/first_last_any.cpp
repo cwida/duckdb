@@ -416,6 +416,9 @@ AggregateFunction GetDecimalFirstFunction(const LogicalType &type) {
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::INTEGER);
 	case PhysicalType::INT64:
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::BIGINT);
+	case PhysicalType::VARCHAR:
+		// wide decimals are BIGNUM blobs
+		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::VARCHAR);
 	default:
 		return GetFirstFunction<LAST, SKIP_NULLS>(LogicalType::HUGEINT);
 	}

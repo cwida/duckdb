@@ -1023,7 +1023,8 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 	bool index_scan = false;
 	RowIdVectorOutput row_ids(max_count);
 
-	info->BindIndexes(context, ART::TYPE_NAME);
+	// a read does not need an index whose stored keys do not match: it is left unbound and the scan does without it
+	info->BindIndexes(context, ART::TYPE_NAME, true);
 
 	// Exclude rowid-shifting vacuum from the ART probe until the index scan finishes: collected rowids must be
 	// fetched against the matching row-group tree. Falling back to a table scan releases the lock on return.

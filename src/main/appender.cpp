@@ -5,6 +5,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/bignum.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -101,11 +103,17 @@ void BaseAppender::AppendDecimalValueInternal(Vector &col, SRC input) {
 		auto scale = DecimalType::GetScale(type);
 		CastParameters parameters;
 		auto &result = FlatVector::GetDataMutable<DST>(col)[chunk.size()];
-		TryCastToDecimal::Operation<SRC, DST>(input, result, parameters, width, scale);
+		VectorDecimalCast::Operation<TryCastToDecimal, SRC, DST>(input, result, col, parameters, width, scale);
 		return;
 	}
 	case AppenderType::PHYSICAL: {
-		AppendValueInternal<SRC, DST>(col, input);
+		if constexpr (std::is_same<DST, bignum_t>::value) {
+			// the bignum_t tier has no physical representation among the appended types
+			throw InternalException("Physical appends are not supported for DECIMAL types wider than %d digits",
+			                        Decimal::MAX_WIDTH_INT128);
+		} else {
+			AppendValueInternal<SRC, DST>(col, input);
+		}
 		return;
 	}
 	default:
@@ -172,6 +180,9 @@ void BaseAppender::AppendValueInternal(T input) {
 			break;
 		case PhysicalType::INT128:
 			AppendDecimalValueInternal<T, hugeint_t>(col, input);
+			break;
+		case PhysicalType::VARCHAR:
+			AppendDecimalValueInternal<T, bignum_t>(col, input);
 			break;
 		default:
 			InternalException::Throw("Internal type not recognized for Decimal");

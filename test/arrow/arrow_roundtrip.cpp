@@ -167,6 +167,18 @@ TEST_CASE("Test arrow roundtrip", "[arrow]") {
 	TestArrowRoundtrip("SELECT MAP(['hello', 'world'||i::VARCHAR],[i + 1, NULL]) as a FROM range(10) tbl(i)");
 	TestArrowRoundtrip("SELECT (1.5 + i)::DECIMAL(4,2) dec4, (1.5 + i)::DECIMAL(9,3) dec9, (1.5 + i)::DECIMAL(18,3) "
 	                   "dec18, (1.5 + i)::DECIMAL(38,3) dec38 FROM range(10) tbl(i)");
+	// wide decimals are exported as decimal256, which needs Arrow format version 1.1
+	{
+		DuckDB db;
+		Connection con(db);
+		REQUIRE(!con.Query("SET arrow_output_version = '1.1'")->HasError());
+		string wide_query = "SELECT (1.5 + i)::DECIMAL(39,3) dec39, (-1.5 - i)::DECIMAL(50,10) dec50, "
+		                    "(repeat('9', 69) || '.' || repeat('9', 6))::DECIMAL(75,6) - i dec76, "
+		                    "(CASE WHEN i % 2 = 0 THEN NULL ELSE (i * 1e30)::VARCHAR::DECIMAL(60,2) END) dec_null "
+		                    "FROM range(10) tbl(i)";
+		REQUIRE(ArrowTestHelper::RunArrowComparison(con, wide_query, true));
+		REQUIRE(ArrowTestHelper::RunArrowComparison(con, wide_query, false));
+	}
 	TestArrowRoundtrip(
 	    "SELECT case when i%2=0 then null else INTERVAL (i) seconds end AS interval FROM range(10) tbl(i)");
 #if STANDARD_VECTOR_SIZE < 64

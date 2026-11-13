@@ -1,0 +1,389 @@
+# name: test/sql/types/decimal/wide_decimal_review.test
+# description: Wide decimal edge cases: shared operands, negated constants, casts, stored expressions and storage versions
+# group: [decimal]
+
+load {TEST_DIR}/wide_decimal_review.db
+
+# wide decimal columns need the latest storage version
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_review_latest.db' AS wd (STORAGE_VERSION 'latest');
+
+statement ok
+USE wd;
+
+# subtraction leaves the right operand intact, its bytes can be shared with the left operand
+statement ok
+CREATE TABLE t AS SELECT '123456789012345678901234567890.12'::DECIMAL(50,2) AS d;
+
+query I
+SELECT d - d FROM t
+----
+0.00
+
+query II
+SELECT d + d - d, d - '0.12'::DECIMAL(50,2) FROM t
+----
+123456789012345678901234567890.12	123456789012345678901234567890.00
+
+# multi-threaded hash joins on subtraction results
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE lhs AS SELECT (i::VARCHAR || '12345678901234567890123456789012345.5')::DECIMAL(50,1) AS d, i FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE rhs AS SELECT d, i FROM lhs;
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.d - '0.5'::DECIMAL(50,1) = rhs.d - '0.5'::DECIMAL(50,1)
+----
+5000
+
+query I
+SELECT count(*) FROM lhs JOIN rhs USING (i) WHERE lhs.d - rhs.d <> 0
+----
+0
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.d - rhs.d = 0 AND lhs.i = rhs.i
+----
+5000
+
+# negated wide decimal constants in comparisons
+statement ok
+CREATE TABLE wide AS SELECT '1'::DECIMAL(40,0) AS d UNION ALL SELECT '-1'::DECIMAL(40,0) UNION ALL SELECT '123456789012345678901234567890'::DECIMAL(40,0);
+
+query I
+SELECT d FROM wide WHERE -d = '-1'::DECIMAL(40,0)
+----
+1
+
+query I
+SELECT d FROM wide WHERE -d = '-123456789012345678901234567890'::DECIMAL(40,0)
+----
+123456789012345678901234567890
+
+query I
+SELECT d FROM wide WHERE -d < '-100'::DECIMAL(40,0)
+----
+123456789012345678901234567890
+
+query I
+SELECT d FROM wide WHERE -d > '0'::DECIMAL(40,0)
+----
+-1
+
+# decimal_division does not support wide arguments
+statement error
+SELECT decimal_division('0.1'::DECIMAL(39,39), 1::DECIMAL(1,0), 1)
+----
+Not implemented Error
+
+statement error
+SELECT decimal_division('1'::DECIMAL(38,0), '1'::DECIMAL(39,0))
+----
+Not implemented Error
+
+# DOUBLE casts round half away from zero, like the fixed-size decimals
+query IIII
+SELECT 2.5::DOUBLE::DECIMAL(38,0), 2.5::DOUBLE::DECIMAL(39,0), 0.125::DOUBLE::DECIMAL(38,2), 0.125::DOUBLE::DECIMAL(39,2)
+----
+3	3	0.13	0.13
+
+query IIII
+SELECT (-2.5)::DOUBLE::DECIMAL(39,0), (-0.125)::DOUBLE::DECIMAL(39,2), 0.5::DOUBLE::DECIMAL(39,0), (-0.5)::DOUBLE::DECIMAL(39,0)
+----
+-3	-0.13	1	-1
+
+# the exact binary expansion of the double is used
+query III
+SELECT 1e30::DOUBLE::DECIMAL(40,0), 0.1::DOUBLE::DECIMAL(39,20), power(2, 100)::DECIMAL(39,0)
+----
+1000000000000000019884624838656	0.10000000000000000555	1267650600228229401496703205376
+
+query III
+SELECT 2.675::DOUBLE::DECIMAL(39,2), 5e-324::DECIMAL(39,38), 0.0::DOUBLE::DECIMAL(39,5)
+----
+2.67	0.00000000000000000000000000000000000000	0.00000
+
+query II
+SELECT 1e200::DOUBLE::DECIMAL(255,10)::VARCHAR = '99999999999999996973312221251036165947450327545502362648241750950346848435554075534196338404706251868027512415973882408182135734368278484639385041047239877871023591066789981811181813306167128854888448.0000000000', power(2, 200)::DECIMAL(255,0)
+----
+true	1606938044258990275541962092341162602522202993782792835301376
+
+statement error
+SELECT 1e40::DOUBLE::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT 1e300::DOUBLE::DECIMAL(255,10)
+----
+Conversion Error
+
+# underscores between digits are accepted like in the fixed-size cast
+query II
+SELECT '1_000.5'::DECIMAL(38,1), '1_000.5'::DECIMAL(39,1)
+----
+1000.5	1000.5
+
+query II
+SELECT '1_000.000_5'::DECIMAL(50,4), '-1_2_3e1_0'::DECIMAL(50,0)
+----
+1000.0005	-1230000000000
+
+statement error
+SELECT '1__000'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '1000_'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '_1000'::DECIMAL(39,0)
+----
+Conversion Error
+
+statement error
+SELECT '1000._5'::DECIMAL(39,1)
+----
+Conversion Error
+
+# stored expressions (index keys, CHECK constraints, generated columns) can have wide results
+statement ok
+CREATE TABLE prod(a DECIMAL(38,0), b DECIMAL(38,0));
+
+query I
+SELECT typeof(a * b) FROM (VALUES (1::DECIMAL(38,0), 1::DECIMAL(38,0))) t(a, b)
+----
+DECIMAL(76,0)
+
+statement ok
+CREATE UNIQUE INDEX prod_idx ON prod((a * b))
+
+statement ok
+CREATE TABLE checked(a DECIMAL(38,0), b DECIMAL(38,0), CHECK (a * b > 0))
+
+statement ok
+CREATE TABLE generated(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
+
+statement ok
+INSERT INTO prod VALUES (2, 3)
+
+statement error
+INSERT INTO prod VALUES (3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO checked VALUES (3, 2)
+
+statement error
+INSERT INTO checked VALUES (-3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO generated VALUES (repeat('9', 38)::DECIMAL(38,0), repeat('9', 38)::DECIMAL(38,0))
+
+query II
+SELECT c, typeof(c) FROM generated
+----
+9999999999999999999999999999999999999800000000000000000000000000000000000001	DECIMAL(76,0)
+
+# the stored expressions are bound again after a restart (which restores the search path before the attached
+# database is back)
+statement ok
+USE wide_decimal_review;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_review_latest.db' AS wd;
+
+statement ok
+USE wd;
+
+statement error
+INSERT INTO prod VALUES (3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement error
+INSERT INTO checked VALUES (-3, 2)
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+INSERT INTO prod VALUES (repeat('9', 38)::DECIMAL(38,0), repeat('9', 38)::DECIMAL(38,0))
+
+query I
+SELECT count(*) FROM prod WHERE a * b = repeat('9', 38)::DECIMAL(38,0) * repeat('9', 38)::DECIMAL(38,0)
+----
+1
+
+# wide decimal columns need storage version v2.1.0
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_v1.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+statement error
+CREATE TABLE old.t(d DECIMAL(39,0)[])
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement ok
+CREATE TABLE old.t(d DECIMAL(38,0))
+
+statement error
+ALTER TABLE old.t ALTER d TYPE DECIMAL(39,0)
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement error
+ALTER TABLE old.t ADD COLUMN e DECIMAL(40,2)
+----
+DECIMAL columns wider than 38 digits are not supported in storage
+
+statement ok
+CREATE TABLE old.fixed(d DECIMAL(38,2))
+
+statement ok
+ALTER TABLE old.fixed ALTER d TYPE DECIMAL(38,0)
+
+# FILL interpolates wide decimals both as the filled value and as the ordering key
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES ('1'::DECIMAL(39,0), 1::DECIMAL(39,0)), ('2', NULL), ('3', 3)) t(k, v) ORDER BY k;
+----
+1	1
+2	2
+3	3
+
+query II
+SELECT k, fill(v ORDER BY k + k) OVER () FROM (VALUES (1::DECIMAL(38,0), 1), (2, NULL), (3, 3)) t(k, v) ORDER BY k;
+----
+1	1
+2	2
+3	3
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k + k) FROM (VALUES (1::DECIMAL(38,0), 1), (2, NULL), (3, 3)) t(k, v) ORDER BY k;
+----
+1	1
+2	2
+3	3
+
+# wide decimals interpolate and extrapolate on the exact values like the fixed-size tiers
+query II
+SELECT k, fill(v) OVER (ORDER BY k)
+FROM (VALUES (1, '1000.00'::DECIMAL(50,2)), (2, NULL), (3, '3000.00'::DECIMAL(50,2)), (5, NULL)) t(k, v)
+ORDER BY k;
+----
+1	1000.00
+2	2000.00
+3	3000.00
+5	5000.00
+
+# the ends are not rounded through DOUBLE and the midpoint truncates like the fixed-size tiers
+foreach width 38 39 76
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES
+  (1, 9007199254740993::DECIMAL({width},0)), (2, NULL), (3, 9007199254740993::DECIMAL({width},0)),
+  (4, 1::DECIMAL({width},0)), (5, NULL), (6, 2::DECIMAL({width},0)),
+  (7, -2::DECIMAL({width},0)), (8, NULL), (9, -1::DECIMAL({width},0))) t(k, v) ORDER BY k;
+----
+1	9007199254740993
+2	9007199254740993
+3	9007199254740993
+4	1
+5	1
+6	2
+7	-2
+8	-2
+9	-1
+
+endloop
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES
+  (1, '99999999999999999999999999999999999999999999999999.5'::DECIMAL(51,1)), (3, NULL),
+  (4, '99999999999999999999999999999999999999999999999999.8'::DECIMAL(51,1))) t(k, v) ORDER BY k;
+----
+1	99999999999999999999999999999999999999999999999999.5
+3	99999999999999999999999999999999999999999999999999.7
+4	99999999999999999999999999999999999999999999999999.8
+
+# extrapolation truncates the final value towards zero, like the hugeint tier, not the offset
+foreach width 38 39 76
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, 1), (3, 2), (5, NULL)) t(k, v) ORDER BY k;
+----
+0	0
+1	1
+3	2
+5	3
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, -1), (3, -2), (5, NULL)) t(k, v) ORDER BY k;
+----
+0	0
+1	-1
+3	-2
+5	-3
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, 2), (4, 3), (5, NULL), (6, NULL), (7, NULL)) t(k, v) ORDER BY k;
+----
+0	1
+1	2
+4	3
+5	3
+6	3
+7	4
+
+endloop
+
+# an offset wider than the type still fills when the result fits, the scaled delta carries DOUBLE precision
+query II
+SELECT k, (fill(v) OVER (ORDER BY k))::DOUBLE FROM (VALUES (0, ('-9' || repeat('0', 254))::DECIMAL(255,0)),
+  (3, NULL), (4, ('9' || repeat('0', 254))::DECIMAL(255,0))) t(k, v) ORDER BY k;
+----
+0	-9e+254
+3	4.5e+254
+4	9e+254
+
+query II
+SELECT k, (fill(v) OVER (ORDER BY k))::DOUBLE FROM (VALUES (0, ('-9' || repeat('0', 37))::DECIMAL(38,0)),
+  (3, NULL), (4, ('9' || repeat('0', 37))::DECIMAL(38,0))) t(k, v) ORDER BY k;
+----
+0	-9e+37
+3	4.5e+37
+4	9e+37
+
+# a result beyond the width stays NULL
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (1, ('9' || repeat('0', 38))::DECIMAL(39,0)),
+  (2, ('9' || repeat('9', 38))::DECIMAL(39,0)), (3, NULL)) t(k, v) ORDER BY k;
+----
+1	900000000000000000000000000000000000000
+2	999999999999999999999999999999999999999
+3	NULL
+
+# a tiny slope keeps every mantissa bit: the power of two of the exact scaling is a BIGNUM, 1e1000 * 1e-320 fills 680 digits
+query II
+WITH filled AS (SELECT k, fill(v) OVER (ORDER BY k) AS v FROM (VALUES (0::DOUBLE, '0'::DECIMAL(1001,0)), (1e-320::DOUBLE, NULL), (1::DOUBLE, '1e1000'::DECIMAL(1001,0))) t(k, v))
+SELECT v > 0, length(v::VARCHAR) FROM filled WHERE k = 1e-320;
+----
+true	680
+
+# 1e1000 * 1e-300 is the exact product with the DOUBLE value of 1e-300, 701 digits
+query II
+WITH filled AS (SELECT k, fill(v) OVER (ORDER BY k) AS v FROM (VALUES (0::DOUBLE, '0'::DECIMAL(1001,0)), (1e-300::DOUBLE, NULL), (1::DOUBLE, '1e1000'::DECIMAL(1001,0))) t(k, v))
+SELECT length(v::VARCHAR), v::VARCHAR LIKE '1000000000000000025059%' FROM filled WHERE k = 1e-300;
+----
+701	true

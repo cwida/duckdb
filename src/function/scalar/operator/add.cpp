@@ -1,6 +1,9 @@
 #include "duckdb/common/operator/add.hpp"
 
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/value.hpp"
 
 #include "duckdb/common/types/date.hpp"
@@ -345,6 +348,12 @@ hugeint_t DecimalAddOverflowCheck::Operation(hugeint_t left, hugeint_t right) {
 		throw OutOfRangeException("Overflow in addition of DECIMAL(38) (%s + %s);", left.ToString(), right.ToString());
 	}
 	return result;
+}
+
+bignum_t AddOperator::Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state) {
+	const BignumIntermediate lhs(left);
+	const BignumIntermediate rhs(right);
+	return bignum_t(BignumIntermediate::Add(heap, lhs, rhs));
 }
 
 //===--------------------------------------------------------------------===//

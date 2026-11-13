@@ -96,7 +96,8 @@ static BoundCastInfo VectorStringCastNumericSwitch(BindCastInput &input, const L
 	case LogicalTypeId::INTERVAL:
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<string_t, interval_t, duckdb::TryCastErrorMessage>);
 	case LogicalTypeId::DECIMAL:
-		return BoundCastInfo(&VectorCastHelpers::ToDecimalCast<string_t>);
+		return DefaultCasts::WideDecimalCast(BoundCastInfo(&VectorCastHelpers::ToDecimalCast<string_t>), source,
+		                                     target);
 	default:
 		return DefaultCasts::TryVectorNullCast;
 	}

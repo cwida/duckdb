@@ -1,0 +1,124 @@
+# name: test/sql/types/decimal/wide_decimal_catalog_storage_version.test
+# description: Wide decimal types reach the catalog of a database written before wide decimals only where older engines can read them
+# group: [decimal]
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_catalog.db' AS old (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE old.t(a DECIMAL(38,2), b DECIMAL(38,2));
+
+statement ok
+INSERT INTO old.t VALUES (1.5, 2.5);
+
+# a view with a wide result type is stored without its column types, older engines bind it by their own rules
+statement ok
+CREATE VIEW old.v AS SELECT a * b AS p, 1::DECIMAL(38,0) * 1::DECIMAL(38,0) AS q FROM old.t;
+
+query III
+SELECT p, typeof(p), typeof(q) FROM old.v
+----
+3.7500	DECIMAL(76,4)	DECIMAL(76,0)
+
+query I
+SELECT data_type FROM duckdb_columns() WHERE database_name = 'old' AND table_name = 'v' ORDER BY column_index
+----
+DECIMAL(76,4)
+DECIMAL(76,0)
+
+# a view whose types fit stores them
+statement ok
+CREATE VIEW old.w AS SELECT a + 1 AS s FROM old.t;
+
+# a type alias or a macro parameter of a wide type is refused, like a wide column
+statement error
+CREATE TYPE old.wide AS DECIMAL(39,0)
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TYPE old.wide AS STRUCT(a DECIMAL(39,0))
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m(x DECIMAL(39,0)) AS x
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m(x DECIMAL(39,0)[]) AS TABLE SELECT x
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CREATE TYPE old.narrow AS DECIMAL(38,0)
+
+statement ok
+CREATE MACRO old.m(x DECIMAL(38,0)) AS x * x
+
+# a wide intermediate result in a view or a macro is not stored, only the result types of a view are
+statement ok
+CREATE VIEW old.v2 AS SELECT (1::DECIMAL(39,0) * 2)::INTEGER AS i;
+
+statement ok
+CREATE MACRO old.m2(x) AS (x::DECIMAL(39,0) * 2)::INTEGER;
+
+query II
+SELECT i, old.m2(3) FROM old.v2
+----
+2	6
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_catalog.db' AS old;
+
+query III
+SELECT p, typeof(p), typeof(q) FROM old.v
+----
+3.7500	DECIMAL(76,4)	DECIMAL(76,0)
+
+query I
+SELECT s FROM old.w
+----
+2.50
+
+query II
+SELECT i, old.m2(3) FROM old.v2
+----
+2	6
+
+statement ok
+DETACH old
+
+# a database of the current storage version stores the wide types
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_catalog_new.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TYPE new.wide AS DECIMAL(39,0)
+
+statement ok
+CREATE MACRO new.m(x DECIMAL(39,0)) AS x
+
+statement ok
+CREATE VIEW new.v AS SELECT 1::DECIMAL(38,0) * 1::DECIMAL(38,0) AS q
+
+statement ok
+CHECKPOINT new
+
+statement ok
+DETACH new
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_catalog_new.db' AS new;
+
+query II
+SELECT new.m(1::new.wide), typeof(q) FROM new.v
+----
+1	DECIMAL(76,0)

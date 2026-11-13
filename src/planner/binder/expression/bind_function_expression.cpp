@@ -126,8 +126,8 @@ static void CastDecimalLambdaToAccumulatorType(ClientContext &context, BindResul
 	rebound_lambda_expr.LambdaExprMutable() = std::move(cast_expr);
 }
 
-ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t depth,
-                                                   const vector<LogicalType> &function_child_types,
+ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, const DecimalWidthLimit &decimal_width_limit,
+                                                   idx_t depth, const vector<LogicalType> &function_child_types,
                                                    bind_lambda_function_t bind_lambda_function,
                                                    BindResult &bind_lambda_result,
                                                    const bind_lambda_expression_t &bind_lambda_expression,
@@ -154,12 +154,14 @@ ListReduceRebindResult MaybeRebindListReduceLambda(ClientContext &context, idx_t
 	LogicalType accumulator_type;
 	if (has_initial) {
 		const auto &initial_type = function_child_types[2];
-		if (!LogicalType::TryGetMaxLogicalType(context, initial_type, lambda_return_type, accumulator_type)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, initial_type, lambda_return_type, accumulator_type,
+		                                       decimal_width_limit)) {
 			throw BinderException("No common super type between initial value type %s and lambda return type %s",
 			                      initial_type.ToString(), lambda_return_type.ToString());
 		}
 	} else {
-		if (!LogicalType::TryGetMaxLogicalType(context, list_child_type, lambda_return_type, accumulator_type)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, list_child_type, lambda_return_type, accumulator_type,
+		                                       decimal_width_limit)) {
 			throw BinderException("No common super type between list element type %s and lambda return type %s",
 			                      list_child_type.ToString(), lambda_return_type.ToString());
 		}
@@ -547,9 +549,9 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 		// list_reduce requires binding the lambda function a second time as there is a cyclical dependency between its
 		// acc parameter type and its return type. This is resolved by initially binding it with acc = initial, and then
 		// rebinding it with acc = return type
-		auto rebind_result =
-		    MaybeRebindListReduceLambda(context, depth, function_child_types, bind_lambda_function, bind_lambda_result,
-		                                bind_lambda_expression, nullptr, lambda_expr_copy);
+		auto rebind_result = MaybeRebindListReduceLambda(context, binder.GetDecimalWidthLimit(), depth,
+		                                                 function_child_types, bind_lambda_function, bind_lambda_result,
+		                                                 bind_lambda_expression, nullptr, lambda_expr_copy);
 		if (rebind_result.did_rebind) {
 			capture_child_types = std::move(rebind_result.capture_child_types);
 			override_bind_lambda_context = std::move(rebind_result.override_bind_lambda_context);

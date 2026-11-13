@@ -496,11 +496,7 @@ constexpr bignum_twodigit_t DIGIT_MASK = BASE - 1;
 constexpr idx_t INTERRUPT_CHECK_INTERVAL = idx_t(1) << 20;
 
 void AccountWork(BignumArithmeticState &state, idx_t work) {
-	state.work_since_interrupt_check += work;
-	if (state.work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
-		state.work_since_interrupt_check = 0;
-		state.context.InterruptCheck();
-	}
+	state.AccountWork(work);
 }
 
 void TrimMagnitude(bignum_magnitude_t &digits) {
@@ -897,6 +893,36 @@ void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &di
 
 } // namespace
 
+BignumArithmeticState::BignumArithmeticState(optional_ptr<ClientContext> client_context)
+    : context(client_context ? &client_context->GetContext() : nullptr) {
+}
+
+void BignumArithmeticState::AccountWork(idx_t work) {
+	if (!context) {
+		return;
+	}
+	work_since_interrupt_check += work;
+	if (work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
+		work_since_interrupt_check = 0;
+		// the calls are already a millisecond of work apart, so the deadline is read on every one of them
+		auto client_context = context->TryGetClientContext();
+		if (client_context) {
+			client_context->BlockingInterruptCheck();
+		}
+	}
+}
+
+void BignumIntermediate::MultiplyMagnitudes(BignumArithmeticState &state, const unsafe_vector<bignum_digit_t> &lhs,
+                                            const unsafe_vector<bignum_digit_t> &rhs,
+                                            unsafe_vector<bignum_digit_t> &result) {
+	if (lhs.empty() || rhs.empty()) {
+		result.clear();
+		return;
+	}
+	duckdb::MultiplyMagnitudes(state, lhs, rhs, result);
+	TrimMagnitude(result);
+}
+
 string_t BignumIntermediate::Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
                                       const BignumIntermediate &rhs) {
 	const bool is_result_negative = lhs.is_negative != rhs.is_negative;
@@ -937,6 +963,24 @@ bool BignumIntermediate::TryDivMod(StringHeap &heap, BignumArithmeticState &stat
 		// truncating division: the quotient is negative when the signs differ
 		result = WriteMagnitude(heap, quotient, lhs.is_negative != rhs.is_negative);
 	}
+	return true;
+}
+
+bool BignumIntermediate::TryDivMod(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
+                                   const BignumIntermediate &rhs, string_t &quotient_result,
+                                   string_t &remainder_result) {
+	auto &lhs_digits = state.lhs_digits;
+	auto &rhs_digits = state.rhs_digits;
+	auto &quotient = state.result_digits;
+	auto &remainder = state.remainder_digits;
+	GetMagnitude(lhs, lhs_digits);
+	GetMagnitude(rhs, rhs_digits);
+	if (rhs_digits.empty()) {
+		return false;
+	}
+	DivModMagnitudes(state, lhs_digits, rhs_digits, quotient, remainder, true);
+	quotient_result = WriteMagnitude(heap, quotient, lhs.is_negative != rhs.is_negative);
+	remainder_result = WriteMagnitude(heap, remainder, lhs.is_negative);
 	return true;
 }
 

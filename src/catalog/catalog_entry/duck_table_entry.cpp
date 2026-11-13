@@ -5,6 +5,7 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/index_map.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/execution/index/art/art.hpp"
@@ -51,83 +52,10 @@ IndexStorageInfo GetIndexInfo(const IndexConstraintType type, const bool v1_0_0_
 }
 
 static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDatabase &db) {
-	TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
-		if (type.IsAggregateState()) {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("Aggregate state columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-			return false;
-		}
-		switch (type.id()) {
-		case LogicalTypeId::TYPE: {
-			throw InvalidInputException("A table cannot be created with a 'TYPE' column");
-		} break;
-		case LogicalTypeId::STRUCT: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0 && StructType::GetChildCount(type) == 0) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("Empty STRUCT columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::TUPLE: {
-			// TUPLEs are stored as unnamed STRUCTs on disk, which older engines reject - gate creation to v2.0.0+
-			// existing unnamed STRUCTs (deserialized as TUPLE while loading an older file) must stay attachable
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0 && db.GetStorageManager().IsLoaded()) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("TUPLE columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::VARIANT: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < Variant::VERSION_ADDED) {
-				auto required = GetStorageVersionName(Variant::VERSION_ADDED, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("VARIANT columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::GEOMETRY: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (GeoType::HasCRS(type) && storage_version < Geometry::VERSION_ADDED) {
-				auto required = GetStorageVersionName(Geometry::VERSION_ADDED, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				// TODO: Turn this into a hard error
-				auto &logger = Logger::Get(db.GetDatabase());
-				logger.WriteLog(DefaultLogType::NAME, LogLevel::LOG_WARNING,
-				                "GEOMETRY columns with coordinate reference system identifiers are not supported in "
-				                "storage versions prior "
-				                "to %s (database %s is using storage version %s). CRS will not be persisted.",
-				                required, db.GetName(), current);
-			}
-		} break;
-		default:
-			break;
-		}
-		return false;
-	});
+	if (TypeVisitor::Contains(logical_type, LogicalTypeId::TYPE)) {
+		throw InvalidInputException("A table cannot be created with a 'TYPE' column");
+	}
+	db.GetStorageManager().CheckTypeIsSupported(logical_type);
 }
 
 static void SetAlterDependencies(ClientContext &context, BoundCreateTableInfo &info, AlterInfo &alter_info) {
@@ -172,6 +100,23 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 			storage->SetIndexStorageInfo(std::move(info.indexes));
 		}
 		return;
+	}
+
+	// the default, generated and check expressions are written to the catalog, as are the generated column types
+	auto &storage_manager = catalog.GetAttached().GetStorageManager();
+	for (auto &col_def : columns.Logical()) {
+		if (col_def.Generated()) {
+			storage_manager.CheckDecimalWidthIsSupported(col_def.Type());
+			storage_manager.CheckExpressionDecimalsAreSupported(col_def.GeneratedExpression());
+		}
+		if (col_def.HasDefaultValue()) {
+			storage_manager.CheckExpressionDecimalsAreSupported(col_def.DefaultValue());
+		}
+	}
+	for (auto &constraint : constraints) {
+		if (constraint->type == ConstraintType::CHECK) {
+			storage_manager.CheckExpressionDecimalsAreSupported(*constraint->Cast<CheckConstraint>().expression);
+		}
 	}
 
 	// create the physical storage

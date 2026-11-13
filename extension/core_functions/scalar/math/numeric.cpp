@@ -1,3 +1,5 @@
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/likely.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -222,6 +224,18 @@ static unique_ptr<BaseStatistics> PropagateAbsStats(ClientContext &context, Func
 	return stats.ToUnique();
 }
 
+//! abs() of a wide decimal negates the BIGNUM blob of negative values
+static void WideDecimalAbs(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &heap = StringVector::GetStringHeap(result);
+	UnaryExecutor::Execute<bignum_t, string_t>(args.data[0], result, [&](bignum_t a) {
+		const BignumIntermediate value(a);
+		if (value.is_negative) {
+			return value.Negate(heap);
+		}
+		return StringVector::AddStringOrBlob(result, a.data);
+	});
+}
+
 template <class OP>
 static void DecimalUnaryOpResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
@@ -235,6 +249,10 @@ static void DecimalUnaryOpResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		break;
 	case PhysicalType::INT64:
 		bound_function.SetFunctionCallback(ScalarFunction::GetScalarUnaryFunction<OP>(LogicalTypeId::BIGINT));
+		break;
+	case PhysicalType::VARCHAR:
+		// the unscaled value of a wide decimal is a BIGNUM blob
+		bound_function.SetFunctionCallback(WideDecimalAbs);
 		break;
 	default:
 		bound_function.SetFunctionCallback(ScalarFunction::GetScalarUnaryFunction<OP>(LogicalTypeId::HUGEINT));
@@ -507,11 +525,34 @@ struct CeilOperator {
 };
 } // namespace
 
-template <class T, class POWERS_OF_TEN, class OP>
+template <class T, class OP>
 static void GenericRoundFunctionDecimal(DataChunk &input, ExpressionState &state, Vector &result) {
-	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
-	OP::template Operation<T, POWERS_OF_TEN>(input, DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType()),
-	                                         result);
+	OP::template Operation<T>(input, state, result);
+}
+
+//! The SQL function a rounding mode belongs to, for error messages
+static constexpr const char *DecimalRoundingName(DecimalRounding rounding) {
+	return rounding == DecimalRounding::TRUNCATE              ? "TRUNC"
+	       : rounding == DecimalRounding::FLOOR               ? "FLOOR"
+	       : rounding == DecimalRounding::CEIL                ? "CEIL"
+	       : rounding == DecimalRounding::HALF_AWAY_FROM_ZERO ? "ROUND"
+	                                                          : "ROUND_EVEN";
+}
+
+//! Rounds the values of a decimal vector of any tier: drop_digits digits are dropped with the rounding mode and
+//! restore_digits zeros appended, a value that does not fit the width of the result type overflows
+template <class T, DecimalRounding ROUNDING>
+static void RoundDecimalVector(Vector &source, Vector &result, idx_t count, idx_t drop_digits, idx_t restore_digits,
+                               const char *name, ExpressionState &expression_state) {
+	const auto width = DecimalType::GetWidth(result.GetType());
+	typename DecimalHelper<T>::RoundState state(result, expression_state.GetContext());
+	UnaryExecutor::Execute<T, T>(source, result, count, [&](T input) {
+		T rounded;
+		if (!DecimalHelper<T>::template TryRound<ROUNDING>(input, drop_digits, restore_digits, width, state, rounded)) {
+			throw OutOfRangeException("Overflow in %s of DECIMAL(%d)", name, width);
+		}
+		return rounded;
+	});
 }
 
 template <class OP>
@@ -526,16 +567,19 @@ static void GenericRoundFunctionDecimalResolveTypes(ResolveScalarFunctionTypesIn
 	} else {
 		switch (decimal_type.InternalType()) {
 		case PhysicalType::INT16:
-			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int16_t, NumericHelper, OP>);
+			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int16_t, OP>);
 			break;
 		case PhysicalType::INT32:
-			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int32_t, NumericHelper, OP>);
+			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int32_t, OP>);
 			break;
 		case PhysicalType::INT64:
-			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int64_t, NumericHelper, OP>);
+			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<int64_t, OP>);
+			break;
+		case PhysicalType::INT128:
+			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<hugeint_t, OP>);
 			break;
 		default:
-			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<hugeint_t, Hugeint, OP>);
+			bound_function.SetFunctionCallback(GenericRoundFunctionDecimal<bignum_t, OP>);
 			break;
 		}
 	}
@@ -544,19 +588,16 @@ static void GenericRoundFunctionDecimalResolveTypes(ResolveScalarFunctionTypesIn
 }
 
 namespace {
-struct CeilDecimalOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			if (input <= 0) {
-				// below 0 we floor the number (e.g. -10.5 -> -10)
-				return UnsafeNumericCast<T>(input / power_of_ten);
-			} else {
-				// above 0 we ceil the number
-				return UnsafeNumericCast<T>(((input - 1) / power_of_ten) + 1);
-			}
-		});
+//! Removes the scale of a decimal with the rounding mode
+template <DecimalRounding ROUNDING>
+struct DecimalRoundOperator {
+	static constexpr const char *NAME = DecimalRoundingName(ROUNDING);
+
+	template <class T>
+	static void Operation(DataChunk &input, ExpressionState &state, Vector &result) {
+		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
+		auto scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
+		RoundDecimalVector<T, ROUNDING>(input.data[0], result, input.size(), scale, 0, NAME, state);
 	}
 };
 } // namespace
@@ -578,7 +619,7 @@ ScalarFunctionSet CeilFun::GetFunctions() {
 			func = ScalarFunction::UnaryFunction<double, double, CeilOperator>;
 			break;
 		case LogicalTypeId::DECIMAL:
-			resolve_func = GenericRoundFunctionDecimalResolveTypes<CeilDecimalOperator>;
+			resolve_func = GenericRoundFunctionDecimalResolveTypes<DecimalRoundOperator<DecimalRounding::CEIL>>;
 			break;
 		default:
 			throw InternalException("Unimplemented numeric type for function \"ceil\"");
@@ -601,22 +642,6 @@ struct FloorOperator {
 		return std::floor(left);
 	}
 };
-
-struct FloorDecimalOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			if (input < 0) {
-				// below 0 we ceil the number (e.g. -10.5 -> -11)
-				return UnsafeNumericCast<T>(((input + 1) / power_of_ten) - 1);
-			} else {
-				// above 0 we floor the number
-				return UnsafeNumericCast<T>(input / power_of_ten);
-			}
-		});
-	}
-};
 } // namespace
 
 ScalarFunctionSet FloorFun::GetFunctions() {
@@ -636,7 +661,7 @@ ScalarFunctionSet FloorFun::GetFunctions() {
 			func = ScalarFunction::UnaryFunction<double, double, FloorOperator>;
 			break;
 		case LogicalTypeId::DECIMAL:
-			resolve_func = GenericRoundFunctionDecimalResolveTypes<FloorDecimalOperator>;
+			resolve_func = GenericRoundFunctionDecimalResolveTypes<DecimalRoundOperator<DecimalRounding::FLOOR>>;
 			break;
 		default:
 			throw InternalException("Unimplemented numeric type for function \"floor\"");
@@ -655,33 +680,32 @@ ScalarFunctionSet FloorFun::GetFunctions() {
 namespace {
 
 struct RoundPrecisionFunctionData : public FunctionData {
-	RoundPrecisionFunctionData(int32_t target_scale, uint32_t source_width, bool check_overflow)
-	    : target_scale(target_scale), source_width(source_width), check_overflow(check_overflow) {
+	RoundPrecisionFunctionData(int32_t target_scale, uint32_t source_width)
+	    : target_scale(target_scale), source_width(source_width) {
 	}
 
 	int32_t target_scale;
 	uint32_t source_width;
-	bool check_overflow;
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<RoundPrecisionFunctionData>(target_scale, source_width, check_overflow);
+		return make_uniq<RoundPrecisionFunctionData>(target_scale, source_width);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<RoundPrecisionFunctionData>();
-		return target_scale == other.target_scale && source_width == other.source_width &&
-		       check_overflow == other.check_overflow;
+		return target_scale == other.target_scale && source_width == other.source_width;
 	}
 };
 
-template <class T, class POWERS_OF_TEN, class OP>
+template <class T, class OP>
 void GenericRoundPrecisionDecimal(DataChunk &input, ExpressionState &state, Vector &result) {
-	OP::template Operation<T, POWERS_OF_TEN>(input, state, result);
+	OP::template Operation<T>(input, state, result);
 }
 
 //! Resolves the types and the function of a decimal round with a precision, given the original decimal type
 template <typename NEGOP, typename POSOP, bool CAN_CARRY>
-unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound_function,
+unique_ptr<FunctionData> ResolveDecimalRoundPrecision(const DecimalWidthLimit &decimal_width_limit,
+                                                      BoundScalarFunction &bound_function,
                                                       const LogicalType &decimal_type, int32_t round_value) {
 	// our new precision becomes the round value
 	// e.g. ROUND(DECIMAL(18,3), 1) -> DECIMAL(18,1)
@@ -693,36 +717,40 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 	auto scale = DecimalType::GetScale(decimal_type);
 	auto result_width = width;
 	auto argument_type = decimal_type;
-	bool check_overflow = false;
 	if (round_value < 0) {
 		target_scale = 0;
-		if (CAN_CARRY && scale == 0 && round_value >= -int32_t(width)) {
-			if (result_width < Decimal::MAX_WIDTH_DECIMAL) {
+		if (CAN_CARRY && scale == 0 && int64_t(round_value) >= -int64_t(width)) {
+			// a fixed-size decimal stays in the fixed-size tiers (a carry out of 38 digits overflows), a wide decimal
+			// grows by the carry digit
+			if (Decimal::IsWide(width)) {
+				result_width = decimal_width_limit.CheckedWidth(idx_t(result_width) + 1, width, "Rounding");
+			} else if (result_width < Decimal::MAX_WIDTH_INT128) {
 				result_width++;
-			} else {
-				check_overflow = true;
 			}
 		}
 		auto result_type = LogicalType::DECIMAL(result_width, target_scale);
 		switch (result_type.InternalType()) {
 		case PhysicalType::INT16:
-			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int16_t, NumericHelper, NEGOP>);
+			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int16_t, NEGOP>);
 			break;
 		case PhysicalType::INT32:
-			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int32_t, NumericHelper, NEGOP>);
+			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int32_t, NEGOP>);
 			break;
 		case PhysicalType::INT64:
-			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int64_t, NumericHelper, NEGOP>);
+			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int64_t, NEGOP>);
+			break;
+		case PhysicalType::INT128:
+			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<hugeint_t, NEGOP>);
 			break;
 		default:
-			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<hugeint_t, Hugeint, NEGOP>);
+			bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<bignum_t, NEGOP>);
 			break;
 		}
 		if (result_type.InternalType() != decimal_type.InternalType()) {
 			argument_type = LogicalType::DECIMAL(result_width, scale);
 		}
 	} else {
-		if (round_value >= (int32_t)scale) {
+		if (NumericCast<uint32_t>(round_value) >= scale) {
 			// if round_value is bigger than or equal to scale we do nothing
 			bound_function.SetFunctionCallback(ScalarFunction::NopFunction);
 			target_scale = scale;
@@ -730,30 +758,33 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 			target_scale = NumericCast<uint32_t>(round_value);
 			switch (decimal_type.InternalType()) {
 			case PhysicalType::INT16:
-				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int16_t, NumericHelper, POSOP>);
+				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int16_t, POSOP>);
 				break;
 			case PhysicalType::INT32:
-				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int32_t, NumericHelper, POSOP>);
+				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int32_t, POSOP>);
 				break;
 			case PhysicalType::INT64:
-				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int64_t, NumericHelper, POSOP>);
+				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<int64_t, POSOP>);
+				break;
+			case PhysicalType::INT128:
+				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<hugeint_t, POSOP>);
 				break;
 			default:
-				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<hugeint_t, Hugeint, POSOP>);
+				bound_function.SetFunctionCallback(GenericRoundPrecisionDecimal<bignum_t, POSOP>);
 				break;
 			}
 		}
 	}
 	bound_function.GetArguments()[0] = argument_type;
 	bound_function.SetReturnType(LogicalType::DECIMAL(result_width, target_scale));
-	return make_uniq<RoundPrecisionFunctionData>(round_value, width, check_overflow);
+	return make_uniq<RoundPrecisionFunctionData>(round_value, width);
 }
 
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
-	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetBoundFunction(), input.GetArgumentType(0),
-	                                                      IntegerValue::Get(val));
+	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetDecimalWidthLimit(), input.GetBoundFunction(),
+	                                                      input.GetArgumentType(0), IntegerValue::Get(val));
 }
 
 //! The bind data is derived from the type the function was called with, before it was cast
@@ -762,7 +793,7 @@ unique_ptr<FunctionData> BindDecimalRoundPrecision(BindScalarFunctionInput &inpu
 	auto &bound_function = input.GetBoundFunction();
 	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
 	return ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
-	    bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
+	    input.GetDecimalWidthLimit(), bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
 }
 
 struct TruncOperatorPrecision {
@@ -794,48 +825,41 @@ struct TruncOperator {
 	}
 };
 
-struct TruncDecimalOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			//	Always floor
-			return UnsafeNumericCast<T>((input / power_of_ten));
-		});
-	}
-};
+//! Rounds a decimal to a negative precision: the digits below the precision are dropped with the rounding mode and
+//! restored as zeros
+template <DecimalRounding ROUNDING>
+struct DecimalRoundNegativePrecisionOperator {
+	static constexpr const char *NAME = DecimalRoundingName(ROUNDING);
 
-struct TruncDecimalNegativePrecisionOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
+	template <class T>
 	static void Operation(DataChunk &input, ExpressionState &state, Vector &result) {
 		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
-		auto width = DecimalType::GetWidth(func_expr.GetChildren()[0]->GetReturnType());
-		if (info.target_scale <= -int32_t(width - source_scale)) {
-			// scale too big for width: every value truncates to zero, NULL stays NULL
-			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
+		const idx_t restore_digits = NumericCast<idx_t>(-static_cast<int64_t>(info.target_scale));
+		const idx_t drop_digits = source_scale + restore_digits;
+		if (drop_digits > info.source_width) {
+			// more digits than the values hold are dropped, which leaves less than a tenth: every value rounds to zero
+			const auto zero = DecimalHelper<T>::Store(result, DecimalHelper<T>::FromInteger(hugeint_t(0)));
+			UnaryExecutor::Execute<T, T>(input.data[0], result, input.size(), [&](T) { return zero; });
 			return;
 		}
-		T divide_power_of_ten =
-		    UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[-info.target_scale + source_scale]);
-		T multiply_power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[-info.target_scale]);
-
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			return UnsafeNumericCast<T>(input / divide_power_of_ten * multiply_power_of_ten);
-		});
+		RoundDecimalVector<T, ROUNDING>(input.data[0], result, input.size(), drop_digits, restore_digits, NAME, state);
 	}
 };
 
-struct TruncDecimalPositivePrecisionOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
+//! Rounds a decimal to a positive precision below its scale: the digits below the precision are dropped
+template <DecimalRounding ROUNDING>
+struct DecimalRoundPositivePrecisionOperator {
+	static constexpr const char *NAME = DecimalRoundingName(ROUNDING);
+
+	template <class T>
 	static void Operation(DataChunk &input, ExpressionState &state, Vector &result) {
 		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[source_scale - info.target_scale]);
-		UnaryExecutor::Execute<T, T>(input.data[0], result,
-		                             [&](T input) { return UnsafeNumericCast<T>(input / power_of_ten); });
+		const idx_t drop_digits = source_scale - NumericCast<idx_t>(info.target_scale);
+		RoundDecimalVector<T, ROUNDING>(input.data[0], result, input.size(), drop_digits, 0, NAME, state);
 	}
 };
 
@@ -884,11 +908,13 @@ ScalarFunctionSet TruncFun::GetFunctions() {
 			trunc_prec_func = ScalarFunction::BinaryFunction<double, int32_t, double, TruncOperatorPrecision>;
 			break;
 		case LogicalTypeId::DECIMAL:
-			resolve_func = GenericRoundFunctionDecimalResolveTypes<TruncDecimalOperator>;
+			resolve_func = GenericRoundFunctionDecimalResolveTypes<DecimalRoundOperator<DecimalRounding::TRUNCATE>>;
 			bind_prec_func =
-			    BindDecimalRoundPrecision<TruncDecimalNegativePrecisionOperator, TruncDecimalPositivePrecisionOperator>;
-			resolve_prec_func = DecimalRoundPrecisionResolveTypes<TruncDecimalNegativePrecisionOperator,
-			                                                      TruncDecimalPositivePrecisionOperator>;
+			    BindDecimalRoundPrecision<DecimalRoundNegativePrecisionOperator<DecimalRounding::TRUNCATE>,
+			                              DecimalRoundPositivePrecisionOperator<DecimalRounding::TRUNCATE>>;
+			resolve_prec_func =
+			    DecimalRoundPrecisionResolveTypes<DecimalRoundNegativePrecisionOperator<DecimalRounding::TRUNCATE>,
+			                                      DecimalRoundPositivePrecisionOperator<DecimalRounding::TRUNCATE>>;
 			break;
 		case LogicalTypeId::TINYINT:
 			trunc_func = ScalarFunction::NopFunction;
@@ -949,51 +975,19 @@ ScalarFunctionSet TruncFun::GetFunctions() {
 //===--------------------------------------------------------------------===//
 namespace {
 
-template <class T, class ROUND_POLICY>
-inline T RoundDivide(T input, T power_of_ten) {
-	// power_of_ten is ten raised to the digits being dropped and is at least ten because the binder replaces round
-	// with ScalarFunction::NopFunction if the round would not drop digits
-	D_ASSERT(power_of_ten >= 10);
-	T quotient;
-	T remainder;
-	if constexpr (std::is_same<T, hugeint_t>::value) {
-		// hugeint division and modulo both run a full DivMod and discard half of the result
-		quotient = Hugeint::DivMod(input, power_of_ten, remainder);
-	} else {
-		quotient = UnsafeNumericCast<T>(input / power_of_ten);
-		remainder = UnsafeNumericCast<T>(input % power_of_ten);
-	}
-	if (remainder < 0) {
-		remainder = UnsafeNumericCast<T>(-remainder);
-	}
-	T half = UnsafeNumericCast<T>(power_of_ten / 2);
-	if (remainder > half || (remainder == half && ROUND_POLICY::RoundsAway(quotient))) {
-		quotient = UnsafeNumericCast<T>(input < 0 ? quotient - 1 : quotient + 1);
-	}
-	return quotient;
-}
-
 struct RoundHalfAwayFromZero {
-	static constexpr const char *Name = "ROUND";
+	static constexpr DecimalRounding ROUNDING = DecimalRounding::HALF_AWAY_FROM_ZERO;
 
 	static double Nearest(double value) {
 		return RoundToNearestAwayFromZero(value);
 	}
-	template <class T>
-	static bool RoundsAway(T) {
-		return true;
-	}
 };
 
 struct RoundHalfToEven {
-	static constexpr const char *Name = "ROUND_EVEN";
+	static constexpr DecimalRounding ROUNDING = DecimalRounding::HALF_TO_EVEN;
 
 	static double Nearest(double value) {
 		return RoundToNearestEven(value);
-	}
-	template <class T>
-	static bool RoundsAway(T quotient) {
-		return quotient % 2 != 0;
 	}
 };
 
@@ -1060,29 +1054,6 @@ struct RoundOperator {
 	}
 };
 
-struct RoundDecimalOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, uint32_t scale, Vector &result) {
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[scale]);
-		T addition = power_of_ten / 2;
-		// regular round rounds towards the nearest number
-		// in case of a tie we round away from zero
-		// i.e. -10.5 -> -11, 10.5 -> 11
-		// we implement this by adding (positive) or subtracting (negative) 0.5
-		// and then flooring the number
-		// e.g. 10.5 + 0.5 = 11, floor(11) = 11
-		//      10.4 + 0.5 = 10.9, floor(10.9) = 10
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			if (input < 0) {
-				input -= addition;
-			} else {
-				input += addition;
-			}
-			return UnsafeNumericCast<T>(input / power_of_ten);
-		});
-	}
-};
-
 template <class ROUND_POLICY>
 struct RoundIntegerOperator {
 	template <class TA, class TB, class TR>
@@ -1095,82 +1066,29 @@ struct RoundIntegerOperator {
 			return 0;
 		}
 		const auto power_of_ten = Hugeint::POWERS_OF_TEN[-precision];
-		const auto half = power_of_ten / 2;
 		hugeint_t wide_input = 0;
 		if constexpr (std::is_same<TA, hugeint_t>::value) {
 			wide_input = input;
 		} else {
 			wide_input = Hugeint::Convert(input);
 		}
-		auto rounded = wide_input / power_of_ten;
-		const auto remainder = wide_input % power_of_ten;
-		if (remainder > half || (remainder == half && ROUND_POLICY::RoundsAway(rounded))) {
-			rounded = Hugeint::Add(rounded, 1);
-		} else if (remainder < -half || (remainder == -half && ROUND_POLICY::RoundsAway(rounded))) {
-			rounded = Hugeint::Subtract(rounded, 1);
-		}
+		auto rounded = DecimalHelper<hugeint_t>::RoundDroppedDigits<ROUND_POLICY::ROUNDING>(wide_input, power_of_ten);
 		if (rounded == 0) {
 			return 0;
 		}
 		hugeint_t rounded_value = 0;
 		if (!Hugeint::TryMultiply(rounded, power_of_ten, rounded_value)) {
-			throw OutOfRangeException("Overflow in %s of integer", ROUND_POLICY::Name);
+			throw OutOfRangeException("Overflow in %s of integer", DecimalRoundingName(ROUND_POLICY::ROUNDING));
 		}
 		TR result;
 		if (!TryCast::Operation(rounded_value, result)) {
-			throw OutOfRangeException("Overflow in %s of integer", ROUND_POLICY::Name);
+			throw OutOfRangeException("Overflow in %s of integer", DecimalRoundingName(ROUND_POLICY::ROUNDING));
 		}
 		return result;
 	}
 };
 
 } // namespace
-
-template <class ROUND_POLICY>
-struct DecimalRoundNegativePrecisionOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, ExpressionState &state, Vector &result) {
-		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
-		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
-		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
-		if (info.target_scale < -int32_t(info.source_width - source_scale)) {
-			// scale too big for width: every value rounds to zero, NULL stays NULL
-			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
-			return;
-		}
-		T divide_power_of_ten =
-		    UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[-info.target_scale + source_scale]);
-		T multiply_power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[-info.target_scale]);
-		const bool check_overflow = info.check_overflow;
-
-		UnaryExecutor::Execute<T, T>(input.data[0], result, [&](T input) {
-			auto rounded =
-			    UnsafeNumericCast<T>(RoundDivide<T, ROUND_POLICY>(input, divide_power_of_ten) * multiply_power_of_ten);
-			if (check_overflow) {
-				if constexpr (std::is_same_v<T, hugeint_t>) {
-					if (rounded <= -Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL] ||
-					    rounded >= Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL]) {
-						throw OutOfRangeException("Overflow in %s of DECIMAL(38)", ROUND_POLICY::Name);
-					}
-				}
-			}
-			return rounded;
-		});
-	}
-};
-
-template <class ROUND_POLICY>
-struct DecimalRoundPositivePrecisionOperator {
-	template <class T, class POWERS_OF_TEN_CLASS>
-	static void Operation(DataChunk &input, ExpressionState &state, Vector &result) {
-		auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
-		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
-		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
-		T power_of_ten = UnsafeNumericCast<T>(POWERS_OF_TEN_CLASS::POWERS_OF_TEN[source_scale - info.target_scale]);
-		UnaryExecutor::Execute<T, T>(input.data[0], result,
-		                             [&](T input) { return RoundDivide<T, ROUND_POLICY>(input, power_of_ten); });
-	}
-};
 
 ScalarFunctionSet RoundFun::GetFunctions() {
 	ScalarFunctionSet round;
@@ -1192,13 +1110,15 @@ ScalarFunctionSet RoundFun::GetFunctions() {
 			    ScalarFunction::BinaryFunction<double, int32_t, double, RoundOperatorPrecision<RoundHalfAwayFromZero>>;
 			break;
 		case LogicalTypeId::DECIMAL:
-			resolve_func = GenericRoundFunctionDecimalResolveTypes<RoundDecimalOperator>;
+			resolve_func =
+			    GenericRoundFunctionDecimalResolveTypes<DecimalRoundOperator<DecimalRounding::HALF_AWAY_FROM_ZERO>>;
 			bind_prec_func =
-			    BindDecimalRoundPrecision<DecimalRoundNegativePrecisionOperator<RoundHalfAwayFromZero>,
-			                              DecimalRoundPositivePrecisionOperator<RoundHalfAwayFromZero>, true>;
-			resolve_prec_func =
-			    DecimalRoundPrecisionResolveTypes<DecimalRoundNegativePrecisionOperator<RoundHalfAwayFromZero>,
-			                                      DecimalRoundPositivePrecisionOperator<RoundHalfAwayFromZero>, true>;
+			    BindDecimalRoundPrecision<DecimalRoundNegativePrecisionOperator<DecimalRounding::HALF_AWAY_FROM_ZERO>,
+			                              DecimalRoundPositivePrecisionOperator<DecimalRounding::HALF_AWAY_FROM_ZERO>,
+			                              true>;
+			resolve_prec_func = DecimalRoundPrecisionResolveTypes<
+			    DecimalRoundNegativePrecisionOperator<DecimalRounding::HALF_AWAY_FROM_ZERO>,
+			    DecimalRoundPositivePrecisionOperator<DecimalRounding::HALF_AWAY_FROM_ZERO>, true>;
 			break;
 		case LogicalTypeId::TINYINT:
 			round_func = ScalarFunction::NopFunction;
@@ -1272,11 +1192,13 @@ ScalarFunctionSet RoundEvenFun::GetFunctions() {
 			    ScalarFunction::BinaryFunction<double, int32_t, double, RoundOperatorPrecision<RoundHalfToEven>>;
 			break;
 		case LogicalTypeId::DECIMAL:
-			bind_prec_func = BindDecimalRoundPrecision<DecimalRoundNegativePrecisionOperator<RoundHalfToEven>,
-			                                           DecimalRoundPositivePrecisionOperator<RoundHalfToEven>, true>;
+			bind_prec_func =
+			    BindDecimalRoundPrecision<DecimalRoundNegativePrecisionOperator<DecimalRounding::HALF_TO_EVEN>,
+			                              DecimalRoundPositivePrecisionOperator<DecimalRounding::HALF_TO_EVEN>, true>;
 			resolve_prec_func =
-			    DecimalRoundPrecisionResolveTypes<DecimalRoundNegativePrecisionOperator<RoundHalfToEven>,
-			                                      DecimalRoundPositivePrecisionOperator<RoundHalfToEven>, true>;
+			    DecimalRoundPrecisionResolveTypes<DecimalRoundNegativePrecisionOperator<DecimalRounding::HALF_TO_EVEN>,
+			                                      DecimalRoundPositivePrecisionOperator<DecimalRounding::HALF_TO_EVEN>,
+			                                      true>;
 			break;
 		case LogicalTypeId::TINYINT:
 			round_prec_func =

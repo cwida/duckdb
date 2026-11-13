@@ -30,6 +30,7 @@ add_library_unity(
   validity_mask.cpp
   value.cpp
   bignum.cpp
+  bignum_decimal.cpp
   vector_buffer.cpp
   vector.cpp
   vector_cache.cpp

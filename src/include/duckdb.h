@@ -733,7 +733,9 @@ struct duckdb_uhugeint {
 };
 
 /*!
- * DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT.
+ * DECIMAL is composed of a width and a scale. Value is stored in a HUGEINT. Decimals wider than 38 digits store their
+ * value as BIGNUM; a duckdb_decimal can only carry those whose width fits in the uint8_t and whose value fits in 128
+ * bits, the exact value is available through the VARCHAR conversions.
  *
  * history:
  * - stable: v0.3.3
@@ -5282,6 +5284,8 @@ DUCKDB_C_API duckdb_logical_type duckdb_create_enum_type(const char **member_nam
  * Creates a DECIMAL type with the specified width and scale. The resulting type should be destroyed with
  * `duckdb_destroy_logical_type`.
  *
+ * The uint8_t parameters reach widths up to 255; widths above 38 create wide decimals stored as BIGNUM.
+ *
  * history:
  * - stable: v0.3.3
  *
@@ -5309,6 +5313,9 @@ DUCKDB_C_API duckdb_type duckdb_get_type_id(duckdb_logical_type type);
 /*!
  * Retrieves the width of a decimal type.
  *
+ * The uint8_t reaches widths up to 255; a wider decimal reports 0, its values are best read through their VARCHAR
+ * conversion.
+ *
  * history:
  * - stable: v0.3.3
  *
@@ -5322,6 +5329,8 @@ DUCKDB_C_API uint8_t duckdb_decimal_width(duckdb_logical_type type);
 /*!
  * Retrieves the scale of a decimal type.
  *
+ * Reports 0 for a decimal whose width does not fit in a uint8_t, like `duckdb_decimal_width`.
+ *
  * history:
  * - stable: v0.3.3
  *
@@ -5334,6 +5343,9 @@ DUCKDB_C_API uint8_t duckdb_decimal_scale(duckdb_logical_type type);
 #if DUCKDB_API_VERSION_AT_LEAST(0, 3, 3)
 /*!
  * Retrieves the internal storage type of a decimal type.
+ *
+ * Decimals of up to 38 digits are stored as SMALLINT, INTEGER, BIGINT or HUGEINT. Wider decimals store their unscaled
+ * value as BIGNUM, which is what their vectors hold.
  *
  * history:
  * - stable: v0.3.3
@@ -8670,7 +8682,8 @@ DUCKDB_C_API duckdb_value duckdb_create_bignum(duckdb_bignum input);
 
 #if DUCKDB_API_VERSION_AT_LEAST(1, 2, 0)
 /*!
- * Creates a DECIMAL value from a duckdb_decimal
+ * Creates a DECIMAL value from a duckdb_decimal. The uint8_t fields of a duckdb_decimal reach widths up to 255 digits;
+ * widths above 38 create a wide decimal whose unscaled value is the 128-bit value of the duckdb_decimal.
  *
  * history:
  * - stable: v1.2.0
@@ -9050,7 +9063,8 @@ DUCKDB_C_API duckdb_bignum duckdb_get_bignum(duckdb_value val);
 
 #if DUCKDB_API_VERSION_AT_LEAST(1, 2, 0)
 /*!
- * Returns the duckdb_decimal value of the given value.
+ * Returns the duckdb_decimal value of the given value. A decimal wider than 38 digits is only representable when its
+ * unscaled value fits in 128 bits; use `duckdb_get_varchar` for the exact value otherwise.
  *
  * history:
  * - stable: v1.2.0

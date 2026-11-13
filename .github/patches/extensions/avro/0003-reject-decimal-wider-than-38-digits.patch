@@ -1,0 +1,104 @@
+diff --git a/src/avro_copy.cpp b/src/avro_copy.cpp
+index 647b3f1..8838357 100644
+--- a/src/avro_copy.cpp
++++ b/src/avro_copy.cpp
+@@ -1,4 +1,5 @@
+ #include "avro_copy.hpp"
++#include "avro_type.hpp"
+ 
+ #include "field_ids.hpp"
+ 
+@@ -110,6 +111,11 @@ private:
+ //===--------------------------------------------------------------------===//
+ // Schema
+ //===--------------------------------------------------------------------===//
++//! GetDecimalWidth() returns a uint8_t, which cannot hold the widths DuckDB allows beyond 255
++uint32_t DecimalWidth(const LogicalType &type) {
++	return type.GetParam(0).GetValue().Get<uint32_t>();
++}
++
+ std::string ConvertTypeToAvro(const LogicalType &type) {
+ 	switch (type.GetTypeId()) {
+ 	case LogicalTypeId::VARCHAR:
+@@ -146,7 +152,12 @@ std::string ConvertTypeToAvro(const LogicalType &type) {
+ 		// local-timestamp-micros
+ 		return "long";
+ 	case LogicalTypeId::UUID:
++		return "fixed";
+ 	case LogicalTypeId::DECIMAL:
++		if (DecimalWidth(type) > MAX_DECIMAL_WIDTH) {
++			throw NotImplementedError("Avro writer does not support DECIMAL types wider than " +
++			                          std::to_string(MAX_DECIMAL_WIDTH) + " digits, got " + type.ToText());
++		}
+ 		return "fixed";
+ 	case LogicalTypeId::LIST:
+ 		return "array";
+diff --git a/src/avro_type.cpp b/src/avro_type.cpp
+index 0de8f18..e0a715b 100644
+--- a/src/avro_type.cpp
++++ b/src/avro_type.cpp
+@@ -34,8 +34,14 @@ AvroLogicalType AvroLogicalTypeToLogicalType(avro_schema_t avro_schema) {
+ 	if (logical_type == "date") {
+ 		result.id = LogicalTypeId::DATE;
+ 	} else if (logical_type == "decimal") {
++		auto precision = avro_schema_precision(avro_schema);
++		if (precision > static_cast<int32_t>(MAX_DECIMAL_WIDTH)) {
++			throw NotImplementedError("Avro reader does not support DECIMAL types wider than " +
++			                          std::to_string(MAX_DECIMAL_WIDTH) + " digits, got precision " +
++			                          std::to_string(precision));
++		}
+ 		result.id = LogicalTypeId::DECIMAL;
+-		result.width = static_cast<uint8_t>(avro_schema_precision(avro_schema));
++		result.width = static_cast<uint8_t>(precision);
+ 		result.scale = static_cast<uint8_t>(avro_schema_scale(avro_schema));
+ 	} else if (logical_type == "time-micros" || logical_type == "time-millis") {
+ 		result.id = LogicalTypeId::TIME;
+diff --git a/src/include/avro_type.hpp b/src/include/avro_type.hpp
+index fbbfe9f..4c1da0d 100644
+--- a/src/include/avro_type.hpp
++++ b/src/include/avro_type.hpp
+@@ -21,6 +21,9 @@ namespace duckdb {
+ 
+ namespace avro {
+ 
++//! The widest DECIMAL the reader and writer handle, DuckDB stores wider ones as BIGNUM
++constexpr uint32_t MAX_DECIMAL_WIDTH = 38;
++
+ //! An Avro schema node, together with the DuckDB type id it is read as
+ struct AvroType {
+ public:
+diff --git a/test/sql/copy/test_decimal_types.test b/test/sql/copy/test_decimal_types.test
+index d51d8d0..757a9a2 100644
+--- a/test/sql/copy/test_decimal_types.test
++++ b/test/sql/copy/test_decimal_types.test
+@@ -145,13 +145,28 @@ SELECT  dec_9_4, dec_4_1, dec38_10, dec_18_6 FROM read_avro('{TEST_DIR}/decimal_
+ 99999.9999	999.9	9999999999999999999999999999.9999999999	999999999999.999999
+ NULL	NULL	NULL	NULL
+ 
+-# check error on extreme width values > 38
++# DECIMAL wider than 38 digits has no fixed-size encoding in this writer
++statement error
++COPY (
++    from values (-1.3::DECIMAL(39,1)), (NULL) t(decimal_col)
++) TO '{TEST_DIR}/decimal_type.avro';
++----
++<REGEX>:.*Avro writer does not support DECIMAL types wider than 38 digits.*
++
+ statement error
+ COPY (
+     from values (-1.3::DECIMAL(10000,1)), (NULL) t(decimal_col)
+ ) TO '{TEST_DIR}/decimal_type.avro';
+ ----
+-<REGEX>:.*Type "DECIMAL" does not accept type parameters.*
++<REGEX>:.*Avro writer does not support DECIMAL types wider than 38 digits.*
++
++# nested wide decimals are rejected as well
++statement error
++COPY (
++    from values ({'a': -1.3::DECIMAL(39,1)}) t(struct_col)
++) TO '{TEST_DIR}/decimal_type.avro';
++----
++<REGEX>:.*Avro writer does not support DECIMAL types wider than 38 digits.*
+ 
+ statement ok
+ COPY(

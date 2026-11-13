@@ -54,13 +54,13 @@ $json$);
 ----
 invalid DECIMAL(1, 255)
 
-# DECIMAL width exceeding the maximum
+# DECIMAL(60, 0) is a valid wide decimal - its serialized unscaled value must be a BIGNUM blob string
 statement error
 SELECT json_deserialize_sql($json$
 {"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":60,"scale":0}},"is_null":false,"value":10}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
 $json$);
 ----
-invalid DECIMAL(60, 0)
+property 'value' expected type 'string', but got type: 'uint'
 
 # LIST value without a child type
 statement error

@@ -1,4 +1,5 @@
 #include "column_writer.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include <cmath>
 #include <limits>
@@ -553,6 +554,9 @@ unique_ptr<ColumnWriter> ColumnWriter::CreateWriterRecursive(ClientContext &cont
 			return make_uniq<StandardColumnWriter<int32_t, int32_t>>(writer, std::move(schema), path_in_schema);
 		case PhysicalType::INT64:
 			return make_uniq<StandardColumnWriter<int64_t, int64_t>>(writer, std::move(schema), path_in_schema);
+		case PhysicalType::VARCHAR:
+			// wide decimal stored as a BIGNUM blob
+			return make_uniq<WideDecimalColumnWriter>(writer, std::move(schema), path_in_schema);
 		default:
 			return make_uniq<FixedDecimalColumnWriter>(writer, std::move(schema), path_in_schema);
 		}

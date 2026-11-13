@@ -27,6 +27,7 @@
         "test/optimizer/partial_aggregate_uncertain_domain_plan.test",
         "test/optimizer/partial_aggregate_pushdown_serialized_plan.test",
         "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
+        "test/optimizer/partial_aggregate_pushdown_wide_decimal.test",
         "test/optimizer/partition_stats_exactness.test",
         "test/optimizer/remove_redundant_order.test",
         "test/optimizer/runtime_key_domain_plan.test",
@@ -108,6 +109,7 @@
         "test/sql/aggregate/aggregates/test_ordered_aggregates.test",
         "test/sql/aggregate/aggregates/test_reservoir_quantile_decimal.test",
         "test/sql/aggregate/aggregates/test_reservoir_quantile_sampling.test",
+        "test/sql/types/decimal/wide_decimal_quantiles.test",
         "test/sql/aggregate/group/aggregate_combine_grow_arena.test",
         "test/sql/function/list/aggregates/histogram_decimal.test",
         "test/sql/pivot/pivot_operator_expression.test",
@@ -122,7 +124,7 @@
       ]
     },
     {
-      "reason": "FIXME: aggregate functions missing state type callback (approx_count_distinct, sum over VARINT, test_named_agg_inspect, test_args_agg, test_volatile_aggregate)",
+      "reason": "FIXME: aggregate functions missing state type callback (approx_count_distinct, test_named_agg_inspect, test_args_agg, test_volatile_aggregate)",
       "paths": [
         "test/extension/test_function_args_kwargs.test",
         "test/extension/test_function_named_args.test",
@@ -138,9 +140,6 @@
         "test/sql/show_select/summarize_subquery.test",
         "test/sql/show_select/test_summarize.test",
         "test/sql/show_select/test_summarize_quoted.test",
-        "test/sql/types/bignum/test_big_bignum.test",
-        "test/sql/types/bignum/test_bignum_implicit_cast.test",
-        "test/sql/types/bignum/test_bignum_sum.test",
         "test/sql/types/nested/array/array_summarize.test"
       ]
     },

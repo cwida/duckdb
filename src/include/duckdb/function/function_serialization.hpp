@@ -12,6 +12,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/function/function_binder.hpp"
 
@@ -452,10 +453,12 @@ public:
 			}
 		}
 
-		// Lookup the function (and the correct overload)
-		FunctionBinder binder(context);
+		// Lookup the function (and the correct overload), binding within the decimal width the function was bound in
+		const auto decimal_width_limit = DecimalWidthLimit::FromReturnType(return_type);
+		FunctionBinder binder(context, &decimal_width_limit);
 		binder.arguments_collated = true;
-		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
+		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types},
+		                                                     false, binder.FixedDecimalWidthLimit());
 		optional_idx overload;
 		if (func_idx.IsSuccess()) {
 			overload = func_idx.GetBinding().GetOverloadIndex();
@@ -490,7 +493,8 @@ public:
 				// arguments it is called with
 				std::decay_t<decltype(functions)> overload(functions.name);
 				overload.AddFunction(function);
-				auto rebind = FunctionBinder::SelectFunction(context, overload, {children, keyword_args}, true);
+				auto rebind = FunctionBinder::SelectFunction(context, overload, {children, keyword_args}, true,
+				                                             binder.FixedDecimalWidthLimit());
 				if (!rebind) {
 					rebind.GetError().Throw();
 				}

@@ -8,6 +8,8 @@
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 namespace duckdb {
 
@@ -721,6 +723,30 @@ optional_idx BindFunctionInput::GetArgumentIndex(const Identifier &name) const {
 		}
 	}
 	return optional_idx();
+}
+
+Binder &BindFunctionInput::GetBinder() {
+	if (!binder) {
+		throw InternalException("Function %s cannot be bound without a Binder", function.GetName());
+	}
+	return *binder;
+}
+
+FunctionBinder BindFunctionInput::NestedFunctionBinder() {
+	if (binder) {
+		return FunctionBinder(*binder);
+	}
+	return FunctionBinder(context, decimal_width_limit);
+}
+
+DecimalWidthLimit BindFunctionInput::GetDecimalWidthLimit() const {
+	if (binder) {
+		return binder->GetDecimalWidthLimit();
+	}
+	if (decimal_width_limit) {
+		return *decimal_width_limit;
+	}
+	return DecimalWidthLimit::FromSetting(context);
 }
 
 } // namespace duckdb

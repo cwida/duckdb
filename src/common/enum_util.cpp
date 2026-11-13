@@ -110,6 +110,7 @@
 #include "duckdb/common/types/column/partitioned_column_data.hpp"
 #include "duckdb/common/types/conflict_manager.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/common/types/hyperloglog.hpp"
@@ -1974,6 +1975,27 @@ const char* EnumUtil::ToChars<DecimalBitWidth>(DecimalBitWidth value) {
 template<>
 DecimalBitWidth EnumUtil::FromString<DecimalBitWidth>(const char *value) {
 	return static_cast<DecimalBitWidth>(StringUtil::StringToEnum(GetDecimalBitWidthValues(), 4, "DecimalBitWidth", value));
+}
+
+const StringUtil::EnumStringLiteral *GetDecimalRoundingValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(DecimalRounding::TRUNCATE), "TRUNCATE" },
+		{ static_cast<uint32_t>(DecimalRounding::FLOOR), "FLOOR" },
+		{ static_cast<uint32_t>(DecimalRounding::CEIL), "CEIL" },
+		{ static_cast<uint32_t>(DecimalRounding::HALF_AWAY_FROM_ZERO), "HALF_AWAY_FROM_ZERO" },
+		{ static_cast<uint32_t>(DecimalRounding::HALF_TO_EVEN), "HALF_TO_EVEN" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<DecimalRounding>(DecimalRounding value) {
+	return StringUtil::EnumToString(GetDecimalRoundingValues(), 5, "DecimalRounding", static_cast<uint32_t>(value));
+}
+
+template<>
+DecimalRounding EnumUtil::FromString<DecimalRounding>(const char *value) {
+	return static_cast<DecimalRounding>(StringUtil::StringToEnum(GetDecimalRoundingValues(), 5, "DecimalRounding", value));
 }
 
 const StringUtil::EnumStringLiteral *GetDefaultOrderByNullTypeValues() {
@@ -6626,19 +6648,20 @@ const StringUtil::EnumStringLiteral *GetStatisticsTypeValues() {
 		{ static_cast<uint32_t>(StatisticsType::BASE_STATS), "BASE_STATS" },
 		{ static_cast<uint32_t>(StatisticsType::ARRAY_STATS), "ARRAY_STATS" },
 		{ static_cast<uint32_t>(StatisticsType::GEOMETRY_STATS), "GEOMETRY_STATS" },
-		{ static_cast<uint32_t>(StatisticsType::VARIANT_STATS), "VARIANT_STATS" }
+		{ static_cast<uint32_t>(StatisticsType::VARIANT_STATS), "VARIANT_STATS" },
+		{ static_cast<uint32_t>(StatisticsType::BIGNUM_STATS), "BIGNUM_STATS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<StatisticsType>(StatisticsType value) {
-	return StringUtil::EnumToString(GetStatisticsTypeValues(), 8, "StatisticsType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetStatisticsTypeValues(), 9, "StatisticsType", static_cast<uint32_t>(value));
 }
 
 template<>
 StatisticsType EnumUtil::FromString<StatisticsType>(const char *value) {
-	return static_cast<StatisticsType>(StringUtil::StringToEnum(GetStatisticsTypeValues(), 8, "StatisticsType", value));
+	return static_cast<StatisticsType>(StringUtil::StringToEnum(GetStatisticsTypeValues(), 9, "StatisticsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetStatsInfoValues() {

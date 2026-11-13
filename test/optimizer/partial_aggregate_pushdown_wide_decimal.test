@@ -1,0 +1,38 @@
+# name: test/optimizer/partial_aggregate_pushdown_wide_decimal.test
+# description: Partial aggregate pushdown of sums over wide decimals, whose arithmetic cannot overflow
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 5 AS a, i % 3 AS b FROM range(100) t(i) WHERE i <> 50;
+
+statement ok
+CREATE TABLE sales AS SELECT i % 100 AS id, (i % 1000)::DECIMAL(7,2) AS price, (i % 10)::DECIMAL(7,2) AS discount FROM range(10000) t(i);
+
+# the sum of a wide decimal exports its state as a BIGNUM, so it can be pushed below the join
+query II
+EXPLAIN SELECT a, b, sum(price::DECIMAL(40,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# wide arithmetic whose result width holds every result cannot overflow, so the argument cannot throw
+query II
+EXPLAIN SELECT a, b, sum(price::DECIMAL(40,2) - discount::DECIMAL(40,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum(price::DECIMAL(40,2) * discount::DECIMAL(40,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(price::DECIMAL(40,2) * discount::DECIMAL(40,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	742500.0000
+0	1	757500.0000
+0	2	1000000.0000
+
+query I
+SELECT sum(price::DECIMAL(40,2) - discount::DECIMAL(40,2)) FROM sales JOIN dim ON sales.id = dim.id
+----
+4900000.00

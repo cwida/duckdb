@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/value.hpp"
 
 namespace duckdb {
@@ -16,7 +17,8 @@ string ConstantExpression::ToString() const {
 }
 
 Value ConstantExpression::GetValueForSerialization() const {
-	return literal.ToValue();
+	// the Value form is written for storage versions before v2.0.0, whose engines type a wider literal as DOUBLE
+	return literal.ToValue(Decimal::MAX_WIDTH_INT128);
 }
 
 unique_ptr<ParsedExpression> ConstantExpression::DeserializeConstant(const Value &value, Literal literal) {

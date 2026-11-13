@@ -4,7 +4,11 @@
 #include "duckdb/storage/table/variant_column_data.hpp"
 
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
@@ -13,6 +17,7 @@
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/struct_column_data.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -377,6 +382,57 @@ struct VariantShreddedAppendInput {
 
 } // namespace
 
+//! Whether a VARIANT value holds a decimal wider than 38 digits, which engines before wide decimals cannot read
+static bool ContainsWideDecimal(const VariantNode &root) {
+	// an explicit work list, deeply nested values must not consume stack
+	vector<VariantNode> pending;
+	pending.push_back(root);
+	while (!pending.empty()) {
+		auto node = pending.back();
+		pending.pop_back();
+		switch (node.GetTypeId()) {
+		case VariantLogicalType::DECIMAL:
+			if (Decimal::IsWide(node.GetDecimalProperties().width)) {
+				return true;
+			}
+			break;
+		case VariantLogicalType::OBJECT:
+			for (auto &entry : node.GetObjectChildren()) {
+				pending.push_back(entry.value);
+			}
+			break;
+		case VariantLogicalType::ARRAY:
+			for (auto child : node.GetArrayChildren()) {
+				pending.push_back(child);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
+//! The unshredded payload of a wide decimal is stored as it is, so a storage version before wide decimals refuses it
+static void CheckWideDecimals(StorageManager &storage_manager, const Vector &vector, idx_t count) {
+	const auto storage_version = storage_manager.GetStorageVersion();
+	if (storage_version >= Decimal::WIDE_VERSION_ADDED) {
+		return;
+	}
+	VariantIterator iterator(vector);
+	for (idx_t row = 0; row < count; row++) {
+		if (!iterator.RowIsValid(row) || !ContainsWideDecimal(iterator.Root(row))) {
+			continue;
+		}
+		auto required = GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false);
+		auto current = GetStorageVersionName(storage_version, false);
+		throw InvalidInputException("DECIMAL values wider than %d digits cannot be stored in a VARIANT column in "
+		                            "storage versions prior to %s (database %s is using storage version %s)",
+		                            Decimal::MAX_WIDTH_INT128, required, storage_manager.GetAttached().GetName(),
+		                            current);
+	}
+}
+
 void VariantColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_t count) {
 	if (vector.GetVectorType() != VectorType::FLAT_VECTOR) {
 		Vector append_vector(Vector::Ref(vector));
@@ -384,6 +440,7 @@ void VariantColumnData::Append(ColumnAppendState &state, const Vector &vector, i
 		Append(state, append_vector, count);
 		return;
 	}
+	CheckWideDecimals(GetStorageManager(), vector, count);
 
 	// append the null values
 	validity->Append(state.child_appends[0], vector, count);
@@ -753,6 +810,13 @@ unique_ptr<ColumnCheckpointState> VariantColumnData::Checkpoint(const RowGroup &
 		shredded_type = config.GetForceVariantShredding();
 		if (shredded_type.id() == LogicalTypeId::INVALID) {
 			shredded_type = GetShreddedType();
+		}
+		if (GetStorageManager().GetStorageVersion() < Decimal::WIDE_VERSION_ADDED &&
+		    TypeVisitor::Contains(shredded_type, [](const LogicalType &type) {
+			    return type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(type));
+		    })) {
+			// a shredded column of a decimal wider than 38 digits cannot be stored in this storage version
+			should_shred = false;
 		}
 		D_ASSERT(shredded_type.id() == LogicalTypeId::STRUCT);
 		auto &type_entries = StructType::GetChildTypes(shredded_type);

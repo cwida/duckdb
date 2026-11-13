@@ -1,0 +1,754 @@
+# name: test/sql/index/art/storage/test_art_decimal_key_width.test
+# description: Index keys are bound within the decimal width of their storage version, whatever the max_decimal_width setting of the session
+# group: [storage]
+
+# the storage version is chosen per database below, the configs that force one cannot
+require no_force_storage
+
+# the plan of CREATE INDEX is deserialized before it runs: the keys are rebound within the width they were bound to
+statement ok
+SET debug_verify_serializer = true
+
+# a database of the storage version of wide decimals binds its keys without a bound: a session that bounds decimals to
+# 38 digits computes the same keys as the default session, so the index keeps rejecting duplicates after reopening
+statement ok
+ATTACH '{TEST_DIR}/key_width_wide.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+CREATE TABLE d.t (a DECIMAL(38,0), b DECIMAL(38,1))
+
+query I
+SELECT typeof(coalesce(NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)))
+----
+DECIMAL(38,0)
+
+statement ok
+CREATE UNIQUE INDEX ix ON d.t ((coalesce(a, b)::DECIMAL(38,1)))
+
+statement ok
+INSERT INTO d.t VALUES (NULL, 0.1)
+
+statement error
+INSERT INTO d.t VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_wide.db' AS d
+
+query I
+SELECT typeof(coalesce(NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)))
+----
+DECIMAL(39,1)
+
+statement error
+INSERT INTO d.t VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+# the index holds the key 0.1 the first session computed: the coalesce is computed in DECIMAL(39,1) in both
+query I
+SELECT count(*) FROM d.t WHERE coalesce(a, b)::DECIMAL(38,1) = 0.1
+----
+1
+
+statement ok
+INSERT INTO d.t VALUES (NULL, 0.2)
+
+statement ok
+DETACH d
+
+# the reverse order: created by the default session, written by a session that bounds decimals to 38 digits
+statement ok
+ATTACH '{TEST_DIR}/key_width_wide2.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.t (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE UNIQUE INDEX ix ON d.t ((coalesce(a, b)::DECIMAL(38,1)))
+
+statement ok
+INSERT INTO d.t VALUES (NULL, 0.1)
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_wide2.db' AS d
+
+statement error
+INSERT INTO d.t VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+query I
+SELECT count(*) FROM d.t
+----
+1
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+# functions that bind a nested function or combine types while they bind follow the width of the storage version as
+# well: the sum list_aggr binds, the accumulator of list_reduce, the common type of a comparison, the aggregate
+# finalize rebinds from an exported state and the type make_type constructs. Created by the default session, written by
+# a session that bounds decimals to 38 digits
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.s (a DECIMAL(40,0))
+
+statement ok
+CREATE UNIQUE INDEX sx ON d.s ((list_aggr([a], 'sum')))
+
+statement ok
+INSERT INTO d.s SELECT i FROM range(1000) r(i)
+
+statement ok
+CREATE TABLE d.r (a DECIMAL(38,0), b DECIMAL(38,1))
+
+query I
+SELECT typeof(list_reduce([NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)], lambda x, y: x + y))
+----
+DECIMAL(40,1)
+
+statement ok
+CREATE UNIQUE INDEX rx ON d.r ((typeof(list_reduce([a, b], lambda x, y: x + y))))
+
+statement ok
+INSERT INTO d.r VALUES (1, 0.1)
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+statement ok
+CREATE TABLE d.c (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE INDEX cx ON d.c ((a < b))
+
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.5)
+
+# the finalize of an exported aggregate state rebinds the aggregate within the width of the storage version: the sum of
+# a DECIMAL(40,0) needs 60 digits
+statement ok
+CREATE TABLE d.e AS SELECT 1 AS id, sum(1::DECIMAL(40,0)) EXPORT_STATE AS s
+
+statement ok
+CREATE UNIQUE INDEX ex ON d.e ((finalize(s)))
+
+# the type a make_type key folds is bound within the width of the storage version as well
+statement ok
+CREATE TABLE d.k (a VARCHAR)
+
+statement ok
+CREATE UNIQUE INDEX kx ON d.k ((a || CAST(make_type('DECIMAL', width := 40, scale := 0) AS VARCHAR)))
+
+statement ok
+INSERT INTO d.k VALUES ('x')
+
+# the string signature of to_aggregate_state is parsed within the width of the storage version as well
+statement ok
+CREATE TABLE d.b (id INTEGER, v BIGNUM)
+
+statement ok
+CREATE UNIQUE INDEX bx ON d.b ((finalize(to_aggregate_state(v, 'sum', ['DECIMAL(40,0)']))))
+
+statement ok
+INSERT INTO d.b VALUES (1, '1')
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+# a read-only session binds the indexes of a table it scans with a filter
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d (READ_ONLY)
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+query I
+SELECT count(*) FROM d.c WHERE b = 0.5
+----
+1
+
+query I
+SELECT id FROM d.e WHERE id = 1
+----
+1
+
+query I
+SELECT a FROM d.k WHERE a = 'x'
+----
+x
+
+query I
+SELECT id FROM d.b WHERE id = 1
+----
+1
+
+statement ok
+DETACH d
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement ok
+INSERT INTO d.s VALUES (1000)
+
+# the session combines the types within 38 digits, the key still holds the type name the default session computed
+query I
+SELECT typeof(list_reduce([NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)], lambda x, y: x + y))
+----
+DECIMAL(38,0)
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+# the comparison of the key is computed in DECIMAL(39,1), as the default session computed it: a value of 38 digits fits
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)
+
+query I
+SELECT count(*) FROM d.c
+----
+2
+
+# the session binds the sum within 38 digits and cannot finalize the state, the key is bound within the storage version
+statement error
+SELECT finalize(s) FROM d.e
+----
+<REGEX>:.*needs a DECIMAL of 60 digits.*
+
+statement error
+INSERT INTO d.e SELECT 2, s FROM d.e
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO d.e VALUES (2, NULL)
+
+query I
+SELECT count(*) FROM d.e
+----
+2
+
+# the session cannot construct the type, the key holds the name the storage version binds
+statement error
+SELECT make_type('DECIMAL', width := 40, scale := 0)
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+statement ok
+INSERT INTO d.k VALUES ('y')
+
+# the session cannot parse the signature, the key is bound within the storage version
+statement error
+SELECT finalize(to_aggregate_state(1::BIGNUM, 'sum', ['DECIMAL(40,0)']))
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement ok
+INSERT INTO d.b VALUES (2, '2')
+
+statement error
+INSERT INTO d.b VALUES (3, '1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+query I
+SELECT id FROM d.b WHERE id = 2
+----
+2
+
+statement ok
+DETACH d
+
+# the reverse order: the indexes are created by a session that bounds decimals to 38 digits, on tables the default
+# session created, and written by the default session
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.s (a DECIMAL(40,0))
+
+statement ok
+CREATE TABLE d.r (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE TABLE d.c (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE TABLE d.e AS SELECT 1 AS id, sum(1::DECIMAL(40,0)) EXPORT_STATE AS s
+
+statement ok
+CREATE TABLE d.k (a VARCHAR)
+
+statement ok
+CREATE TABLE d.b (id INTEGER, v BIGNUM)
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d
+
+# the keys are bound without a bound, as the storage version binds them, although the session bounds decimals
+statement ok
+CREATE UNIQUE INDEX sx ON d.s ((list_aggr([a], 'sum')))
+
+statement ok
+INSERT INTO d.s SELECT i FROM range(1000) r(i)
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement ok
+CREATE UNIQUE INDEX rx ON d.r ((typeof(list_reduce([a, b], lambda x, y: x + y))))
+
+statement ok
+INSERT INTO d.r VALUES (1, 0.1)
+
+# the key holds the type name the storage version binds, not the one the session binds
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+statement ok
+CREATE INDEX cx ON d.c ((a < b))
+
+# the comparison of the key is computed in DECIMAL(39,1), so a value of 38 digits fits, while a query of the session
+# compares within 38 digits and overflows
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.5)
+
+statement error
+SELECT count(*) FROM d.c WHERE a < b
+----
+<REGEX>:.*out of range.*
+
+# the key of the finalize is bound within the storage version, while the session cannot finalize the state
+statement error
+SELECT finalize(s) FROM d.e
+----
+<REGEX>:.*needs a DECIMAL of 60 digits.*
+
+statement ok
+CREATE UNIQUE INDEX ex ON d.e ((finalize(s)))
+
+statement error
+INSERT INTO d.e SELECT 2, s FROM d.e
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+CREATE UNIQUE INDEX kx ON d.k ((a || CAST(make_type('DECIMAL', width := 40, scale := 0) AS VARCHAR)))
+
+statement ok
+INSERT INTO d.k VALUES ('x')
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+# the string signature of the key is parsed within the storage version, while the session cannot parse it
+statement ok
+CREATE UNIQUE INDEX bx ON d.b ((finalize(to_aggregate_state(v, 'sum', ['DECIMAL(40,0)']))))
+
+statement ok
+INSERT INTO d.b VALUES (1, '1')
+
+statement error
+INSERT INTO d.b VALUES (2, '1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+query I
+SELECT count(*) FROM d.c WHERE a < b
+----
+0
+
+statement error
+INSERT INTO d.e SELECT 2, s FROM d.e
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO d.e SELECT 2, sum(2::DECIMAL(40,0)) EXPORT_STATE
+
+query II
+SELECT id, finalize(s) FROM d.e ORDER BY id
+----
+1	1
+2	2
+
+statement error
+INSERT INTO d.k VALUES ('x')
+----
+<REGEX>:.*Duplicate key.*xDECIMAL\(40,0\).*
+
+statement ok
+INSERT INTO d.k VALUES ('y')
+
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)
+
+query I
+SELECT count(*) FROM d.c
+----
+2
+
+statement ok
+INSERT INTO d.b VALUES (2, '2')
+
+statement error
+INSERT INTO d.b VALUES (3, '2')
+----
+<REGEX>:.*Duplicate key.*2.*
+
+query I
+SELECT id FROM d.b WHERE id = 2
+----
+2
+
+statement ok
+DETACH d
+
+# a database of a storage version before wide decimals binds its keys within 38 digits, as the engines of that version
+# do: the key of the sum stays DECIMAL(38,2) while the session binds the sum to DECIMAL(39,2)
+statement ok
+ATTACH '{TEST_DIR}/key_width_legacy.db' AS d (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE TABLE d.t (a DECIMAL(38,2), b DECIMAL(38,2))
+
+query I
+SELECT typeof(NULL::DECIMAL(38,2) + NULL::DECIMAL(38,2))
+----
+DECIMAL(39,2)
+
+statement ok
+CREATE UNIQUE INDEX ix ON d.t ((a + b))
+
+statement ok
+INSERT INTO d.t VALUES (1.5, 2.5)
+
+statement error
+INSERT INTO d.t VALUES (1, 3)
+----
+<REGEX>:.*Duplicate key.*4\.00.*
+
+# a sum beyond 38 digits overflows in the key, as it does in the engines of that version
+statement error
+INSERT INTO d.t VALUES (999999999999999999999999999999999999.99, 999999999999999999999999999999999999.99)
+----
+<REGEX>:.*(Overflow|Out of Range|out of range).*
+
+query I
+SELECT count(*) FROM d.t
+----
+1
+
+# the key of a function whose parameters share a template type is bound within 38 digits as well: the greatest of
+# DECIMAL(38,0) and DECIMAL(38,1) is DECIMAL(38,0) in the key, as in the engines of that version, and DECIMAL(39,1) in a
+# query of this engine
+statement ok
+CREATE TABLE d.g (a DECIMAL(38,0), b DECIMAL(38,1))
+
+query I
+SELECT typeof(greatest(NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)))
+----
+DECIMAL(39,1)
+
+statement ok
+CREATE UNIQUE INDEX gx ON d.g ((greatest(a, b)))
+
+statement ok
+INSERT INTO d.g VALUES (0, 0.1)
+
+statement error
+INSERT INTO d.g VALUES (0, 0.2)
+----
+<REGEX>:.*Duplicate key.*0.*
+
+# a type or a literal wider than 38 digits cannot be part of such a key, the error names the storage version
+statement error
+CREATE INDEX ix2 ON d.t ((a::DECIMAL(40,2)))
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38 \(index keys of storage version v2\.0\.0 are bound within 38 digits.*upgrade the database to storage version v2\.1\.0 or later for wider keys\).*
+
+statement error
+CREATE INDEX ix2 ON d.t ((a + 1234567890123456789012345678901234567890.5))
+----
+<REGEX>:.*Decimal literal of 41 digits exceeds the maximum DECIMAL width of 38 \(index keys of storage version v2\.0\.0.*
+
+# a cast between BIGNUM and DECIMAL is refused in such a key: the engines of that version have no such cast
+statement ok
+CREATE TABLE d.n (a BIGNUM)
+
+statement error
+CREATE UNIQUE INDEX nx ON d.n ((coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0 \(database "d" is using storage version v2\.0\.0\).*
+
+statement ok
+CREATE INDEX nx ON d.n ((a::VARCHAR))
+
+# the cast is refused inside a constant argument as well, although binding folds the argument to a constant
+statement error
+CREATE INDEX nx2 ON d.n ((a::VARCHAR || coalesce(try_cast('1'::BIGNUM AS DECIMAL(18,0)), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+# a cast between nested types is refused when a field converts between BIGNUM and DECIMAL, other fields may change
+statement ok
+CREATE TABLE d.st (s STRUCT(n BIGNUM, amount DECIMAL(18,0)))
+
+statement ok
+CREATE INDEX sx ON d.st ((struct_extract(CAST(s AS STRUCT(n BIGNUM, amount DECIMAL(19,0))), 'amount')))
+
+statement error
+CREATE INDEX sx2 ON d.st ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amount DECIMAL(18,0))), 'n')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+# a named struct cast drops the source fields without a match and fills the missing target fields with NULL: those
+# fields pair with none, so a cast that converts nothing between BIGNUM and DECIMAL is accepted
+statement ok
+CREATE TABLE d.u (s STRUCT(keep INTEGER, dropped BIGNUM))
+
+statement ok
+CREATE INDEX ux ON d.u ((struct_extract(CAST(s AS STRUCT(keep INTEGER, added DECIMAL(18,0))), 'keep')))
+
+statement error
+CREATE INDEX ux2 ON d.u ((struct_extract(CAST(s AS STRUCT(keep INTEGER, dropped DECIMAL(18,0))), 'keep')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+# a cast between nested types of different kinds pairs the children as the cast does: the fields of a ROW cast to a
+# STRUCT by position, every field of a STRUCT cast to a MAP with the value type
+statement error
+CREATE INDEX nx3 ON d.n ((coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DECIMAL(18,0))), 'v'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE INDEX sx3 ON d.st ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n VARCHAR, amount DECIMAL(19,0))), 'amount')))
+
+statement error
+CREATE INDEX sx4 ON d.st ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n DECIMAL(18,0), amount DECIMAL(19,0))), 'amount')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE INDEX sx5 ON d.st ((map_values(try_cast(s AS MAP(VARCHAR, VARCHAR)))[1]))
+
+statement error
+CREATE INDEX sx6 ON d.st ((map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1]))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE TABLE d.l (v BIGNUM[])
+
+statement ok
+CREATE INDEX lx ON d.l (((CAST(v AS DOUBLE[]))[1]))
+
+statement error
+CREATE INDEX lx2 ON d.l (((try_cast(v AS DECIMAL(18,0)[]))[1]))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+# a cast to a UNION selects the members as the cast does: by name when every source member has a name in the target,
+# else the whole source is promoted into the member it casts to implicitly
+statement ok
+CREATE TABLE d.un (u UNION(a BIGNUM, b INTEGER))
+
+statement ok
+CREATE INDEX unx ON d.un ((union_extract(union_extract(try_cast(u AS UNION(w UNION(a BIGNUM, b INTEGER))), 'w'), 'b')))
+
+statement error
+CREATE UNIQUE INDEX unx2 ON d.un ((coalesce(union_extract(union_extract(try_cast(u AS UNION(w UNION(a DECIMAL(18,0), b INTEGER))), 'w'), 'a'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement error
+CREATE INDEX unx3 ON d.un ((union_extract(try_cast(u AS UNION(a DECIMAL(18,0), b INTEGER)), 'a')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+# the setting does not change what the key binds to, so the index is bound the same after reopening
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_legacy.db' AS d
+
+statement error
+INSERT INTO d.t VALUES (1, 3)
+----
+<REGEX>:.*Duplicate key.*4\.00.*
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+# an in-memory database is at the latest storage version: its keys are bound without a bound as well
+statement ok
+ATTACH ':memory:' AS mem
+
+statement ok
+CREATE TABLE mem.m (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE UNIQUE INDEX mx ON mem.m ((coalesce(a, b)::DECIMAL(38,1)))
+
+statement ok
+INSERT INTO mem.m VALUES (NULL, 0.1)
+
+statement error
+INSERT INTO mem.m VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+statement ok
+SET max_decimal_width = 38
+
+statement error
+INSERT INTO mem.m VALUES (NULL, 0.1)
+----
+<REGEX>:.*Duplicate key.*0\.1.*
+
+statement ok
+CREATE TABLE mem.g (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE UNIQUE INDEX gx ON mem.g ((greatest(a, b)))
+
+statement ok
+INSERT INTO mem.g VALUES (0, 0.1)
+
+statement ok
+INSERT INTO mem.g VALUES (0, 0.2)
+
+statement ok
+CREATE TABLE mem.n (a BIGNUM)
+
+statement ok
+CREATE UNIQUE INDEX nx ON mem.n ((coalesce(try_cast(a AS DECIMAL(18,0)), -1::DECIMAL(18,0))))
+
+statement ok
+INSERT INTO mem.n VALUES ('1'::BIGNUM)
+
+statement error
+INSERT INTO mem.n VALUES ('1'::BIGNUM)
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO mem.n VALUES ('2'::BIGNUM)
+
+statement ok
+RESET max_decimal_width
+
+statement ok
+DETACH mem

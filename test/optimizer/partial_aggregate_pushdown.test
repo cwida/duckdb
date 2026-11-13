@@ -1072,7 +1072,7 @@ physical_plan	<!REGEX>:.*combine_aggr.*
 statement ok
 CREATE TABLE de_davg_ov_a AS SELECT CASE WHEN i % 2 = 0 THEN 1 ELSE 2 END AS k,
        (CASE WHEN i % 2 = 0 THEN 1 ELSE -1 END *
-        100000000000000000000000000000000000::DECIMAL(38, 0)) AS v
+        100000000000000000000000000000000000::DECIMAL(38, 0))::DECIMAL(38, 0) AS v
        FROM range(2000) _(i)
 
 statement ok

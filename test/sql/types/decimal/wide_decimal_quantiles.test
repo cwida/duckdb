@@ -1,0 +1,25 @@
+# name: test/sql/types/decimal/wide_decimal_quantiles.test
+# description: Approximate quantiles of decimals wider than 38 digits compute through DOUBLE
+# group: [decimal]
+
+query II
+SELECT approx_quantile(x, 0.5), reservoir_quantile(x, 0.5) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
+----
+2.0	2.0
+
+query II
+SELECT typeof(approx_quantile(x, 0.5)), typeof(reservoir_quantile(x, 0.5)) FROM (VALUES ('1'::DECIMAL(40,3))) t(x)
+----
+DOUBLE	DOUBLE
+
+query II
+SELECT typeof(approx_quantile(x, [0.25, 0.75])), typeof(reservoir_quantile(x, [0.25, 0.75])) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
+----
+DOUBLE[]	DOUBLE[]
+
+require parquet
+
+query IIII
+SELECT approx_quantile(bigdec, 0.5) BETWEEN -0.5 AND 0.5, reservoir_quantile(bigdec, 0.5) BETWEEN -0.5 AND 0.5, typeof(approx_quantile(bigdec, 0.5)), typeof(reservoir_quantile(bigdec, 0.5)) FROM '{DATA_DIR}/parquet-testing/bigdecimal.parquet' WHERE bigdec BETWEEN -1 AND 1
+----
+true	true	DOUBLE	DOUBLE

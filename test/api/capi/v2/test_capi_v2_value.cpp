@@ -771,8 +771,48 @@ TEST_CASE("V2: DECIMAL takes its backing integer plus width and scale", "[capi_v
 	REQUIRE(out == nullptr);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
-	REQUIRE(duckdb_v2_value_create_decimal(fx.factory, &one, 39, 0, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_value_create_decimal(fx.factory, &one, 4, 5, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_create_decimal(fx.factory, &one, 60, 61, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+
+	// Widths above 38 are wide decimals whose storage is a BIGNUM blob. The backing integer still builds them, and
+	// value_get_decimal reads them back as long as the backing integer fits in 128 bits.
+	duckdb_v2_hugeint_t wide_backing {123456789012345ull, 0};
+	duckdb_v2_value_handle wide_value = nullptr;
+	REQUIRE(duckdb_v2_value_create_decimal(fx.factory, &wide_backing, 60, 10, &wide_value, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(Render(wide_value) == "12345.6789012345");
+	REQUIRE(duckdb_v2_value_get_decimal(wide_value, &read, &read_width, &read_scale, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(read.lower == 123456789012345ull);
+	REQUIRE(read.upper == 0);
+	REQUIRE(read_width == 60);
+	REQUIRE(read_scale == 10);
+	duckdb_v2_value_destroy(&wide_value);
+
+	// Beyond 128 bits value_get_decimal fails; the exact storage comes through value_get_blob + bignum_decode.
+	auto wide_type =
+	    MakeType(fx.factory, "decimal", nullptr, {MakeInt32Value(fx.factory, 60), MakeInt32Value(fx.factory, 1)});
+	auto wide_text = MakeVarcharValue(fx.factory, "12345678901234567890123456789012345678901234567890.5");
+	duckdb_v2_value_handle huge_value = nullptr;
+	REQUIRE(duckdb_v2_value_cast(fx.factory, wide_text, wide_type, &huge_value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(Render(huge_value) == "12345678901234567890123456789012345678901234567890.5");
+	err = nullptr;
+	REQUIRE(duckdb_v2_value_get_decimal(huge_value, &read, &read_width, &read_scale, &err) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(err != nullptr);
+	duckdb_v2_error_info_destroy(&err);
+	const char *storage = nullptr;
+	idx_t storage_length = 0;
+	REQUIRE(duckdb_v2_value_get_blob(huge_value, &storage, &storage_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	idx_t magnitude_size = 0;
+	bool is_negative = true;
+	auto decode_rc = duckdb_v2_bignum_decode(reinterpret_cast<const uint8_t *>(storage), storage_length, nullptr, 0,
+	                                         &magnitude_size, &is_negative, nullptr);
+	REQUIRE((decode_rc == DUCKDB_V2_ERROR_NONE || decode_rc == DUCKDB_V2_ERROR_INPUT_OBJECT_SIZE));
+	// 123456789012345678901234567890123456789012345678905 needs 21 bytes
+	REQUIRE(magnitude_size == 21);
+	REQUIRE(!is_negative);
+	duckdb_v2_value_destroy(&huge_value);
+	duckdb_v2_value_destroy(&wide_text);
+	duckdb_v2_logical_type_destroy(&wide_type);
 
 	// A value too wide for the tier the width selects is refused rather than
 	// silently truncated.

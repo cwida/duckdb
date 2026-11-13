@@ -26,14 +26,15 @@ BindResult ExpressionBinder::BindExpression(BetweenExpression &expr, idx_t depth
 	// cast the input types to the same type
 	// now obtain the result type of the input types
 	LogicalType input_type;
+	const auto decimal_width_limit = binder.GetDecimalWidthLimit();
 	if (!BoundComparisonExpression::TryBindComparison(context, input_sql_type, lower_sql_type, input_type,
-	                                                  expr.GetExpressionType())) {
+	                                                  expr.GetExpressionType(), decimal_width_limit)) {
 		throw BinderException(expr,
 		                      "Cannot mix values of type %s and %s in BETWEEN clause - an explicit cast is required",
 		                      input_sql_type.ToString(), lower_sql_type.ToString());
 	}
 	if (!BoundComparisonExpression::TryBindComparison(context, input_type, upper_sql_type, input_type,
-	                                                  expr.GetExpressionType())) {
+	                                                  expr.GetExpressionType(), decimal_width_limit)) {
 		throw BinderException(expr,
 		                      "Cannot mix values of type %s and %s in BETWEEN clause - an explicit cast is required",
 		                      input_type.ToString(), upper_sql_type.ToString());

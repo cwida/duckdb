@@ -52,7 +52,9 @@ TEST_CASE("Test decimal types C API", "[capi]") {
 
 TEST_CASE("Test duckdb_create_decimal_type width/scale validation", "[capi]") {
 	// valid width/scale combinations succeed and round-trip
-	duckdb::vector<std::pair<uint8_t, uint8_t>> valid = {{1, 0}, {4, 1}, {9, 2}, {18, 3}, {38, 4}, {38, 38}};
+	// widths above 38 are wide decimals stored as BIGNUM
+	duckdb::vector<std::pair<uint8_t, uint8_t>> valid = {{1, 0},   {4, 1},  {9, 2},   {18, 3},    {38, 4},
+	                                                     {38, 38}, {39, 0}, {60, 10}, {255, 100}, {255, 255}};
 	for (auto &entry : valid) {
 		auto type = duckdb_create_decimal_type(entry.first, entry.second);
 		REQUIRE(type != nullptr);
@@ -63,10 +65,9 @@ TEST_CASE("Test duckdb_create_decimal_type width/scale validation", "[capi]") {
 	}
 
 	// invalid width/scale combinations return nullptr instead of throwing or returning a malformed type
-	duckdb::vector<std::pair<uint8_t, uint8_t>> invalid = {{0, 0},  // width below the minimum
-	                                                       {39, 0}, // width above the maximum (MAX_WIDTH_DECIMAL == 38)
-	                                                       {4, 5},  // scale greater than width
-	                                                       {255, 255}};
+	duckdb::vector<std::pair<uint8_t, uint8_t>> invalid = {{0, 0},    // width below the minimum
+	                                                       {4, 5},    // scale greater than width
+	                                                       {60, 61}}; // scale greater than width of a wide decimal
 	for (auto &entry : invalid) {
 		REQUIRE(duckdb_create_decimal_type(entry.first, entry.second) == nullptr);
 	}

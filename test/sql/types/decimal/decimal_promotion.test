@@ -47,17 +47,17 @@ INSERT INTO decimal_stats_overflow VALUES (
 	2
 );
 
-statement error
+query I
 SELECT add_left + add_right FROM decimal_stats_overflow
 ----
-<REGEX>:Out of Range Error.*Overflow in addition of DECIMAL.*
+100000000000000000000000000000000000000
 
-statement error
+query I
 SELECT subtract_left - subtract_right FROM decimal_stats_overflow
 ----
-<REGEX>:Out of Range Error.*Overflow in subtract of DECIMAL.*
+-100000000000000000000000000000000000000
 
-statement error
+query I
 SELECT multiply_left * multiply_right FROM decimal_stats_overflow
 ----
-<REGEX>:Out of Range Error.*Overflow in multiplication of DECIMAL.*
+199999999999999999999999999999999999998

@@ -11,6 +11,8 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
+class DecimalWidthLimit;
+
 //! The BoundComparisonExpression has been moved to a function expression
 //! This class exists only as a set of helper methods
 struct BoundComparisonExpression {
@@ -24,9 +26,10 @@ struct BoundComparisonExpression {
 	static unique_ptr<Expression> &RightMutable(BoundFunctionExpression &between_expr);
 	static unique_ptr<Expression> Create(ExpressionType type, unique_ptr<Expression> left,
 	                                     unique_ptr<Expression> right);
-	//! Create a comparison, casting both sides to a common type - throws if they cannot be compared
+	//! Create a comparison, casting both sides to a common type within the limit of the binder, if any - throws if
+	//! they cannot be compared
 	static unique_ptr<Expression> Bind(ClientContext &context, ExpressionType type, unique_ptr<Expression> left,
-	                                   unique_ptr<Expression> right);
+	                                   unique_ptr<Expression> right, optional_ptr<Binder> binder = nullptr);
 
 	//! Flip the comparison type, updating both the expression type and the bind data.
 	//! Use instead of SetExpressionTypeUnsafe to keep the two in sync.
@@ -39,5 +42,9 @@ struct BoundComparisonExpression {
 	                                  const LogicalType &right_type, ExpressionType comparison_type);
 	static bool TryBindComparison(ClientContext &context, const LogicalType &left_type, const LogicalType &right_type,
 	                              LogicalType &result_type, ExpressionType comparison_type);
+	//! Binds the width of a DECIMAL result within the limit instead of the max_decimal_width setting
+	static bool TryBindComparison(ClientContext &context, const LogicalType &left_type, const LogicalType &right_type,
+	                              LogicalType &result_type, ExpressionType comparison_type,
+	                              const DecimalWidthLimit &decimal_width_limit);
 };
 } // namespace duckdb

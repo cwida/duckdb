@@ -25,12 +25,20 @@ struct CastParameters;
 
 //! Scratch space of the VARCHAR <-> BIGNUM conversions, reused across the values of a vector
 struct BignumCastScratch {
+	//! The context, if any, lets long conversions check for interrupts
+	explicit BignumCastScratch(optional_ptr<ClientContext> context = nullptr) : state(context) {
+	}
+
 	//! Base 2^64 limbs of a magnitude, least significant first
 	unsafe_vector<uint64_t> binary;
 	//! Base 10^19 limbs of a magnitude, least significant first
 	unsafe_vector<uint64_t> decimal;
 	//! powers[k] holds 2^(64 * 2^k) in base 10^19 limbs, for the divide and conquer conversion of large values
 	vector<unsafe_vector<uint64_t>> powers;
+	//! powers_of_ten[k] holds 10^(19 * 2^k) in base 2^64 limbs, for the divide and conquer parse of long strings
+	vector<unsafe_vector<uint64_t>> powers_of_ten;
+	//! Digit scratch and interrupt checks of the multiplications of the divide and conquer conversions
+	BignumArithmeticState state;
 };
 
 //! The Bignum class is a static class that holds helper functions for the Bignum type.
@@ -66,10 +74,12 @@ public:
 	                                         bool &is_zero, bool &should_round_up);
 	//! Encodes a VARCHAR into a BIGNUM blob using formatting information returned by VarcharFormatting.
 	DUCKDB_API static string EncodeBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative,
-	                                      bool is_zero);
+	                                      bool is_zero, optional_ptr<ClientContext> context = nullptr);
 	//! Encodes a VARCHAR into a BIGNUM blob, applying decimal rounding if requested.
+	//! A long conversion checks for interrupts through the context
 	DUCKDB_API static string EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t end_pos,
-	                                             bool is_negative, bool is_zero, bool should_round_up);
+	                                             bool is_negative, bool is_zero, bool should_round_up,
+	                                             optional_ptr<ClientContext> context = nullptr);
 	//! Converts a VARCHAR into a BIGNUM allocated in the result vector, returns false if the VARCHAR is invalid
 	DUCKDB_API static bool TryVarcharToBignum(const string_t &value, bignum_t &result_value, Vector &result,
 	                                          BignumCastScratch &scratch);
@@ -83,14 +93,14 @@ public:
 	DUCKDB_API static void GetByteArray(vector<uint8_t> &byte_array, bool &is_negative, const string_t &blob);
 	//! Function to create a BIGNUM blob from a byte array containing the absolute value, plus an is_negative bool
 	DUCKDB_API static string FromByteArray(uint8_t *data, idx_t size, bool is_negative);
-	//! Function to convert BIGNUM blob to a VARCHAR
-	DUCKDB_API static string BignumToVarchar(const bignum_t &blob);
+	//! Function to convert BIGNUM blob to a VARCHAR, a long conversion checks for interrupts through the context
+	DUCKDB_API static string BignumToVarchar(const bignum_t &blob, optional_ptr<ClientContext> context = nullptr);
 	//! Writes the decimal representation of a BIGNUM into the string heap of the result vector
 	DUCKDB_API static string_t BignumToVarchar(const bignum_t &blob, Vector &result, BignumCastScratch &scratch);
 	//! The BIGNUM -> VARCHAR cast function
 	DUCKDB_API static bool BignumToVarcharCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
-	//! Function to convert Varchar to BIGNUM blob
-	DUCKDB_API static string VarcharToBignum(const string_t &value);
+	//! Function to convert Varchar to BIGNUM blob, a long conversion checks for interrupts through the context
+	DUCKDB_API static string VarcharToBignum(const string_t &value, optional_ptr<ClientContext> context = nullptr);
 	//! ----------------------------------- Double Cast ----------------------------------- //
 	DUCKDB_API static bool BignumToDouble(const bignum_t &blob, double &result, bool &strict);
 	[[noreturn]] DUCKDB_API static void ThrowInvalidBlobSize(idx_t size);

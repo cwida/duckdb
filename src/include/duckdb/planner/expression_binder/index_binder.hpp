@@ -18,7 +18,18 @@
 namespace duckdb {
 
 class BoundColumnRefExpression;
+class ConstantExpression;
 class LogicalOperator;
+
+//! The keys of an index while they are bound
+struct IndexKeyBinding {
+	//! The storage version the keys are stored at
+	StorageVersion version;
+	//! Whether the keys are stored keys, bound as the engines of their version bound them, rather than new keys
+	bool stored;
+	//! The first cast between BIGNUM and DECIMAL that the engines before wide decimals compute otherwise, if any
+	string legacy_cast;
+};
 
 //! The IndexBinder binds indexes and expressions within index statements.
 class IndexBinder : public ExpressionBinder {
@@ -26,7 +37,9 @@ public:
 	IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table = nullptr,
 	            optional_ptr<CreateIndexInfo> info = nullptr);
 
-	unique_ptr<BoundIndex> BindIndex(const UnboundIndex &index);
+	//! Binds a stored index. An index whose stored keys the engines of its storage version compute otherwise is
+	//! refused, or left unbound (nullptr) when skip_mismatched_keys is set, for a read that can do without it
+	unique_ptr<BoundIndex> BindIndex(const UnboundIndex &index, bool skip_mismatched_keys = false);
 	unique_ptr<LogicalOperator> BindCreateIndex(ClientContext &context, unique_ptr<CreateIndexInfo> create_index_info,
 	                                            TableCatalogEntry &table_entry, unique_ptr<LogicalOperator> plan,
 	                                            unique_ptr<AlterTableInfo> alter_table_info);
@@ -41,9 +54,18 @@ protected:
 	string UnsupportedAggregateMessage() override;
 
 private:
+	//! Binds a literal of a stored key as the engines before wide decimals bound it
+	BindResult BindLegacyConstant(ConstantExpression &expr);
+	//! Binds the casts between BIGNUM and DECIMAL of a bound key node as the engines before wide decimals bound them
+	void BindLegacyCasts(unique_ptr<Expression> &expr);
+	void BindLegacyCast(unique_ptr<Expression> &expr);
+
+private:
 	// Only for WAL replay.
 	optional_ptr<TableCatalogEntry> table;
 	optional_ptr<CreateIndexInfo> info;
+	//! The keys being bound, set while BindIndex or BindCreateIndex binds them
+	optional_ptr<IndexKeyBinding> keys;
 };
 
 } // namespace duckdb

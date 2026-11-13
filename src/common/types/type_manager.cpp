@@ -87,7 +87,8 @@ static LogicalType TransformStringToUnboundType(const string &str, ClientContext
 
 // This has to be called with a level of indirection (through "parse_function") in order to avoid being included in
 // extensions that statically link the core DuckDB library.
-static LogicalType ParseLogicalTypeInternal(const string &type_str, ClientContext &context) {
+static LogicalType ParseLogicalTypeInternal(const string &type_str, ClientContext &context,
+                                            optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	auto type = TransformStringToUnboundType(type_str, context);
 	if (type.IsUnbound()) {
 		if (!context.transaction.HasActiveTransaction()) {
@@ -95,13 +96,15 @@ static LogicalType ParseLogicalTypeInternal(const string &type_str, ClientContex
 			    "Context does not have a transaction active, try running ClientContext::BindLogicalType instead");
 		}
 		auto binder = Binder::CreateBinder(context, nullptr);
+		binder->SetDecimalWidthLimit(decimal_width_limit);
 		binder->BindLogicalType(type);
 	}
 	return type;
 }
 
-LogicalType TypeManager::ParseLogicalType(const string &type_str, ClientContext &context) const {
-	return parse_function(type_str, context);
+LogicalType TypeManager::ParseLogicalType(const string &type_str, ClientContext &context,
+                                          optional_ptr<const DecimalWidthLimit> decimal_width_limit) const {
+	return parse_function(type_str, context, decimal_width_limit);
 }
 
 LogicalType TypeManager::ParseLogicalType(const string &type_str) const {

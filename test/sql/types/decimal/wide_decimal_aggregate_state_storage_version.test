@@ -1,0 +1,68 @@
+# name: test/sql/types/decimal/wide_decimal_aggregate_state_storage_version.test
+# description: An aggregate state records the types of its arguments, which must be readable by the engines of the storage version
+# group: [decimal]
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_state_v200.db' AS old (STORAGE_VERSION 'v2.0.0');
+
+# an aggregate state records the types of its arguments
+statement error
+CREATE TABLE old.s AS SELECT sum(1::DECIMAL(39,0)) EXPORT_STATE AS state;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.s AS SELECT quantile_disc(1::DECIMAL(39,0), 0.5) EXPORT_STATE AS state;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.s AS SELECT {'s': sum(1::DECIMAL(39,0)) EXPORT_STATE} AS state;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CREATE TABLE old.s AS SELECT sum(1::DECIMAL(38,0)) EXPORT_STATE AS state;
+
+query I
+SELECT finalize(state) FROM old.s
+----
+1
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_state_v200.db' AS old;
+
+query I
+SELECT finalize(state) FROM old.s
+----
+1
+
+statement ok
+DETACH old;
+
+# the latest storage version stores the wide argument type
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_state_latest.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE new.s AS SELECT sum(1::DECIMAL(39,0)) EXPORT_STATE AS state;
+
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_state_latest.db' AS new;
+
+query II
+SELECT finalize(state), typeof(finalize(state)) FROM new.s
+----
+1	DECIMAL(59,0)

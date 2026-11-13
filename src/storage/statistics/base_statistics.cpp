@@ -80,6 +80,10 @@ StatisticsType BaseStatistics::GetStatsType(const LogicalType &type) {
 	if (type.id() == LogicalTypeId::VARIANT) {
 		return StatisticsType::VARIANT_STATS;
 	}
+	if (type.id() == LogicalTypeId::DECIMAL && type.InternalType() == PhysicalType::VARCHAR) {
+		// decimals wider than 38 digits are BIGNUM blobs with min/max bounds of a bounded size
+		return StatisticsType::BIGNUM_STATS;
+	}
 	switch (type.InternalType()) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8:
@@ -177,6 +181,9 @@ void BaseStatistics::Merge(const BaseStatistics &other, StatsMergeType merge_typ
 	case StatisticsType::VARIANT_STATS:
 		VariantStats::Merge(*this, other);
 		break;
+	case StatisticsType::BIGNUM_STATS:
+		BignumStats::Merge(*this, other);
+		break;
 	default:
 		break;
 	}
@@ -230,6 +237,8 @@ BaseStatistics BaseStatistics::CreateUnknownType(LogicalType type) {
 		return GeometryStats::CreateUnknown(std::move(type));
 	case StatisticsType::VARIANT_STATS:
 		return VariantStats::CreateUnknown(std::move(type));
+	case StatisticsType::BIGNUM_STATS:
+		return BignumStats::CreateUnknown(std::move(type));
 	default:
 		return BaseStatistics(std::move(type));
 	}
@@ -251,6 +260,8 @@ BaseStatistics BaseStatistics::CreateEmptyType(LogicalType type) {
 		return GeometryStats::CreateEmpty(std::move(type));
 	case StatisticsType::VARIANT_STATS:
 		return VariantStats::CreateEmpty(std::move(type));
+	case StatisticsType::BIGNUM_STATS:
+		return BignumStats::CreateEmpty(std::move(type));
 	default:
 		return BaseStatistics(std::move(type));
 	}
@@ -297,6 +308,9 @@ void BaseStatistics::Copy(const BaseStatistics &other) {
 		break;
 	case StatisticsType::STRING_STATS:
 		StringStats::Copy(*this, other);
+		break;
+	case StatisticsType::BIGNUM_STATS:
+		BignumStats::Copy(*this, other);
 		break;
 	default:
 		break;
@@ -423,6 +437,9 @@ void BaseStatistics::Serialize(Serializer &serializer) const {
 		case StatisticsType::VARIANT_STATS:
 			VariantStats::Serialize(*this, serializer);
 			break;
+		case StatisticsType::BIGNUM_STATS:
+			BignumStats::Serialize(*this, serializer);
+			break;
 		default:
 			break;
 		}
@@ -467,6 +484,9 @@ BaseStatistics BaseStatistics::Deserialize(Deserializer &deserializer) {
 		case StatisticsType::VARIANT_STATS:
 			VariantStats::Deserialize(obj, stats);
 			break;
+		case StatisticsType::BIGNUM_STATS:
+			BignumStats::Deserialize(obj, stats);
+			break;
 		default:
 			break;
 		}
@@ -498,6 +518,9 @@ Value BaseStatistics::ToStruct(bool exact) const {
 		break;
 	case StatisticsType::VARIANT_STATS:
 		children = VariantStats::ToStruct(*this, exact);
+		break;
+	case StatisticsType::BIGNUM_STATS:
+		children = BignumStats::ToStruct(*this);
 		break;
 	default:
 		break;
@@ -578,6 +601,9 @@ void BaseStatistics::Verify(const Vector &vector, const SelectionVector &sel, id
 		break;
 	case StatisticsType::VARIANT_STATS:
 		VariantStats::Verify(*this, vector, sel, count);
+		break;
+	case StatisticsType::BIGNUM_STATS:
+		BignumStats::Verify(*this, vector, sel, count);
 		break;
 	default:
 		break;
@@ -668,6 +694,12 @@ BaseStatistics BaseStatistics::FromConstantType(const Value &input) {
 			auto &string_value = StringValue::Get(input);
 			GeometryStats::Update(result, string_t(string_value));
 		}
+		return result;
+	}
+	case StatisticsType::BIGNUM_STATS: {
+		auto result = BignumStats::CreateEmpty(input.type());
+		BignumStats::SetMin(result, input);
+		BignumStats::SetMax(result, input);
 		return result;
 	}
 	case StatisticsType::VARIANT_STATS: {

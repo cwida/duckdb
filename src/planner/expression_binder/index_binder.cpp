@@ -5,6 +5,8 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding.hpp"
@@ -17,9 +19,287 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
+
+namespace {
+
+//! The storage version the keys of an index are written with: the version its stored data records (the ART saves the
+//! version it was created under, an index written before v1.5.0 records none), or the version of the database for an
+//! index that is being created. The version stays with the index when the database is upgraded to a newer storage
+//! version, since the stored keys keep their types.
+StorageVersion IndexKeyStorageVersion(AttachedDatabase &db, optional_ptr<const IndexStorageInfo> storage_info) {
+	if (storage_info && storage_info->IsValid()) {
+		auto entry = storage_info->options.find("storage_version");
+		if (entry == storage_info->options.end()) {
+			return StorageVersion::INVALID;
+		}
+		return static_cast<StorageVersion>(entry->second.GetValue<uint64_t>());
+	}
+	return db.GetStorageManager().GetStorageVersion();
+}
+
+//! Whether the keys of an index of the storage version are bound within 38 digits: the engines of the storage versions
+//! before wide decimals bind every decimal key that way, and the keys they store have those types
+bool KeysPredateWideDecimals(StorageVersion key_version) {
+	return StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, key_version);
+}
+
+//! The width the keys of the storage version are bound within, in place of the max_decimal_width setting, so that
+//! every session binds a key to the same types: 38 digits before wide decimals, as the engines of those versions bind
+//! them, and the uint32_t range of the width from then on, so that the key types follow from the column types alone
+uint32_t KeyDecimalWidth(StorageVersion key_version) {
+	if (KeysPredateWideDecimals(key_version)) {
+		return Decimal::MAX_WIDTH_INT128;
+	}
+	return NumericLimits<uint32_t>::Maximum();
+}
+
+//! The hint of the errors a wider type raises while binding keys of the storage version, if it bounds them
+string KeyDecimalWidthReason(StorageVersion key_version) {
+	if (!KeysPredateWideDecimals(key_version)) {
+		return string();
+	}
+	return StringUtil::Format("index keys of storage version %s are bound within %d digits, as the engines of that "
+	                          "version bind them; upgrade the database to storage version %s or later for wider keys",
+	                          GetStorageVersionName(key_version, false), Decimal::MAX_WIDTH_INT128,
+	                          GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false));
+}
+
+//! Binds the keys within the decimal width of their storage version while it lives, in place of the setting
+struct KeyDecimalWidthScope {
+	KeyDecimalWidthScope(Binder &binder_p, StorageVersion key_version)
+	    : binder(binder_p), reason(KeyDecimalWidthReason(key_version)),
+	      limit(KeyDecimalWidth(key_version), reason.c_str()), previous(binder_p.GetFixedDecimalWidthLimit()) {
+		binder.SetDecimalWidthLimit(&limit);
+	}
+	~KeyDecimalWidthScope() {
+		binder.SetDecimalWidthLimit(previous);
+	}
+
+	Binder &binder;
+	const string reason;
+	const DecimalWidthLimit limit;
+	optional_ptr<const DecimalWidthLimit> previous;
+};
+
+//! The first expression of a wide decimal type within the key, if any: the engines before wide decimals bind every
+//! subexpression within 38 digits, so a wide intermediate changes the computed key as much as a wide result
+optional_ptr<const Expression> FindWideDecimalExpression(const Expression &expr) {
+	if (StorageManager::ContainsWideDecimal(expr.GetReturnType())) {
+		return &expr;
+	}
+	optional_ptr<const Expression> result;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result) {
+			result = FindWideDecimalExpression(child);
+		}
+	});
+	return result;
+}
+
+optional_ptr<const Expression> FindWideDecimalExpression(const vector<unique_ptr<Expression>> &keys) {
+	for (auto &key : keys) {
+		auto wide = FindWideDecimalExpression(*key);
+		if (wide) {
+			return wide;
+		}
+	}
+	return nullptr;
+}
+
+//! The element type of a LIST or ARRAY
+const LogicalType &NestedChildType(const LogicalType &type) {
+	return type.id() == LogicalTypeId::ARRAY ? ArrayType::GetChildType(type) : ListType::GetChildType(type);
+}
+
+bool IsNestedList(const LogicalType &type) {
+	return type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::ARRAY;
+}
+
+bool IsBignumDecimalPair(const LogicalType &a, const LogicalType &b) {
+	return a.id() == LogicalTypeId::BIGNUM && b.id() == LogicalTypeId::DECIMAL;
+}
+
+//! Whether the cast converts a BIGNUM to a DECIMAL or a DECIMAL to a BIGNUM, the types themselves
+bool IsBignumDecimalCast(const LogicalType &source, const LogicalType &target) {
+	return IsBignumDecimalPair(source, target) || IsBignumDecimalPair(target, source);
+}
+
+//! A STRUCT or a TUPLE (an unnamed struct): the cast between them pairs the fields
+bool IsStructOrTuple(const LogicalType &type) {
+	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
+}
+
+bool CastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target);
+
+//! The member of a UNION a cast promotes its source to: the member the source casts to implicitly at the lowest cost,
+//! none when no member or several members do (the cast does not bind then)
+optional_ptr<const LogicalType> PromotedUnionMember(ClientContext &context, const LogicalType &source,
+                                                    const LogicalType &target) {
+	optional_ptr<const LogicalType> result;
+	auto best_cost = NumericLimits<int64_t>::Maximum();
+	bool ambiguous = false;
+	for (idx_t i = 0; i < UnionType::GetMemberCount(target); i++) {
+		auto &member = UnionType::GetMemberType(target, i);
+		const auto cost = CastFunctionSet::ImplicitCastCost(context, source, member);
+		if (cost < 0 || cost > best_cost) {
+			continue;
+		}
+		ambiguous = cost == best_cost;
+		best_cost = cost;
+		result = &member;
+	}
+	return ambiguous ? nullptr : result;
+}
+
+//! Whether every member of a source UNION has a member of its name in the target UNION
+bool UnionMembersMatchByName(const LogicalType &source, const LogicalType &target) {
+	for (idx_t i = 0; i < UnionType::GetMemberCount(source); i++) {
+		auto &name = UnionType::GetMemberName(source, i);
+		bool found = false;
+		for (idx_t j = 0; j < UnionType::GetMemberCount(target); j++) {
+			if (UnionType::GetMemberName(target, j) == name) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Whether a cast to a UNION converts between BIGNUM and DECIMAL in the members it selects: a source UNION whose
+//! members all have a name in the target pairs the members by name, any other source is promoted into the member it
+//! casts to implicitly (union_casts.cpp)
+bool UnionCastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+	if (source.id() == LogicalTypeId::UNION && UnionMembersMatchByName(source, target)) {
+		for (idx_t i = 0; i < UnionType::GetMemberCount(source); i++) {
+			auto &name = UnionType::GetMemberName(source, i);
+			for (idx_t j = 0; j < UnionType::GetMemberCount(target); j++) {
+				if (UnionType::GetMemberName(target, j) == name &&
+				    CastsBetweenBignumAndDecimal(context, UnionType::GetMemberType(source, i),
+				                                 UnionType::GetMemberType(target, j))) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	auto member = PromotedUnionMember(context, source, target);
+	return member && CastsBetweenBignumAndDecimal(context, source, *member);
+}
+
+//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or the children the cast pairs: the
+//! elements of lists and arrays, the keys and values of maps, the struct fields the cast matches, every field of a
+//! STRUCT cast to a MAP with the value type, and the union members the cast selects; the engines before wide decimals
+//! have no such cast
+bool CastsBetweenBignumAndDecimal(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+	if (IsBignumDecimalCast(source, target)) {
+		return true;
+	}
+	if (IsNestedList(source) && IsNestedList(target)) {
+		return CastsBetweenBignumAndDecimal(context, NestedChildType(source), NestedChildType(target));
+	}
+	if (source.id() == LogicalTypeId::MAP && target.id() == LogicalTypeId::MAP) {
+		return CastsBetweenBignumAndDecimal(context, MapType::KeyType(source), MapType::KeyType(target)) ||
+		       CastsBetweenBignumAndDecimal(context, MapType::ValueType(source), MapType::ValueType(target));
+	}
+	if (source.id() == LogicalTypeId::STRUCT && target.id() == LogicalTypeId::MAP) {
+		auto &value_type = MapType::ValueType(target);
+		for (auto &field : StructType::GetChildTypes(source)) {
+			if (CastsBetweenBignumAndDecimal(context, field.second, value_type)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (target.id() == LogicalTypeId::UNION) {
+		return UnionCastsBetweenBignumAndDecimal(context, source, target);
+	}
+	if (!IsStructOrTuple(source) || !IsStructOrTuple(target)) {
+		return false;
+	}
+	// the fields the cast pairs: by name between named structs, else by position; a cast that does not bind pairs none
+	auto mapping = StructBoundCastData::GetFieldMapping(source, target);
+	if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+		return false;
+	}
+	auto &source_children = StructType::GetChildTypes(source);
+	auto &target_children = StructType::GetChildTypes(target);
+	for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
+		auto &source_child = source_children[mapping.source_indexes[i]].second;
+		auto &target_child = target_children[mapping.target_indexes[i]].second;
+		if (CastsBetweenBignumAndDecimal(context, source_child, target_child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Why the engines before wide decimals compute other keys for the expressions than this engine, empty when they
+//! agree: those engines bind every decimal within 38 digits and have no cast between BIGNUM and DECIMAL
+string DescribeLegacyKeyDifference(const vector<unique_ptr<Expression>> &keys, const IndexKeyBinding &binding) {
+	auto wide = FindWideDecimalExpression(keys);
+	if (wide) {
+		return StringUtil::Format("%s binds to %s, those engines bind decimal keys within %d digits", wide->ToString(),
+		                          wide->GetReturnType().ToString(), Decimal::MAX_WIDTH_INT128);
+	}
+	return binding.legacy_cast;
+}
+
+//! A stored index whose keys the engines of its storage version computed otherwise would leave the stored keys
+//! unmatched (a UNIQUE index would accept duplicates), so it is not bound until it is created again
+void ThrowMismatchedStoredKey(const UnboundIndex &unbound_index, StorageVersion key_version, const string &difference) {
+	auto &name = unbound_index.GetIndexName();
+	throw BinderException("Cannot bind index %s on table %s: the index was stored at storage version %s, whose engines "
+	                      "compute other keys for its expression (%s), so the stored keys differ from the keys this "
+	                      "engine computes. DROP INDEX %s and CREATE it again; until then writes to the table fail, as "
+	                      "does a CHECKPOINT after writes replayed from the write-ahead log",
+	                      name, unbound_index.GetTableName(), GetStorageVersionName(key_version, false), difference,
+	                      name);
+}
+
+//! The keys of a new index are stored at the storage version of its database: a key the engines of that version
+//! compute otherwise is refused, like a column type they cannot read, so that they compute the stored keys
+void CheckNewKeys(AttachedDatabase &db, const vector<unique_ptr<Expression>> &keys, const IndexKeyBinding &binding) {
+	if (!KeysPredateWideDecimals(binding.version)) {
+		return;
+	}
+	auto &storage = db.GetStorageManager();
+	auto wide = FindWideDecimalExpression(keys);
+	if (wide) {
+		throw InvalidInputException(
+		    storage.GetUnsupportedDecimalWidthReason(wide->GetReturnType(), "index key expressions"));
+	}
+	if (!binding.legacy_cast.empty()) {
+		throw InvalidInputException(storage.GetUnsupportedPriorToVersionReason(
+		    "Index key expressions with a cast between BIGNUM and DECIMAL", Decimal::WIDE_VERSION_ADDED));
+	}
+}
+
+//! Registers the keys being bound with the binder for the duration of the scope
+struct IndexKeyBindingScope {
+	IndexKeyBindingScope(optional_ptr<IndexKeyBinding> &slot_p, IndexKeyBinding &binding) : slot(slot_p) {
+		D_ASSERT(!slot);
+		slot = &binding;
+	}
+	~IndexKeyBindingScope() {
+		slot = nullptr;
+	}
+	optional_ptr<IndexKeyBinding> &slot;
+};
+
+} // namespace
 
 IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table,
                          optional_ptr<CreateIndexInfo> info)
@@ -64,7 +344,7 @@ static bool IsValidIndexExpression(Binder &binder, const Expression &expr, Error
 	return true;
 }
 
-unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index) {
+unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index, bool skip_mismatched_keys) {
 	auto &index_type_name = unbound_index.GetIndexType();
 	// Do we know the type of this index now?
 	auto index_type = context.db->config.GetIndexTypes().FindByName(index_type_name);
@@ -78,22 +358,37 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	auto &storage_info = unbound_index.GetStorageInfo();
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();
 
-	// bind the parsed expressions to create unbound expressions
+	// bind the parsed expressions to create unbound expressions, within the decimal width of their storage version
+	// and as the engines of that version bound them
+	IndexKeyBinding binding {IndexKeyStorageVersion(unbound_index.db, storage_info), true, string()};
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
-	for (auto &expr : parsed_expressions) {
-		auto copy = expr->Copy();
-		properties.always_require_rebind = false;
-		unbound_expressions.push_back(Bind(copy));
-		// Stored keys must satisfy the same requirements as newly created keys.
-		ErrorData error;
-		if (!IsValidIndexExpression(binder, *unbound_expressions.back(), error)) {
-			throw DataCorruptionException("Invalid index %s: %s", create_info.GetIndexName(), error.RawMessage());
+	{
+		IndexKeyBindingScope scope(keys, binding);
+		KeyDecimalWidthScope key_width(binder, binding.version);
+		for (auto &expr : parsed_expressions) {
+			auto copy = expr->Copy();
+			properties.always_require_rebind = false;
+			unbound_expressions.push_back(Bind(copy));
+			// Stored keys must satisfy the same requirements as newly created keys.
+			ErrorData error;
+			if (!IsValidIndexExpression(binder, *unbound_expressions.back(), error)) {
+				throw DataCorruptionException("Invalid index %s: %s", create_info.GetIndexName(), error.RawMessage());
+			}
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
+	if (KeysPredateWideDecimals(binding.version)) {
+		auto difference = DescribeLegacyKeyDifference(unbound_expressions, binding);
+		if (!difference.empty()) {
+			if (skip_mismatched_keys) {
+				return nullptr;
+			}
+			ThrowMismatchedStoredKey(unbound_index, binding.version, difference);
+		}
+	}
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
 	                       create_info.GetIndexName(), create_info.column_ids, unbound_expressions, storage_info,
@@ -149,19 +444,28 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 
 	// Bind the index expressions.
 	// The expressions are bound again when the index is loaded, so they cannot depend on the session or the query
-	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding.
+	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding, and
+	// decimals are bound within the width of the storage version instead of the max_decimal_width setting.
+	auto &db = table_entry.ParentCatalog().GetAttached();
+	const auto key_version = db.HasStorageManager() ? IndexKeyStorageVersion(db, nullptr) : StorageVersion::LATEST;
+	IndexKeyBinding binding {key_version, false, string()};
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
-	for (auto &expr : create_index_info->expressions) {
-		properties.always_require_rebind = false;
-		expressions.push_back(Bind(expr));
-		ErrorData error;
-		if (!IsValidIndexExpression(binder, *expressions.back(), error)) {
-			error.Throw();
+	{
+		IndexKeyBindingScope scope(keys, binding);
+		KeyDecimalWidthScope key_width(binder, key_version);
+		for (auto &expr : create_index_info->expressions) {
+			properties.always_require_rebind = false;
+			expressions.push_back(Bind(expr));
+			ErrorData error;
+			if (!IsValidIndexExpression(binder, *expressions.back(), error)) {
+				error.Throw();
+			}
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
+	CheckNewKeys(db, expressions, binding);
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);
@@ -176,25 +480,75 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 
 BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
 	auto &expr = *expr_ptr;
+	const bool legacy_keys = keys && KeysPredateWideDecimals(keys->version);
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::WINDOW:
 		return BindResult(BinderException::Unsupported(expr, "window functions are not allowed in index expressions"));
 	case ExpressionClass::SUBQUERY:
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in index expressions"));
-	default: {
-		// restores the previous state on exit, binding is recursive
-		struct IndexKeyScope {
-			explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
-				binder.SetBindingIndexKey(true);
-			}
-			~IndexKeyScope() {
-				binder.SetBindingIndexKey(previous);
-			}
-			Binder &binder;
-			bool previous;
-		} scope(binder);
-		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	case ExpressionClass::CONSTANT:
+		if (legacy_keys && keys->stored) {
+			return BindLegacyConstant(expr.Cast<ConstantExpression>());
+		}
+		break;
+	default:
+		break;
 	}
+	// restores the previous state on exit, binding is recursive
+	struct IndexKeyScope {
+		explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
+			binder.SetBindingIndexKey(true);
+		}
+		~IndexKeyScope() {
+			binder.SetBindingIndexKey(previous);
+		}
+		Binder &binder;
+		bool previous;
+	} scope(binder);
+	auto result = ExpressionBinder::BindExpression(expr_ptr, depth);
+	if (legacy_keys && !result.HasError()) {
+		// the casts this node adds are bound now: an enclosing function folds a constant node to its value
+		BindLegacyCasts(result.expression);
+	}
+	return result;
+}
+
+BindResult IndexBinder::BindLegacyConstant(ConstantExpression &expr) {
+	// those engines bind a literal wider than 38 digits to a DOUBLE, the stored keys hold that value
+	return BindResult(make_uniq<BoundConstantExpression>(expr.GetLiteral().ToValue(Decimal::MAX_WIDTH_INT128)));
+}
+
+void IndexBinder::BindLegacyCasts(unique_ptr<Expression> &expr) {
+	// the node is an explicit cast, the casts of its children are the implicit casts the node added: the children
+	// themselves were bound before
+	BindLegacyCast(expr);
+	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) { BindLegacyCast(child); });
+}
+
+void IndexBinder::BindLegacyCast(unique_ptr<Expression> &expr) {
+	if (!BoundCastExpression::IsCast(*expr)) {
+		return;
+	}
+	auto &cast = expr->Cast<BoundFunctionExpression>();
+	const auto source = BoundCastExpression::SourceType(cast);
+	auto &target = BoundCastExpression::TargetType(cast);
+	if (!CastsBetweenBignumAndDecimal(context, source, target)) {
+		return;
+	}
+	if (keys->stored && IsBignumDecimalCast(source, target)) {
+		// those engines bind the cast to the null cast: a TRY_CAST gives NULL, a CAST raises an error
+		if (BoundCastExpression::GetBoundCast(cast).IsNullCast()) {
+			return;
+		}
+		auto child = std::move(BoundCastExpression::ChildMutable(cast));
+		expr = BoundCastExpression::Create(std::move(child), target, BoundCastInfo(DefaultCasts::TryVectorNullCast),
+		                                   BoundCastExpression::IsTryCast(cast));
+		return;
+	}
+	if (keys->legacy_cast.empty()) {
+		keys->legacy_cast =
+		    StringUtil::Format("%s casts %s to %s, a cast those engines do not have (a TRY_CAST gives NULL there)",
+		                       cast.ToString(), source.ToString(), target.ToString());
 	}
 }
 

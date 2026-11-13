@@ -31,6 +31,7 @@ class String;
 class CastFunctionSet;
 struct GetCastFunctionInput;
 struct ExtraValueInfo;
+struct bignum_t;
 
 //! The Value object holds a single arbitrary value of any type that can be
 //! stored in the database.
@@ -171,6 +172,8 @@ public:
 	DUCKDB_API static Value DECIMAL(int32_t value, uint32_t width, uint32_t scale);
 	DUCKDB_API static Value DECIMAL(int64_t value, uint32_t width, uint32_t scale);
 	DUCKDB_API static Value DECIMAL(hugeint_t value, uint32_t width, uint32_t scale);
+	//! Create a decimal Value from the BIGNUM blob of its unscaled value, the storage of widths above 38
+	DUCKDB_API static Value DECIMAL(bignum_t value, uint32_t width, uint32_t scale);
 	//! Create a float Value from a specified value
 	DUCKDB_API static Value FLOAT(float value);
 	//! Create a double Value from a specified value

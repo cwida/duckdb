@@ -143,6 +143,8 @@ struct JSONConverterBase {
 			val_str = Decimal::ToString(val, width, scale);
 		} else if constexpr (std::is_same_v<T, hugeint_t>) {
 			val_str = Decimal::ToString(val, width, scale);
+		} else if constexpr (std::is_same_v<T, bignum_t>) {
+			val_str = Decimal::ToString(val, width, scale);
 		} else {
 			throw InternalException("Unhandled decimal type");
 		}

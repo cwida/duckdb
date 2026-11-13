@@ -1,5 +1,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
@@ -12,6 +14,16 @@ FunctionUnbindInput::FunctionUnbindInput(const BoundFunctionExpression &expressi
 }
 
 FunctionUnbindInput::~FunctionUnbindInput() {
+}
+
+DecimalWidthLimit FunctionBindExpressionInput::GetDecimalWidthLimit() const {
+	if (binder) {
+		return binder->GetDecimalWidthLimit();
+	}
+	if (decimal_width_limit) {
+		return *decimal_width_limit;
+	}
+	return DecimalWidthLimit::FromSetting(context);
 }
 
 void ThrowNonFallibleFunctionError(const Identifier &name, std::exception &ex) {

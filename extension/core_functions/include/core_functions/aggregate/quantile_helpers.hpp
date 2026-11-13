@@ -20,6 +20,11 @@ struct QuantileValue {
 		const auto &type = val.type();
 		switch (type.id()) {
 		case LogicalTypeId::DECIMAL: {
+			if (type.InternalType() == PhysicalType::VARCHAR) {
+				// a wide decimal quantile has no HUGEINT representation, it is interpolated as DOUBLE
+				val = Value::DOUBLE(dbl);
+				break;
+			}
 			integral = IntegralValue::Get(v);
 			scaling = Hugeint::POWERS_OF_TEN[DecimalType::GetScale(type)];
 			break;

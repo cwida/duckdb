@@ -1,0 +1,24 @@
+# name: test/parquet/corrupt/wide_decimal_stats_overflow.test
+# description: Ignore wide decimal statistics that do not fit the width of the column
+# group: [corrupt]
+
+require parquet
+
+# The minimum statistic encodes -2^167 (51 digits), which does not fit in DECIMAL(50,10).
+query TT
+SELECT stats_min_value, stats_max_value FROM parquet_metadata('data/parquet-testing/corrupt/wide_decimal_stats_overflow.parquet');
+----
+NULL	3.5000000000
+
+# Ignore the invalid statistic without pruning valid data.
+query I
+SELECT val FROM read_parquet('data/parquet-testing/corrupt/wide_decimal_stats_overflow.parquet') WHERE val > 2 ORDER BY val;
+----
+2.5000000000
+2.5000000000
+2.5000000000
+2.5000000000
+3.5000000000
+3.5000000000
+3.5000000000
+3.5000000000

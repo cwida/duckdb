@@ -47,7 +47,8 @@ class CSVCast {
 		idx_t cur_line = 0;
 		UnaryExecutor::Execute<string_t, T>(input_vector, result_vector, count, [&](string_t input) {
 			T result;
-			if (!OP::Operation(input, result, parameters, width, scale)) {
+			if (!VectorDecimalCast::Operation<OP, string_t, T>(input, result, result_vector, parameters, width,
+			                                                   scale)) {
 				if (all_converted) {
 					line_error = cur_line;
 				}
@@ -147,6 +148,9 @@ public:
 			    options, input_vector, result_vector, count, parameters, width, scale, line_error);
 		case PhysicalType::INT128:
 			return TemplatedTryCastDecimalVector<TryCastToDecimalCommaSeparated, hugeint_t>(
+			    options, input_vector, result_vector, count, parameters, width, scale, line_error);
+		case PhysicalType::VARCHAR:
+			return TemplatedTryCastDecimalVector<TryCastToDecimalCommaSeparated, bignum_t>(
 			    options, input_vector, result_vector, count, parameters, width, scale, line_error);
 		default:
 			throw InternalException("Unimplemented physical type for decimal");

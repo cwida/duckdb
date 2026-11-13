@@ -28,6 +28,13 @@ FunctionBinder::FunctionBinder(ClientContext &context_p) : binder(nullptr), cont
 }
 FunctionBinder::FunctionBinder(Binder &binder_p) : binder(&binder_p), context(binder_p.context) {
 }
+FunctionBinder::FunctionBinder(ClientContext &context_p, optional_ptr<const DecimalWidthLimit> decimal_width_limit_p)
+    : binder(nullptr), context(context_p), decimal_width_limit(decimal_width_limit_p) {
+}
+
+optional_ptr<const DecimalWidthLimit> FunctionBinder::FixedDecimalWidthLimit() const {
+	return binder ? binder->GetFixedDecimalWidthLimit() : decimal_width_limit;
+}
 
 //! Split the full (maybe-named) argument list into the positional and the named arguments. Returns false, and leaves
 //! the arguments as they are, if a positional argument follows a named one
@@ -119,7 +126,8 @@ static int64_t ImplicitCastCost(optional_ptr<ClientContext> context, const Logic
 
 static bool InferTemplateType(optional_ptr<ClientContext> context, const LogicalType &source, const LogicalType &target,
                               case_insensitive_map_t<vector<LogicalType>> &bindings,
-                              FunctionMismatch::TemplateDeduction &failure) {
+                              FunctionMismatch::TemplateDeduction &failure,
+                              optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	if (target.id() == LogicalTypeId::UNKNOWN || target.id() == LogicalTypeId::SQLNULL) {
 		// If the actual type is unknown, we cannot infer anything more.
 		// Therefore, we map all remaining templates in the source to UNKNOWN or SQLNULL, if not already inferred to
@@ -159,9 +167,15 @@ static bool InferTemplateType(optional_ptr<ClientContext> context, const Logical
 
 		// Try to unify (promote) the type candidates - without a client context, with the built-in casts only
 		LogicalType result;
-		const bool unified = context
-		                         ? LogicalType::TryGetMaxLogicalType(*context, it->second.back(), target, result)
-		                         : LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(it->second.back(), target, result);
+		bool unified;
+		if (!context) {
+			unified = LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(it->second.back(), target, result);
+		} else if (decimal_width_limit) {
+			unified =
+			    LogicalType::TryGetMaxLogicalType(*context, it->second.back(), target, result, *decimal_width_limit);
+		} else {
+			unified = LogicalType::TryGetMaxLogicalType(*context, it->second.back(), target, result);
+		}
 		if (unified) {
 			// Type unification was successful
 			if (it->second.back() != result) {
@@ -195,7 +209,7 @@ static bool InferTemplateType(optional_ptr<ClientContext> context, const Logical
 			    source.id() == LogicalTypeId::LIST ? ListType::GetChildType(source) : ArrayType::GetChildType(source);
 			const auto &target_child =
 			    target.id() == LogicalTypeId::LIST ? ListType::GetChildType(target) : ArrayType::GetChildType(target);
-			if (!InferTemplateType(context, source_child, target_child, bindings, failure)) {
+			if (!InferTemplateType(context, source_child, target_child, bindings, failure, decimal_width_limit)) {
 				return false;
 			}
 		}
@@ -208,10 +222,10 @@ static bool InferTemplateType(optional_ptr<ClientContext> context, const Logical
 			const auto &target_key = MapType::KeyType(target);
 			const auto &target_val = MapType::ValueType(target);
 
-			if (!InferTemplateType(context, source_key, target_key, bindings, failure)) {
+			if (!InferTemplateType(context, source_key, target_key, bindings, failure, decimal_width_limit)) {
 				return false;
 			}
-			if (!InferTemplateType(context, source_val, target_val, bindings, failure)) {
+			if (!InferTemplateType(context, source_val, target_val, bindings, failure, decimal_width_limit)) {
 				return false;
 			}
 		}
@@ -231,7 +245,8 @@ static bool InferTemplateType(optional_ptr<ClientContext> context, const Logical
 			for (idx_t i = 0; i < common_children; i++) {
 				const auto &source_child_type = source_children[i].second;
 				const auto &target_child_type = target_children[i].second;
-				if (!InferTemplateType(context, source_child_type, target_child_type, bindings, failure)) {
+				if (!InferTemplateType(context, source_child_type, target_child_type, bindings, failure,
+				                       decimal_width_limit)) {
 					return false;
 				}
 			}
@@ -279,13 +294,15 @@ static void SubstituteTemplateType(LogicalType &type, case_insensitive_map_t<vec
 static optional<FunctionMismatch::Reason> DeduceTemplates(optional_ptr<ClientContext> context,
                                                           const FunctionSignature &sig,
                                                           const FunctionCallArguments &call, const vector<bool> &filled,
-                                                          FunctionBinding &binding) {
+                                                          FunctionBinding &binding,
+                                                          optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	FunctionMismatch::TemplateDeduction deduction;
 	case_insensitive_map_t<vector<LogicalType>> bindings;
 	for (idx_t i = 0; i < binding.argument_to_parameters.size(); i++) {
 		auto &param_type = binding.parameter_types[binding.argument_to_parameters[i]];
 		auto &arg_type = call.GetArgument(i).type;
-		if (param_type.IsTemplated() && !InferTemplateType(context, param_type, arg_type, bindings, deduction)) {
+		if (param_type.IsTemplated() &&
+		    !InferTemplateType(context, param_type, arg_type, bindings, deduction, decimal_width_limit)) {
 			deduction.argument = i;
 			return FunctionMismatch::Reason(std::move(deduction));
 		}
@@ -293,7 +310,8 @@ static optional<FunctionMismatch::Reason> DeduceTemplates(optional_ptr<ClientCon
 	for (idx_t i = 0; i < sig.GetParameterCount(); i++) {
 		auto &param = sig.GetParameter(i);
 		if (!filled[i] && param.HasDefaultValue() && param.GetType().IsTemplated() &&
-		    !InferTemplateType(context, param.GetType(), param.GetDefaultValue()->type(), bindings, deduction)) {
+		    !InferTemplateType(context, param.GetType(), param.GetDefaultValue()->type(), bindings, deduction,
+		                       decimal_width_limit)) {
 			return FunctionMismatch::Reason(std::move(deduction));
 		}
 	}
@@ -341,11 +359,10 @@ static idx_t MismatchRank(const FunctionMismatch::Reason &reason) {
 	}
 }
 
-std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(optional_ptr<ClientContext> context,
-                                                                              idx_t overload,
-                                                                              shared_ptr<const SimpleFunction> function,
-                                                                              const FunctionCallArguments &call,
-                                                                              bool explicit_casts) {
+std::variant<FunctionBinding, FunctionMismatch>
+FunctionBinder::MatchOverload(optional_ptr<ClientContext> context, idx_t overload,
+                              shared_ptr<const SimpleFunction> function, const FunctionCallArguments &call,
+                              bool explicit_casts, optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	// every mismatch is counted towards the distance, the most useful one is the reason
 	idx_t mismatches = 0;
 	optional<FunctionMismatch::Reason> reason;
@@ -499,7 +516,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		for (auto param_idx : binding.argument_to_parameters) {
 			filled[param_idx] = true;
 		}
-		auto template_mismatch = DeduceTemplates(context, sig, call, filled, binding);
+		auto template_mismatch = DeduceTemplates(context, sig, call, filled, binding, decimal_width_limit);
 		if (template_mismatch) {
 			return FunctionMismatch(overload, std::move(function), 0, std::move(*template_mismatch));
 		}
@@ -511,7 +528,8 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 }
 
 FunctionBindResult FunctionBinder::SelectFunction(optional_ptr<ClientContext> context, const BaseFunctionSet &functions,
-                                                  const FunctionCallArguments &call, bool explicit_casts) {
+                                                  const FunctionCallArguments &call, bool explicit_casts,
+                                                  optional_ptr<const DecimalWidthLimit> decimal_width_limit) {
 	// Look for duplicate names
 	identifier_set_t seen_names;
 	for (idx_t i = call.GetPositionalCount(); i < call.GetArgumentCount(); i++) {
@@ -526,7 +544,8 @@ FunctionBindResult FunctionBinder::SelectFunction(optional_ptr<ClientContext> co
 	vector<FunctionBinding> cheapest;
 	vector<FunctionMismatch> mismatches;
 	for (idx_t overload = 0; overload < functions.GetOverloadCount(); overload++) {
-		auto match = MatchOverload(context, overload, functions.GetSharedOverload(overload), call, explicit_casts);
+		auto match = MatchOverload(context, overload, functions.GetSharedOverload(overload), call, explicit_casts,
+		                           decimal_width_limit);
 		auto binding = std::get_if<FunctionBinding>(&match);
 		if (!binding) {
 			// Once an overload matches, unsuccessful candidates cannot contribute to the result or diagnostics.
@@ -570,7 +589,7 @@ FunctionBinding FunctionBinder::MatchFunction(const shared_ptr<const T> &functio
                                               const vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments) {
 	FunctionSet<T> functions(function->GetName());
 	functions.AddFunction(function);
-	auto selection = SelectFunction(context, functions, {arguments, named_arguments}, true);
+	auto selection = SelectFunction(context, functions, {arguments, named_arguments}, true, FixedDecimalWidthLimit());
 	if (!selection) {
 		selection.GetError().Throw();
 	}
@@ -613,7 +632,7 @@ FunctionBinder::SelectFunctionFromArguments(const BaseFunctionSet &functions,
 	const auto implicit_names = AnyOverloadSupportsImplicitArgumentNames(functions);
 	if (is_valid_call) {
 		// Yes. Let's try to bind
-		auto result = SelectFunction(context, functions, {positional, named});
+		auto result = SelectFunction(context, functions, {positional, named}, false, FixedDecimalWidthLimit());
 		if (result) {
 			return result.GetBinding();
 		}
@@ -644,7 +663,8 @@ FunctionBinder::SelectFunctionFromArguments(const BaseFunctionSet &functions,
 			}
 		}
 		if (TrySplitArguments(arguments, positional, named)) {
-			auto retry_result = SelectFunction(context, functions, {positional, named});
+			auto retry_result =
+			    SelectFunction(context, functions, {positional, named}, false, FixedDecimalWidthLimit());
 			if (retry_result) {
 				return retry_result.GetBinding();
 			}
@@ -1484,7 +1504,7 @@ FunctionBinder::ResolveScalarFunctionTypes(const FunctionBinding &binding, vecto
 	ResolveIncompleteArgumentTypes(bound_function, arguments);
 
 	if (bound_function.HasResolveTypesCallback()) {
-		ResolveScalarFunctionTypesInput input(context, bound_function, arguments);
+		ResolveScalarFunctionTypesInput input(context, bound_function, arguments, binder, decimal_width_limit);
 		bound_function.GetResolveTypesCallback()(input);
 		VerifyArgumentCount(bound_function, arguments.size());
 	}
@@ -1513,7 +1533,7 @@ FunctionBinder::ResolveScalarFunction(const FunctionBinding &binding, vector<uni
 		}
 	}
 	if (bound_function.HasBindCallback()) {
-		BindScalarFunctionInput input(context, bound_function, arguments, binder);
+		BindScalarFunctionInput input(context, bound_function, arguments, binder, decimal_width_limit);
 		bind_info = bound_function.GetBindCallback()(input);
 		VerifyArgumentCount(bound_function, arguments.size());
 		VerifyBindArgumentTypes(bound_function, arguments);
@@ -1581,7 +1601,7 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding 
 	if (result_func->Function().HasBindExpressionCallback()) {
 		// if a bind_expression callback is registered - call it and emit the resulting expression
 		FunctionBindExpressionInput input(context, result_func->FunctionMutable(), result_func->BindInfoMutable().get(),
-		                                  result_func->GetChildrenMutable());
+		                                  result_func->GetChildrenMutable(), this->binder, decimal_width_limit);
 		auto result = result_func->Function().GetBindExpressionCallback()(input);
 		if (result) {
 			// the callback constructs the expression itself
@@ -1616,7 +1636,7 @@ FunctionBinder::ResolveAggregateFunction(const FunctionBinding &binding, vector<
 	unique_ptr<FunctionData> bind_info;
 
 	if (bound_function.GetCallbacks().HasBindCallback()) {
-		BindAggregateFunctionInput input(context, bound_function, children);
+		BindAggregateFunctionInput input(context, bound_function, children, binder, decimal_width_limit);
 		bind_info = bound_function.GetCallbacks().GetBindCallback()(input);
 
 		// we may have lost some arguments in the bind
@@ -1739,7 +1759,7 @@ FunctionBinder::ResolveWindowFunction(const FunctionBinding &binding, vector<uni
 	unique_ptr<FunctionData> bind_info;
 
 	if (bound_function.HasBindCallback()) {
-		BindWindowFunctionInput input(context, bound_function, children, order_types, arg_order_types);
+		BindWindowFunctionInput input(context, bound_function, children, order_types, arg_order_types, binder);
 		bind_info = bound_function.GetBindCallback()(input);
 		// we may have lost some arguments in the bind
 		children.resize(MinValue(bound_function.GetArguments().size(), children.size()));

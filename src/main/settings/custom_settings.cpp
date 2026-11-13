@@ -9,6 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/main/settings.hpp"
 
 #include "duckdb/common/algorithm.hpp"

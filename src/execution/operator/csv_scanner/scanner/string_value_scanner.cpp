@@ -1,4 +1,6 @@
 #include "duckdb/execution/operator/csv_scanner/string_value_scanner.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
@@ -237,6 +239,18 @@ void FullLinePosition::SanitizeError(string &value) {
 	value = {char_array.begin(), char_array.end() - 1};
 }
 
+//! Parses a decimal of the tier into the target slot of the vector, with the separator of the CSV
+template <class T>
+static bool ParseDecimal(const char *value_ptr, idx_t size, const ParseTypeInfo &parse_type, char decimal_separator,
+                         Vector &vector, T &target) {
+	typename DecimalHelper<T>::OWNED parsed;
+	if (!DecimalHelper<T>::TryParse(value_ptr, size, parse_type.width, parse_type.scale, parsed, decimal_separator)) {
+		return false;
+	}
+	target = DecimalHelper<T>::Store(vector, parsed);
+	return true;
+}
+
 void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool allocate) {
 	if (HandleTooManyColumnsError(value_ptr, size)) {
 		return;
@@ -424,61 +438,36 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		break;
 	}
 	case LogicalTypeId::DECIMAL: {
-		if (decimal_separator == ',') {
-			switch (parse_types[chunk_col_id].internal_type) {
-			case PhysicalType::INT16:
-				success = TryDecimalStringCast<int16_t, ','>(
-				    value_ptr, size, static_cast<int16_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				    parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT32:
-				success = TryDecimalStringCast<int32_t, ','>(
-				    value_ptr, size, static_cast<int32_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				    parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT64:
-				success = TryDecimalStringCast<int64_t, ','>(
-				    value_ptr, size, static_cast<int64_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				    parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT128:
-				success = TryDecimalStringCast<hugeint_t, ','>(
-				    value_ptr, size, static_cast<hugeint_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				    parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			default:
-				throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
-				                        TypeIdToString(parse_types[chunk_col_id].internal_type));
-			}
-
-		} else if (decimal_separator == '.') {
-			switch (parse_types[chunk_col_id].internal_type) {
-			case PhysicalType::INT16:
-				success = TryDecimalStringCast(value_ptr, size,
-				                               static_cast<int16_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				                               parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT32:
-				success = TryDecimalStringCast(value_ptr, size,
-				                               static_cast<int32_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				                               parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT64:
-				success = TryDecimalStringCast(value_ptr, size,
-				                               static_cast<int64_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				                               parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			case PhysicalType::INT128:
-				success = TryDecimalStringCast(value_ptr, size,
-				                               static_cast<hugeint_t *>(vector_ptr[chunk_col_id])[number_of_rows],
-				                               parse_types[chunk_col_id].width, parse_types[chunk_col_id].scale);
-				break;
-			default:
-				throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
-				                        TypeIdToString(parse_types[chunk_col_id].internal_type));
-			}
-		} else {
+		auto &parse_type = parse_types[chunk_col_id];
+		auto &vector = parse_chunk.data[chunk_col_id];
+		auto target = vector_ptr[chunk_col_id];
+		if (decimal_separator != ',' && decimal_separator != '.') {
 			throw InvalidInputException("Decimals can only have ',' and '.' as decimal separators");
+		}
+		switch (parse_type.internal_type) {
+		case PhysicalType::INT16:
+			success = ParseDecimal(value_ptr, size, parse_type, decimal_separator, vector,
+			                       static_cast<int16_t *>(target)[number_of_rows]);
+			break;
+		case PhysicalType::INT32:
+			success = ParseDecimal(value_ptr, size, parse_type, decimal_separator, vector,
+			                       static_cast<int32_t *>(target)[number_of_rows]);
+			break;
+		case PhysicalType::INT64:
+			success = ParseDecimal(value_ptr, size, parse_type, decimal_separator, vector,
+			                       static_cast<int64_t *>(target)[number_of_rows]);
+			break;
+		case PhysicalType::INT128:
+			success = ParseDecimal(value_ptr, size, parse_type, decimal_separator, vector,
+			                       static_cast<hugeint_t *>(target)[number_of_rows]);
+			break;
+		case PhysicalType::VARCHAR:
+			success = ParseDecimal(value_ptr, size, parse_type, decimal_separator, vector,
+			                       static_cast<bignum_t *>(target)[number_of_rows]);
+			break;
+		default:
+			throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
+			                        TypeIdToString(parse_type.internal_type));
 		}
 		break;
 	}
@@ -1881,8 +1870,8 @@ bool StringValueScanner::CanDirectlyCast(const LogicalType &type, bool icu_loade
 	case LogicalTypeId::DATE:
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIME:
-	case LogicalTypeId::DECIMAL:
 	case LogicalType::BOOLEAN:
+	case LogicalTypeId::DECIMAL:
 		return true;
 	case LogicalType::TIMESTAMP_TZ:
 		// We only try to do direct cast of timestamp tz if the ICU extension is not loaded, otherwise, it needs to go

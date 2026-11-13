@@ -1,7 +1,10 @@
 #include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+
+#include <cmath>
 #include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/main/capi/cast/utils.hpp"
 #include "duckdb/main/capi/cast/to_decimal.hpp"
@@ -40,8 +43,18 @@ static duckdb_decimal to_decimal_cast(double val, uint8_t width, uint8_t scale) 
 }
 
 duckdb_decimal duckdb_double_to_decimal(double val, uint8_t width, uint8_t scale) {
-	if (scale > width || width > duckdb::Decimal::MAX_WIDTH_INT128) {
+	if (!duckdb::Decimal::IsValidWidthScale(width, scale)) {
 		return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
+	}
+	if (duckdb::Decimal::IsWide(width)) {
+		// wide decimals convert exactly and are only representable if they fit in 128 bits
+		std::string blob;
+		duckdb::hugeint_t hugeint;
+		if (!duckdb::DecimalHelper<duckdb::bignum_t>::TryFromDouble(val, width, scale, blob) ||
+		    !duckdb::DecimalHelper<duckdb::bignum_t>::TryToHugeint(duckdb::bignum_t(duckdb::string_t(blob)), hugeint)) {
+			return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
+		}
+		return {width, scale, {hugeint.lower, hugeint.upper}};
 	}
 	return to_decimal_cast(val, width, scale);
 }
@@ -77,6 +90,10 @@ double duckdb_decimal_to_double(duckdb_decimal val) {
 	hugeint_t value;
 	value.lower = val.value.lower;
 	value.upper = val.value.upper;
+	if (value == duckdb::NumericLimits<hugeint_t>::Minimum()) {
+		// a wide decimal can hold -2^127, which the signed conversion cannot negate
+		return -std::ldexp(1.0, 127) / std::pow(10.0, val.scale);
+	}
 	duckdb::CastParameters parameters;
 	duckdb::TryCastFromDecimal::Operation<hugeint_t, double>(value, result, parameters, val.width, val.scale);
 	return result;

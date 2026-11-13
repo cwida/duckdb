@@ -3,6 +3,7 @@
 #include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -105,18 +106,19 @@ LogicalType RequireValueType(duckdb_v2_logical_type_handle type) {
 // The DECIMAL storage tier follows from the width, and the engine's hugeint
 // constructor covers only the widest one, so the narrower tiers go through the
 // int64 form. Width and scale are gated here: an out-of-range pair would build
-// a broken type rather than a bad value.
+// a broken type rather than a bad value. The uint8_t parameters reach widths
+// up to 255; wider decimals are built through value_cast.
 Value BuildDecimal(const duckdb_v2_hugeint_t *in_value, uint8_t width, uint8_t scale) {
-	if (width < 1 || width > Decimal::MAX_WIDTH_DECIMAL) {
-		throw InvalidInputException(": DECIMAL width must be between 1 and " +
-		                            std::to_string(Decimal::MAX_WIDTH_DECIMAL));
+	if (width < 1) {
+		throw InvalidInputException(": DECIMAL width must be at least 1");
 	}
 	if (scale > width) {
 		throw InvalidInputException(": DECIMAL scale cannot exceed the width");
 	}
 	auto value = Convert(in_value);
 	auto type = LogicalType::DECIMAL(width, scale);
-	if (type.InternalType() == PhysicalType::INT128) {
+	if (type.InternalType() == PhysicalType::INT128 || type.InternalType() == PhysicalType::VARCHAR) {
+		// the hugeint constructor also builds the BIGNUM storage of a wide decimal (width > 38)
 		return Value::DECIMAL(value, width, scale);
 	}
 	int64_t narrow = 0;
@@ -294,9 +296,12 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, const cha
 		// The byte-string reader: BLOB plus the kinds whose payload is opaque
 		// storage bytes (BIT's padding header + data, BIGNUM's bignum_decode
 		// input). VARCHAR is text, and has its own getter.
+		// a DECIMAL wider than 38 digits also stores its exact unscaled value as BIGNUM bytes
 		auto id = v.type().id();
+		const bool wide_decimal =
+		    id == duckdb::LogicalTypeId::DECIMAL && v.type().InternalType() == duckdb::PhysicalType::VARCHAR;
 		if (id != duckdb::LogicalTypeId::BLOB && id != duckdb::LogicalTypeId::BIT &&
-		    id != duckdb::LogicalTypeId::BIGNUM) {
+		    id != duckdb::LogicalTypeId::BIGNUM && !wide_decimal) {
 			throw duckdb::InvalidInputException("duckdb_v2_value_get_blob: value is not of the expected type");
 		}
 		if (v.IsNull()) {
@@ -341,6 +346,12 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		RequireTypedValue(value, duckdb::LogicalTypeId::DECIMAL);
 		auto &v = *Convert(value);
 		auto &type = v.type();
+		if (duckdb::DecimalType::GetWidth(type) > duckdb::NumericLimits<uint8_t>::Maximum()) {
+			throw duckdb::OutOfRangeException(
+			    "duckdb_v2_value_get_decimal: the width of %s does not fit the uint8_t of the API; read its storage "
+			    "with value_get_blob and bignum_decode, or convert it with value_cast",
+			    type.ToString());
+		}
 		*out_width = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(type));
 		*out_scale = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(type));
 		// The storage tier follows from the width; widen it to the one form the
@@ -355,6 +366,18 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		case duckdb::PhysicalType::INT64:
 			*out = Convert(duckdb::hugeint_t(v.GetValueUnsafe<int64_t>()));
 			break;
+		case duckdb::PhysicalType::VARCHAR: {
+			// the BIGNUM storage of a wide decimal may not fit in 128 bits
+			duckdb::hugeint_t unscaled;
+			if (!duckdb::DecimalHelper<duckdb::bignum_t>::TryToHugeint(v.GetValueUnsafe<duckdb::bignum_t>(),
+			                                                           unscaled)) {
+				throw duckdb::OutOfRangeException(
+				    "duckdb_v2_value_get_decimal: the value does not fit in 128 bits; read its storage with "
+				    "value_get_blob and bignum_decode, or convert it with value_cast");
+			}
+			*out = Convert(unscaled);
+			break;
+		}
 		default:
 			*out = Convert(v.GetValueUnsafe<duckdb::hugeint_t>());
 			break;

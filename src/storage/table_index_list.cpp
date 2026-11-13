@@ -357,7 +357,8 @@ shared_ptr<IndexEntry> TableIndexList::FindEntry(idx_t index_oid) const {
 	return nullptr;
 }
 
-void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type) {
+void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type,
+                          bool skip_mismatched_keys) {
 	{
 		// Early-out, if we have no unbound indexes.
 		annotated_lock_guard lock(index_entries_lock);
@@ -381,12 +382,15 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 	}
 
 	annotated_unique_lock lock(index_entries_lock);
+	// Indexes left unbound because their stored keys do not match.
+	vector<shared_ptr<IndexEntry>> skipped;
 	// Busy-spin trying to bind all indexes.
 	while (true) {
 		shared_ptr<IndexEntry> index_entry;
 		for (auto &entry : index_entries) {
 			if (entry->GetBindState() != IndexBindState::BOUND &&
-			    (!index_type || entry->GetIndexType() == *index_type)) {
+			    (!index_type || entry->GetIndexType() == *index_type) &&
+			    std::find(skipped.begin(), skipped.end(), entry) == skipped.end()) {
 				index_entry = entry;
 				break;
 			}
@@ -429,7 +433,7 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 			for (auto &col : table.GetColumns().Physical()) {
 				physical_column_types.push_back(col.Type());
 			}
-			bound_idx = index_entry->Bind(idx_binder, physical_column_types);
+			bound_idx = index_entry->Bind(idx_binder, physical_column_types, skip_mismatched_keys);
 		} catch (...) {
 			// Leave the index unbound, so that a later attempt binds it instead of waiting for this one forever.
 			lock.lock();
@@ -437,8 +441,15 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 			throw;
 		}
 
-		// Commit the bound index to the index entry.
 		lock.lock();
+		if (!bound_idx) {
+			// The index stays unbound, a write that has to maintain it refuses it.
+			index_entry->SetBindState(IndexBindState::UNBOUND);
+			skipped.push_back(index_entry);
+			continue;
+		}
+
+		// Commit the bound index to the index entry.
 		auto current_entry = std::find(index_entries.begin(), index_entries.end(), index_entry);
 		if (current_entry == index_entries.end()) {
 			continue;

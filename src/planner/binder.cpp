@@ -302,6 +302,21 @@ bool Binder::IsBindingIndexKey() const {
 	return binding_index_key;
 }
 
+DecimalWidthLimit Binder::GetDecimalWidthLimit() const {
+	if (decimal_width_limit) {
+		return *decimal_width_limit;
+	}
+	return DecimalWidthLimit::FromSetting(context);
+}
+
+optional_ptr<const DecimalWidthLimit> Binder::GetFixedDecimalWidthLimit() const {
+	return decimal_width_limit;
+}
+
+void Binder::SetDecimalWidthLimit(optional_ptr<const DecimalWidthLimit> limit) {
+	decimal_width_limit = limit;
+}
+
 void Binder::SetBindingTrySubquery() {
 	binding_try_subquery = true;
 }

@@ -268,14 +268,15 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 	}
 
-	// join conditions can be evaluated over candidate pairs that repeat rows of either side,
-	// so their verification statistics must not carry additive totals
+	// join conditions are evaluated over candidate pairs that repeat rows of either side and that still hold the
+	// NULLs rejected by the earlier conditions, so their verification statistics carry neither additive totals nor
+	// the absence of NULLs
 	for (auto &condition : join.conditions) {
 		if (condition.IsComparison()) {
-			ResetAdditiveVerificationStats(condition.GetLHS());
-			ResetAdditiveVerificationStats(condition.GetRHS());
+			RelaxJoinConditionVerificationStats(condition.GetLHS());
+			RelaxJoinConditionVerificationStats(condition.GetRHS());
 		} else {
-			ResetAdditiveVerificationStats(condition.GetJoinExpression());
+			RelaxJoinConditionVerificationStats(condition.GetJoinExpression());
 		}
 	}
 }
@@ -284,9 +285,9 @@ void StatisticsPropagator::PropagateStatistics(LogicalAnyJoin &join, unique_ptr<
 	// propagate the expression into the join condition
 	// note that a condition that is TRUE_OR_NULL does not always match: a NULL condition rejects the pair
 	PropagateExpression(join.condition);
-	// the condition is evaluated over candidate pairs that repeat rows of either side,
-	// so its verification statistics must not carry additive totals
-	ResetAdditiveVerificationStats(*join.condition);
+	// the condition is evaluated over candidate pairs that repeat rows of either side and hold NULLs,
+	// so its verification statistics carry neither additive totals nor the absence of NULLs
+	RelaxJoinConditionVerificationStats(*join.condition);
 	switch (ClassifyFilter(*join.condition)) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		HandleJoinAlwaysMatches(join, node_ptr);
@@ -493,16 +494,16 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
 	}
 	// Match the numeric types supported by UpdateFilterStatistics.
 	auto column = GetFilterColumn(context, *expr);
-	if (!column || !expr->GetReturnType().IsNumeric() || !NumericStats::HasMinMax(stats_before) ||
-	    !NumericStats::HasMinMax(stats_after)) {
+	if (!column || !expr->GetReturnType().IsNumeric() || !HasNumericMinMax(stats_before) ||
+	    !HasNumericMinMax(stats_after)) {
 		return;
 	}
 
 	// Retrieve min/max
-	auto min_before = NumericStats::Min(stats_before);
-	auto max_before = NumericStats::Max(stats_before);
-	auto min_after = NumericStats::Min(stats_after);
-	auto max_after = NumericStats::Max(stats_after);
+	auto min_before = NumericMin(stats_before);
+	auto max_before = NumericMax(stats_before);
+	auto min_after = NumericMin(stats_after);
+	auto max_after = NumericMax(stats_after);
 
 	vector<unique_ptr<Expression>> filter_exprs;
 	auto add_filter = [&](ExpressionType comparison_type, const Value &bound) {

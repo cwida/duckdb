@@ -13,6 +13,23 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "DECIMAL columns wider than 38 digits require storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/copy/csv/csv_wide_decimal_separator.test",
+        "test/sql/types/decimal/wide_decimal_arithmetic.test",
+        "test/sql/types/decimal/wide_decimal_casts.test",
+        "test/sql/types/decimal/wide_decimal_cast_inversion.test",
+        "test/sql/types/decimal/wide_decimal_literals.test",
+        "test/sql/types/decimal/wide_decimal_statistics.test",
+        "test/sql/types/decimal/wide_decimal_unbounded_statistics.test",
+        "test/sql/types/decimal/wide_decimal_bounded_statistics.test",
+        "test/sql/types/decimal/wide_decimal_unbounded_width.test",
+        "test/sql/settings/max_decimal_width.test",
+        "test/sql/types/decimal/wide_decimal_to_float_rounding.test",
+        "test/sql/types/decimal/wide_decimal_storage.test"
+      ]
+    },
+    {
       "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
       "paths": [
         "test/optimizer/remove_redundant_order_keys_deferred.test"
@@ -85,6 +102,12 @@
         "test/sql/sql_export/mark_condition_shapes.test",
         "test/sql/types/variant/variant_struct_field_subquery.test",
         "test/sql/optimizer/tuple_cast_pushdown.test"
+      ]
+    },
+    {
+      "reason": "The synchronous task batch does not always reach the scheduler log: timing-dependent assertion (flaky under this config).",
+      "paths": [
+        "test/sql/parallelism/async_task_synchronous_batch.test"
       ]
     }
   ]

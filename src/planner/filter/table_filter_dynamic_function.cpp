@@ -70,6 +70,9 @@ FilterPropagateResult DynamicFilterData::CheckStatistics(const BaseStatistics &s
 		if (stats.GetStatsType() == StatisticsType::STRING_STATS) {
 			return StringStats::CheckZonemap(stats, comparison_type, array_ptr<const Value>(constant));
 		}
+		if (stats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+			return BignumStats::CheckZonemap(stats, comparison_type, array_ptr<const Value>(constant));
+		}
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	default:
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;

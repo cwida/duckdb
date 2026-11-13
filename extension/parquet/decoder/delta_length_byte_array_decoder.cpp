@@ -1,5 +1,6 @@
 #include "decoder/delta_length_byte_array_decoder.hpp"
 
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 
@@ -8,6 +9,7 @@
 #include "parquet_reader.hpp"
 #include "reader/string_column_reader.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -22,9 +24,13 @@ DeltaLengthByteArrayDecoder::DeltaLengthByteArrayDecoder(ColumnReader &reader)
 }
 
 void DeltaLengthByteArrayDecoder::InitializePage() {
-	if (reader.Type().InternalType() != PhysicalType::VARCHAR) {
+	auto &type = reader.Type();
+	if (type.InternalType() != PhysicalType::VARCHAR) {
 		throw std::runtime_error("Delta Length Byte Array encoding is only supported for string/blob data");
 	}
+	// only VARCHAR and BLOB columns are read by a StringColumnReader; a wide DECIMAL shares the physical type
+	decode_to_plain = type.id() != LogicalTypeId::VARCHAR && type.id() != LogicalTypeId::BLOB;
+
 	// read the binary packed lengths
 	auto &block = *reader.block;
 	auto &buffer_manager = reader.reader.buffer_manager;
@@ -42,6 +48,26 @@ void DeltaLengthByteArrayDecoder::InitializePage() {
 	block.Available(total_string_length);
 
 	length_idx = 0;
+	if (decode_to_plain) {
+		DecodeToPlain(block, total_string_length);
+	}
+}
+
+//! Rewrite the page into the plain BYTE_ARRAY layout ([4-byte length][data] repeated) and consume it from the block
+void DeltaLengthByteArrayDecoder::DecodeToPlain(ResizeableBuffer &block, idx_t total_string_length) {
+	auto &allocator = reader.reader.allocator;
+	const auto length_data = reinterpret_cast<uint32_t *>(length_buffer.GetCurrentLoc());
+	plain_data = make_shared_ptr<ResizeableBuffer>();
+	plain_data->Resize(allocator, total_string_length + byte_array_count * sizeof(uint32_t));
+	auto output = plain_data->GetCurrentLoc();
+	for (idx_t i = 0; i < byte_array_count; i++) {
+		const auto len = length_data[i];
+		Store<uint32_t>(len, output);
+		output += sizeof(uint32_t);
+		memcpy(output, block.GetCurrentLoc(), len);
+		output += len;
+		block.UnsafeInc(len);
+	}
 }
 
 bool IsContinuationByte(uint8_t b) {
@@ -50,6 +76,10 @@ bool IsContinuationByte(uint8_t b) {
 
 void DeltaLengthByteArrayDecoder::Read(shared_ptr<ResizeableBuffer> &block_ref, uint8_t *defines, idx_t read_count,
                                        Vector &result, idx_t result_offset) {
+	if (decode_to_plain) {
+		reader.Plain(plain_data, defines, read_count, result_offset, result);
+		return;
+	}
 	if (defines) {
 		ReadInternal<true>(block_ref, defines, read_count, result, result_offset);
 	} else {
@@ -126,6 +156,10 @@ void DeltaLengthByteArrayDecoder::ReadInternal(shared_ptr<ResizeableBuffer> &blo
 }
 
 void DeltaLengthByteArrayDecoder::Skip(uint8_t *defines, idx_t skip_count) {
+	if (decode_to_plain) {
+		reader.PlainSkip(*plain_data, defines, skip_count);
+		return;
+	}
 	if (defines) {
 		SkipInternal<true>(defines, skip_count);
 	} else {

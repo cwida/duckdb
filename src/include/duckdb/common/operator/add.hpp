@@ -15,11 +15,17 @@
 
 namespace duckdb {
 
+struct bignum_t;
+class StringHeap;
+struct BignumArithmeticState;
+
 struct AddOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA left, TB right) {
 		return left + right;
 	}
+	//! BIGNUM-backed values allocate their result in the heap
+	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>
@@ -116,6 +122,8 @@ struct AddOperatorOverflowCheck {
 	}
 };
 
+//! The fixed-size integer tiers of decimals check their results against the width of the tier; the bignum_t tier above
+//! 38 digits binds exact result widths and needs no check
 struct TryDecimalAdd {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {

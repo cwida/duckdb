@@ -1,0 +1,24 @@
+# name: test/sql/copy/csv/csv_decimal_separator_icu.test
+# description: The CSV decimal separator applies to narrow and wide decimals when ICU is loaded
+# group: [csv]
+
+require icu
+
+statement ok
+COPY (SELECT '1,5' AS narrow, '1234567890123456789012345678901234567890,25' AS wide) TO '{TEST_DIR}/comma_icu.csv' (HEADER, DELIMITER ';');
+
+query II
+SELECT narrow, wide FROM read_csv('{TEST_DIR}/comma_icu.csv', columns = {'narrow': 'DECIMAL(10,2)', 'wide': 'DECIMAL(50,2)'}, header = true, delim = ';', decimal_separator = ',');
+----
+1.50	1234567890123456789012345678901234567890.25
+
+query II
+SELECT typeof(narrow), typeof(wide) FROM read_csv('{TEST_DIR}/comma_icu.csv', columns = {'narrow': 'DECIMAL(10,2)', 'wide': 'DECIMAL(50,2)'}, header = true, delim = ';', decimal_separator = ',');
+----
+DECIMAL(10,2)	DECIMAL(50,2)
+
+# a period is not a valid character when the comma separates
+statement error
+SELECT narrow FROM read_csv('{TEST_DIR}/comma_icu.csv', columns = {'narrow': 'DECIMAL(10,2)', 'wide': 'DECIMAL(50,2)'}, header = true, delim = ';', decimal_separator = '.');
+----
+<REGEX>:.*Conversion Error.*

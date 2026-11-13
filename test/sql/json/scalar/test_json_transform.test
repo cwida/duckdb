@@ -428,9 +428,9 @@ select json_transform_strict('42', '"DECIMAL(2,1)"')
 <REGEX>:.*Invalid Input Error.*Failed to cast value to decimal.*
 
 statement error
-select json_transform('42', '"DECIMAL(39)"')
+select json_transform('42', '"DECIMAL(0)"')
 ----
-Binder Error: DECIMAL type width must be between 1 and 38
+Binder Error: DECIMAL type width must be at least 1
 
 statement error
 select json_transform('42', '"DECIMAL(2,4)"')

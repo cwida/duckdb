@@ -94,7 +94,7 @@ Literal Literal::Negate() const {
 	return Literal(kind, "-" + text);
 }
 
-static Value NumberToValue(const string &val) {
+static Value NumberToValue(const string &val, uint32_t max_decimal_width) {
 	string_t str_val(val);
 	bool try_cast_as_integer = true;
 	bool try_cast_as_decimal = true;
@@ -149,21 +149,20 @@ static Value NumberToValue(const string &val) {
 	}
 	idx_t decimal_offset = val[0] == '-' ? 3 : 2;
 	if (try_cast_as_decimal && decimal_position.IsValid() &&
-	    str_val.GetSize() - num_underscores < Decimal::MAX_WIDTH_DECIMAL + decimal_offset) {
+	    str_val.GetSize() - num_underscores < max_decimal_width + decimal_offset) {
 		// figure out the width/scale based on the decimal position
 		auto width = NumericCast<uint32_t>(str_val.GetSize() - 1 - num_underscores);
 		// a well-formed decimal has a single '.', so its position never sits past the width; a second (e.g. trailing)
 		// dot pushes decimal_position beyond width and would underflow the scale computation below
-		if (decimal_position.GetIndex() > NumericCast<idx_t>(width) + num_integer_underscores) {
+		if (decimal_position.GetIndex() > width + num_integer_underscores) {
 			throw ParserException("Could not convert string \"%s\" to a decimal value", val);
 		}
 		auto scale = NumericCast<uint32_t>(width - decimal_position.GetIndex() + num_integer_underscores);
 		if (val[0] == '-') {
 			width--;
 		}
-		if (width <= Decimal::MAX_WIDTH_DECIMAL) {
-			return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(width, scale));
-		}
+		// a literal up to the maximum width is an exact decimal, which keeps every digit
+		return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(width, scale));
 	}
 	// there is an exponent, or the value is too wide for a decimal
 	double dbl_value = Cast::Operation<string_t, double>(str_val);
@@ -171,6 +170,10 @@ static Value NumberToValue(const string &val) {
 }
 
 Value Literal::ToValue() const {
+	return ToValue(NumericLimits<uint32_t>::Maximum());
+}
+
+Value Literal::ToValue(uint32_t max_decimal_width) const {
 	switch (kind) {
 	case LiteralKind::NULL_LITERAL:
 		return Value();
@@ -178,7 +181,7 @@ Value Literal::ToValue() const {
 		return Value::BOOLEAN(text == "true");
 	case LiteralKind::INTEGER:
 	case LiteralKind::NUMERIC:
-		return NumberToValue(text);
+		return NumberToValue(text, max_decimal_width);
 	case LiteralKind::STRING:
 		return Value(text);
 	case LiteralKind::HEX: {

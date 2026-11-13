@@ -118,6 +118,17 @@ FilterPropagateResult StatisticsPropagator::PropagateComparison(const BaseStatis
 		return PropagateValueComparison(lmin, lmax, rmin, rmax, comparison, has_null);
 	}
 
+	if (lstats.GetStatsType() == StatisticsType::BIGNUM_STATS &&
+	    rstats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+		if (lstats.GetType() != rstats.GetType() || !BignumStats::HasMinMax(lstats) ||
+		    !BignumStats::HasMinMax(rstats)) {
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
+		bool has_null = lstats.CanHaveNull() || rstats.CanHaveNull();
+		return PropagateValueComparison(BignumStats::Min(lstats), BignumStats::Max(lstats), BignumStats::Min(rstats),
+		                                BignumStats::Max(rstats), comparison, has_null);
+	}
+
 	switch (lstats.GetType().InternalType()) {
 	case PhysicalType::BOOL:
 	case PhysicalType::UINT8:

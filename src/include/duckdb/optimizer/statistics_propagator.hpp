@@ -111,6 +111,12 @@ private:
 
 	//! Return statistics from a constant value
 	unique_ptr<BaseStatistics> StatisticsFromValue(const Value &input);
+	//! The min/max of numeric statistics: the fixed-size types and the bignum_t tier of decimals
+	static bool HasNumericMinMax(const BaseStatistics &stats);
+	static Value NumericMin(const BaseStatistics &stats);
+	static Value NumericMax(const BaseStatistics &stats);
+	static void SetNumericMin(BaseStatistics &stats, const Value &val);
+	static void SetNumericMax(BaseStatistics &stats, const Value &val);
 	//! Update filter statistics from a filter with a constant
 	void UpdateFilterStatistics(BaseStatistics &input, ExpressionType comparison_type, const Value &constant);
 	//! Update statistics from a filter between two stats
@@ -124,7 +130,9 @@ private:
 	//! Reset additive statistics of bindings whose rows an operator can emit more than once
 	void ResetAdditiveStatistics(const vector<ColumnBinding> &bindings);
 	//! Reset additive statistics in the verification statistics of an expression tree
-	void ResetAdditiveVerificationStats(Expression &expr);
+	//! Join conditions are evaluated over candidate pairs that repeat rows and still hold NULLs: their verification
+	//! statistics carry neither additive totals nor the absence of NULLs
+	void RelaxJoinConditionVerificationStats(Expression &expr);
 	//! Determine whether a propagated condition can be pruned
 	FilterPropagateResult ClassifyFilter(Expression &condition);
 	//! Simplify conjunctions using filter truth semantics

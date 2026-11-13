@@ -1322,6 +1322,9 @@ static unique_ptr<ColumnReader> CreateDecimalReader(const ParquetReader &reader,
 		return make_uniq<TemplatedColumnReader<int64_t, TemplatedParquetValueConversion<T>>>(reader, schema);
 	case PhysicalType::INT128:
 		return make_uniq<TemplatedColumnReader<hugeint_t, TemplatedParquetValueConversion<T>>>(reader, schema);
+	case PhysicalType::VARCHAR:
+		// a wide decimal (a BIGNUM blob) backed by an integer column
+		return ParquetDecimalUtils::CreateReader(reader, schema);
 	default:
 		throw NotImplementedException("Unimplemented internal type for CreateDecimalReader");
 	}

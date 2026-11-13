@@ -564,6 +564,26 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			}
 		}
 
+		if (!info.temporary && attached.HasStorageManager()) {
+			// the parameter, default and return types are written to the catalog, and the stored expressions may cast
+			auto &storage_manager = attached.GetStorageManager();
+			for (const auto &type : function->types) {
+				storage_manager.CheckDecimalWidthIsSupported(type);
+			}
+			for (const auto &default_value : default_values) {
+				storage_manager.CheckDecimalWidthIsSupported(default_value.second.type());
+			}
+			storage_manager.CheckDecimalWidthIsSupported(function->return_type);
+			for (auto &default_parameter : function->default_parameters) {
+				storage_manager.CheckExpressionDecimalsAreSupported(*default_parameter.second);
+			}
+			if (info.type == CatalogType::MACRO_ENTRY) {
+				storage_manager.CheckExpressionDecimalsAreSupported(*function->Cast<ScalarMacroFunction>().expression);
+			} else {
+				storage_manager.CheckQueryDecimalsAreSupported(*function->Cast<TableMacroFunction>().query_node);
+			}
+		}
+
 		vector<LogicalType> dummy_types;
 		vector<Identifier> dummy_names;
 		// positional parameters
@@ -930,6 +950,13 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
 			}
 		}
+		if (base.query && !base.temporary) {
+			// the query of the view is stored, so a cast in it may not target a decimal wider than the database stores
+			auto &attached = schema.ParentCatalog().GetAttached();
+			if (!attached.IsTemporary() && attached.HasStorageManager()) {
+				attached.GetStorageManager().CheckQueryDecimalsAreSupported(*base.query->node);
+			}
+		}
 		BindCreateViewInfo(base);
 		result.plan = make_uniq<LogicalCreate>(LogicalOperatorType::LOGICAL_CREATE_VIEW, std::move(stmt.info), &schema);
 		break;
@@ -1053,6 +1080,11 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 			SetCatalogLookupCallback(dependency_callback);
 			// Bind the underlying type
 			BindLogicalType(create_type_info.type);
+			// the type is written to the catalog
+			auto &attached = catalog.GetAttached();
+			if (!create_type_info.temporary && attached.HasStorageManager()) {
+				attached.GetStorageManager().CheckDecimalWidthIsSupported(create_type_info.type);
+			}
 		}
 		break;
 	}

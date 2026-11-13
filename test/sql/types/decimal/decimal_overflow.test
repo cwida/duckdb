@@ -28,26 +28,26 @@ select (-50000000000000000.0::DECIMAL(18,1)-50000000000000000.0::DECIMAL(18,1));
 ----
 -100000000000000000.0
 
-# decimals can overflow at the hugeint boundary, because we run out of bits
-statement error
+# at the hugeint boundary the result becomes a wide decimal instead of overflowing
+query I
 select (9900000000000000000000000000000000000.0::DECIMAL(38,1)+9900000000000000000000000000000000000.0::DECIMAL(38,1));
 ----
-<REGEX>:Out of Range Error.*Overflow in addition of DECIMAL.*
+19800000000000000000000000000000000000.0
 
-statement error
+query I
 select (5000000000000000000000000000000000000.0::DECIMAL(38,1)+5000000000000000000000000000000000000.0::DECIMAL(38,1));
 ----
-<REGEX>:Out of Range Error.*Overflow in addition of DECIMAL.*
+10000000000000000000000000000000000000.0
 
 statement error
 select '10000000000000000000000000000000000000.0'::DECIMAL(38,1);
 ----
 <REGEX>:Conversion Error.*Could not convert string.*
 
-statement error
+query I
 select (-5000000000000000000000000000000000000.0::DECIMAL(38,1)-5000000000000000000000000000000000000.0::DECIMAL(38,1));
 ----
-<REGEX>:Out of Range Error.*Overflow in subtract of DECIMAL.*
+-10000000000000000000000000000000000000.0
 
 # decimals can overflow in multiplications
 # bigint
@@ -61,14 +61,13 @@ select 90000000000000000.0::DECIMAL(18,1) * 1000::DECIMAL(4,0);
 ----
 <REGEX>:Out of Range Error.*Overflow in multiplication of DECIMAL.*
 
-# hugeint
-statement error
+# hugeint: the product becomes a wide decimal
+query I
 select 5000000000000000000000000000000000000.0::DECIMAL(38,1) * 2::DECIMAL(1,0);
 ----
-<REGEX>:Out of Range Error.*Overflow in multiplication of DECIMAL.*
+10000000000000000000000000000000000000.0
 
-# but also like this... the type of this multiplication becomes DECIMAL(38,2), which does not fit 9900000000000000000000000000000000000
-statement error
+query I
 select 9900000000000000000000000000000000000.0::DECIMAL(38,1) * 1.0;
 ----
-<REGEX>:Out of Range Error.*Overflow in multiplication of DECIMAL.*
+9900000000000000000000000000000000000.00

@@ -116,6 +116,8 @@ public:
 	template <class T>
 	T GetData() const;
 	DUCKDB_API string_t GetString() const;
+	//! Parquet VARIANT decimals have at most 38 digits: there is no BIGNUM blob to return
+	DUCKDB_API string_t GetWideDecimal() const;
 	DUCKDB_API VariantDecimalProperties GetDecimalProperties() const;
 	DUCKDB_API ParquetObjectIterator GetObjectChildren(VariantIterationOrder order) const;
 	DUCKDB_API ParquetArrayIterator GetArrayChildren() const;

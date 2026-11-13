@@ -64,8 +64,10 @@ public:
 	//! Returns the entry matching the index OID.
 	shared_ptr<IndexEntry> FindEntry(const IndexEntry &index) const;
 	shared_ptr<IndexEntry> FindEntry(idx_t index_oid) const;
-	//! Binds unbound indexes possibly present after loading an extension.
-	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {});
+	//! Binds unbound indexes possibly present after loading an extension. An index whose stored keys bind to other
+	//! types here is refused, or left unbound when skip_mismatched_keys is set, for a read that can do without it.
+	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {},
+	          bool skip_mismatched_keys = false);
 	//! Returns true, if there are no index entries.
 	bool Empty() const {
 		return Count() == 0;

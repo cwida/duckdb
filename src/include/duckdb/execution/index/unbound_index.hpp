@@ -118,7 +118,9 @@ public:
 	//! table_chunk uses physical table layout: data[j] holds physical column j. It may be sparse,
 	//! but all columns required by this index must be populated.
 	void BufferChunk(DataChunk &table_chunk, Vector &row_ids, BufferedIndexReplay replay_type);
-	unique_ptr<BoundIndex> Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types);
+	//! Binds the index, or returns nullptr for an index with mismatched stored keys when those are skipped
+	unique_ptr<BoundIndex> Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types,
+	                            bool skip_mismatched_keys = false);
 	bool HasBufferedReplays() const {
 		return buffered_replays.HasBufferedReplays();
 	}

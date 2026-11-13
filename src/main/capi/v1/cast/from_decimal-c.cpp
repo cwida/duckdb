@@ -1,5 +1,6 @@
 #include "duckdb/main/capi/cast/from_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 
 namespace duckdb {
 
@@ -30,6 +31,15 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_string &result, idx_t co
 	case duckdb::PhysicalType::INT128:
 		result_string = duckdb::StringCastFromDecimal::Operation<hugeint_t>(source_value, width, scale, heap);
 		break;
+	case duckdb::PhysicalType::VARCHAR: {
+		// the materialized duckdb_decimal only holds 128-bit values, so format the original value instead
+		auto value = query_result->Collection().GetValue(col, row);
+		if (value.IsNull()) {
+			return false;
+		}
+		result_string = heap.AddString(value.ToString());
+		break;
+	}
 	default:
 		InternalException::Throw("Unimplemented internal type for decimal");
 	}
@@ -110,6 +120,11 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_decimal &result, idx_t c
 	auto result_data = (duckdb::DuckDBResultData *)source->internal_data;
 	uint32_t width, scale;
 	result_data->result->GetTypes()[col].GetDecimalProperties(width, scale);
+	if (width > duckdb::NumericLimits<uint8_t>::Maximum()) {
+		// a duckdb_decimal holds widths up to 255
+		result = FetchDefaultValue::Operation<duckdb_decimal>();
+		return false;
+	}
 	result.width = duckdb::NumericCast<uint8_t>(width);
 	result.scale = duckdb::NumericCast<uint8_t>(scale);
 	auto source_address = UnsafeFetchPtr<hugeint_t>(source, col, row);

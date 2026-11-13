@@ -1,5 +1,6 @@
 #include "duckdb/function/combine_types_rule.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 
@@ -133,6 +134,11 @@ static bool CombineEqualVarchar(LogicalTypeResolver &logical_type_resolver, cons
 	}
 	return true;
 }
+
+DecimalWidthLimit LogicalTypeResolver::GetDecimalWidthLimit() const {
+	return decimal_width_limit ? *decimal_width_limit : DecimalWidthLimit::FromSetting(context);
+}
+
 static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                 const LogicalType &right, LogicalType &result) {
 	// unify the width/scale so that the resulting decimal always fits
@@ -143,13 +149,20 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	auto extra_width_right = DecimalType::GetWidth(right) - DecimalType::GetScale(right);
 	auto extra_width = MaxValue<uint32_t>(extra_width_left, extra_width_right);
 	auto scale = MaxValue<uint32_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
-	uint32_t width = extra_width + scale;
-	if (width > DecimalType::MaxWidth()) {
-		// if the resulting decimal does not fit, we truncate the scale
-		width = DecimalType::MaxWidth();
-		scale = width - extra_width;
+	idx_t width = idx_t(extra_width) + scale;
+	const auto max_input_width = MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right));
+	const auto decimal_width_limit = logical_type_resolver.GetDecimalWidthLimit();
+	const idx_t width_limit = decimal_width_limit.ResultWidth(max_input_width);
+	if (width > width_limit && !Decimal::IsWide(width_limit)) {
+		// the result does not fit the fixed-size tiers: truncate the scale
+		width = width_limit;
+		scale = NumericCast<uint32_t>(width - extra_width);
 	}
-	result = LogicalType::DECIMAL(width, scale);
+	// a wide result is never truncated, a result wider than the inputs and the maximum width is an error
+	result =
+	    LogicalType::DECIMAL(decimal_width_limit.CheckedWidth(
+	                             width, max_input_width, "Combining " + left.ToString() + " and " + right.ToString()),
+	                         scale);
 	return true;
 }
 static bool CombineEqualList(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,

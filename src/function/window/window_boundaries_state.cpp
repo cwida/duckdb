@@ -287,6 +287,10 @@ static idx_t FindRangeBound(WindowCursor &range_lo, WindowCursor &range_hi, cons
 	case PhysicalType::INTERVAL:
 		return FindTypedRangeBound<interval_t, OP, FROM>(range_lo, range_hi, order_begin, order_end, range, boundary,
 		                                                 chunk_idx, prev);
+	case PhysicalType::VARCHAR:
+		// wide decimals: the byte order of the BIGNUM blobs is their numeric order
+		return FindTypedRangeBound<string_t, OP, FROM>(range_lo, range_hi, order_begin, order_end, range, boundary,
+		                                               chunk_idx, prev);
 	default:
 		throw InternalException("Unsupported column type for RANGE");
 	}

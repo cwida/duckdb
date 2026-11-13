@@ -391,19 +391,29 @@ class FunctionBinder {
 public:
 	DUCKDB_API explicit FunctionBinder(Binder &binder);
 	DUCKDB_API explicit FunctionBinder(ClientContext &context);
+	//! Binds outside of a query within a fixed decimal width, if one is given: a deserialized function is rebound
+	//! within the width it was bound in
+	DUCKDB_API FunctionBinder(ClientContext &context, optional_ptr<const DecimalWidthLimit> decimal_width_limit);
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
+	//! The fixed limit of the DECIMAL widths a bind outside of a query constructs, if any
+	optional_ptr<const DecimalWidthLimit> decimal_width_limit;
 	//! Set when the arguments were bound before, so their collations are not pushed again
 	bool arguments_collated = false;
 
 public:
 	//! Overload selection: the cheapest overload of a function set that a call with the given arguments binds to.
 	//! Selection needs no binder - without a ClientContext only the built-in implicit casts are considered. With
-	//! explicit casts, an argument that cannot be implicitly cast to its parameter is accepted too
-	DUCKDB_API static FunctionBindResult SelectFunction(optional_ptr<ClientContext> context,
-	                                                    const BaseFunctionSet &functions,
-	                                                    const FunctionCallArguments &call, bool explicit_casts = false);
+	//! explicit casts, an argument that cannot be implicitly cast to its parameter is accepted too. Template types
+	//! unify decimals within the limit, if one is given, else within the max_decimal_width setting
+	DUCKDB_API static FunctionBindResult
+	SelectFunction(optional_ptr<ClientContext> context, const BaseFunctionSet &functions,
+	               const FunctionCallArguments &call, bool explicit_casts = false,
+	               optional_ptr<const DecimalWidthLimit> decimal_width_limit = nullptr);
+	//! The fixed limit of the DECIMAL widths the binder constructs, if any: set while the keys of an index are bound,
+	//! and while a function is deserialized
+	optional_ptr<const DecimalWidthLimit> FixedDecimalWidthLimit() const;
 
 	//! Bind a table function: select the overload, check the named arguments against its signature, and fold the
 	//! arguments to the constants it is called with, cast to the types it declares. Returns nullptr and sets the error
@@ -589,7 +599,8 @@ private:
 	//! explicit casts, an argument that cannot be implicitly cast to its parameter is accepted too
 	static std::variant<FunctionBinding, FunctionMismatch>
 	MatchOverload(optional_ptr<ClientContext> context, idx_t overload, shared_ptr<const SimpleFunction> function,
-	              const FunctionCallArguments &call, bool explicit_casts);
+	              const FunctionCallArguments &call, bool explicit_casts,
+	              optional_ptr<const DecimalWidthLimit> decimal_width_limit = nullptr);
 	//! How a call binds to a function it is known to call - the arguments are cast explicitly. Throws if the call does
 	//! not fit the signature of the function
 	template <class T>

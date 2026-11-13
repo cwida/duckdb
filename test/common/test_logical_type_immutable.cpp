@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/extension_type_info.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
@@ -155,7 +156,7 @@ static LogicalType RoundtripCachedDecimalType(const LogicalType &type) {
 }
 
 TEST_CASE("Plain decimal types share metadata across construction and deserialization", "[logical_type_immutable]") {
-	for (uint32_t width = 1; width <= Decimal::MAX_WIDTH_DECIMAL; width++) {
+	for (uint32_t width = 1; width <= Decimal::MAX_WIDTH_INT128; width++) {
 		for (uint32_t scale = 0; scale <= width; scale++) {
 			auto type = LogicalType::DECIMAL(width, scale);
 			auto same = LogicalType::DECIMAL(width, scale);
@@ -211,11 +212,34 @@ TEST_CASE("Decimal cache preserves validation and unparameterized types", "[logi
 	auto invalid = LogicalType::DECIMAL(0, 0);
 	REQUIRE(DecimalType::GetWidth(invalid) == 0);
 	REQUIRE_THROWS(RoundtripCachedDecimalType(invalid));
-	REQUIRE_FALSE(Decimal::IsValidWidthScale(39, 0));
-#ifndef DUCKDB_CRASH_ON_ASSERT
-	// InternalException aborts instead of throwing in crash-on-assert builds.
-	REQUIRE_THROWS(LogicalType::DECIMAL(39, 0));
-#endif
+	REQUIRE_FALSE(Decimal::IsValidWidthScale(1, 2));
+	REQUIRE_FALSE(Decimal::IsValidWidthScale(0, 0));
+}
+
+TEST_CASE("Wide decimal types are built per use and roundtrip", "[logical_type_immutable]") {
+	// widths above the fixed-size tiers are not cached: every construction builds its own metadata
+	REQUIRE(Decimal::IsValidWidthScale(39, 0));
+	REQUIRE(Decimal::IsWide(39));
+	REQUIRE_FALSE(Decimal::IsWide(Decimal::MAX_WIDTH_INT128));
+	auto wide = LogicalType::DECIMAL(50, 2);
+	auto same = LogicalType::DECIMAL(50, 2);
+	REQUIRE(wide == same);
+	REQUIRE(&wide.GetTypeInfo() != &same.GetTypeInfo());
+	REQUIRE(wide.InternalType() == PhysicalType::VARCHAR);
+	REQUIRE(DecimalType::GetWidth(wide) == 50);
+	REQUIRE(DecimalType::GetScale(wide) == 2);
+	auto deserialized = RoundtripCachedDecimalType(wide);
+	REQUIRE(deserialized == wide);
+	REQUIRE(deserialized.InternalType() == PhysicalType::VARCHAR);
+	auto copied = wide.Copy();
+	REQUIRE(copied == wide);
+	auto aliased = wide.WithAlias("BIG_MONEY");
+	REQUIRE(RoundtripCachedDecimalType(aliased).GetAlias() == "BIG_MONEY");
+	REQUIRE_FALSE(wide.HasAlias());
+	// the widest width stays constructible
+	auto widest = LogicalType::DECIMAL(NumericLimits<uint32_t>::Maximum(), 0);
+	REQUIRE(widest.InternalType() == PhysicalType::VARCHAR);
+	REQUIRE(DecimalType::GetWidth(widest) == NumericLimits<uint32_t>::Maximum());
 }
 
 namespace {

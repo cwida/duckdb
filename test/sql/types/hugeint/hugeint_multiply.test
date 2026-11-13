@@ -299,11 +299,11 @@ SELECT a * (-b) FROM products
 ----
 <REGEX>:.*Out of Range Error.*Overflow in multiplication of INT128.*
 
-# DECIMAL(38) stays below 10**38, so a product at the HUGEINT minimum still overflows
-statement error
-SELECT CAST(-9223372036854775808 AS DECIMAL(38,0)) * CAST(18446744073709551616 AS DECIMAL(38,0))
+# a DECIMAL(38) product binds its exact width, so the HUGEINT minimum is an ordinary DECIMAL(76) value
+query II
+SELECT CAST(-9223372036854775808 AS DECIMAL(38,0)) * CAST(18446744073709551616 AS DECIMAL(38,0)) AS p, typeof(p)
 ----
-<REGEX>:.*Out of Range Error.*Overflow in multiplication of DECIMAL\(38\).*
+-170141183460469231731687303715884105728	DECIMAL(76,0)
 
 # UHUGEINT has its own multiplication
 query II

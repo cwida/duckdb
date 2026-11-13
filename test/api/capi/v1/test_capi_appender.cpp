@@ -129,6 +129,70 @@ TEST_CASE("Test appending into DECIMAL in C API", "[capi]") {
 	expected.value.lower = 123452342343;
 	expected.value.upper = 0;
 	TestAppendingSingleDecimalValue<double, &duckdb_append_double>(12345234234.31243244234324, expected, 26, 1);
+
+	// decimals wider than 38 digits are stored as BIGNUM blobs; the typed appends still reach them
+	expected.value.lower = 1000;
+	expected.value.upper = 0;
+	TestAppendingSingleDecimalValue<int32_t, &duckdb_append_int32>(1, expected, 60, 3);
+	expected.value.lower = (uint64_t)18446744073709541617UL;
+	expected.value.upper = -1;
+	TestAppendingSingleDecimalValue<int16_t, &duckdb_append_int16>(-9999, expected, 45, 0);
+	expected.value.lower = 3245234123123;
+	expected.value.upper = 0;
+	TestAppendingSingleDecimalValue<const char *, &duckdb_append_varchar>("3245234.123123", expected, 50, 6);
+	expected.value.lower = 123452342343;
+	expected.value.upper = 0;
+	TestAppendingSingleDecimalValue<double, &duckdb_append_double>(12345234234.31243244234324, expected, 60, 1);
+}
+
+TEST_CASE("Test appending strings beyond 128 bits into a wide DECIMAL in C API", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE decimals(i DECIMAL(60,2))"));
+
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "decimals", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_begin_row(appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_varchar(appender, "12345678901234567890123456789012345678901234567890.25") == DuckDBSuccess);
+	REQUIRE(duckdb_appender_end_row(appender) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_begin_row(appender) == DuckDBSuccess);
+	// the string does not fit the width
+	REQUIRE(duckdb_append_varchar(appender, "1234567890123456789012345678901234567890123456789012345678901.0") ==
+	        DuckDBError);
+	duckdb_appender_close(appender);
+	duckdb_appender_destroy(&appender);
+
+	auto result = tester.Query("SELECT i::VARCHAR FROM decimals");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->Fetch<string>(0, 0) == "12345678901234567890123456789012345678901234567890.25");
+}
+
+TEST_CASE("Test typed appends into a wide DECIMAL in C API", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE decimals(i DECIMAL(60,30), b DECIMAL(60,38))"));
+
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "decimals", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_begin_row(appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_int64(appender, 1000000000) == DuckDBSuccess);
+	REQUIRE(duckdb_append_bool(appender, true) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_end_row(appender) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_begin_row(appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_double(appender, 2.5) == DuckDBSuccess);
+	REQUIRE(duckdb_append_int32(appender, -3) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_end_row(appender) == DuckDBSuccess);
+	duckdb_appender_close(appender);
+	duckdb_appender_destroy(&appender);
+
+	auto result = tester.Query("SELECT i::VARCHAR, b::VARCHAR FROM decimals ORDER BY i");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 2);
+	REQUIRE(result->Fetch<string>(0, 0) == "2.500000000000000000000000000000");
+	REQUIRE(result->Fetch<string>(1, 0) == "-3.00000000000000000000000000000000000000");
+	REQUIRE(result->Fetch<string>(0, 1) == "1000000000.000000000000000000000000000000");
+	REQUIRE(result->Fetch<string>(1, 1) == "1.00000000000000000000000000000000000000");
 }
 
 TEST_CASE("Test NULL struct Appender", "[capi]") {

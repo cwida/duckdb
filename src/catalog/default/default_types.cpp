@@ -51,12 +51,17 @@ LogicalType BindDecimalType(BindLogicalTypeInput &input) {
 	auto width = input.modifiers[0].GetValue().GetValue<uint32_t>();
 	auto scale = input.modifiers[1].GetValue().GetValue<uint32_t>();
 
-	if (width < 1 || width > Decimal::MAX_WIDTH_DECIMAL) {
-		throw BinderException(input.GetLocation(0), "DECIMAL type width must be between 1 and %d",
-		                      Decimal::MAX_WIDTH_DECIMAL);
+	if (width < 1) {
+		throw BinderException(input.GetLocation(0), "DECIMAL type width must be at least 1");
 	}
 	if (scale > width) {
 		throw BinderException(input.GetLocation(1), "DECIMAL type scale cannot be greater than width");
+	}
+	const auto limit = input.GetDecimalWidthLimit();
+	if (width > limit.width) {
+		throw BinderException(input.GetLocation(0),
+		                      "DECIMAL type width %u exceeds the maximum DECIMAL width of %u (%s)", width, limit.width,
+		                      limit.hint);
 	}
 	return LogicalType::DECIMAL(width, scale);
 }
@@ -65,8 +70,8 @@ void RegisterDecimalConstructors(TypeConstructorSet &set) {
 	set.AddFunction(TypeConstructor(TypeConstructor::Signature(), BindDefaultDecimalType));
 
 	auto signature = TypeConstructor::Signature();
-	signature.AddParameter("width", LogicalType::UTINYINT);
-	signature.AddParameter("scale", LogicalType::UTINYINT, Value::UTINYINT(0));
+	signature.AddParameter("width", LogicalType::UINTEGER);
+	signature.AddParameter("scale", LogicalType::UINTEGER, Value::UINTEGER(0));
 	set.AddFunction(TypeConstructor(std::move(signature), BindDecimalType));
 }
 

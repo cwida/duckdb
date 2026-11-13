@@ -12,6 +12,7 @@
     "Aggregate state columns are not supported in storage versions prior to v2.0.0",
     "TUPLE columns are not supported in storage versions prior to v2.0.0",
     "VARIANT columns are not supported in storage versions prior to v1.5.0",
+    "DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0",
     "Typed macro parameters are only supported for storage versions v1.4.0 and higher",
     "CREATE SECURE VIEW is only supported for storage versions v2.0.0 and higher"
   ],
@@ -302,6 +303,12 @@
         "test/sql/types/list/list_extract_types.test_slow",
         "test/sql/types/test_all_types.test_slow",
         "test/sql/window/test_streaming_lead_lag.test_slow"
+      ]
+    },
+    {
+      "reason": "The synchronous task batch does not always reach the scheduler log: timing-dependent assertion (flaky under this config).",
+      "paths": [
+        "test/sql/parallelism/async_task_synchronous_batch.test"
       ]
     }
   ]

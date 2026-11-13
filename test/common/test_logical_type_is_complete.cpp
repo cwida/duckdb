@@ -2,6 +2,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/optional_idx.hpp"
+#include "duckdb/common/limits.hpp"
 
 using namespace duckdb;
 
@@ -12,8 +13,9 @@ TEST_CASE("Test LogicalType::IsComplete for DECIMAL", "[is_complete]") {
 		REQUIRE(LogicalType::DECIMAL(1, 0).IsComplete());
 		REQUIRE(LogicalType::DECIMAL(10, 0).IsComplete());
 		REQUIRE(LogicalType::DECIMAL(10, 10).IsComplete()); // scale == width
-		REQUIRE(LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL, 0).IsComplete());
-		REQUIRE(LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL).IsComplete());
+		REQUIRE(LogicalType::DECIMAL(1000, 0).IsComplete());
+		REQUIRE(LogicalType::DECIMAL(1000, 1000).IsComplete());
+		REQUIRE(LogicalType::DECIMAL(NumericLimits<uint32_t>::Maximum(), 0).IsComplete());
 	}
 
 	SECTION("ill-formed decimals are incomplete") {

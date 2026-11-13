@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include "core_functions/scalar/generic_functions.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/smaller_binary.hpp"
@@ -245,7 +246,8 @@ void LeastGreatestResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	LogicalType child_type = ExpressionBinder::GetExpressionReturnType(input.GetArgument(0));
 	for (idx_t i = 1; i < input.GetArgumentCount(); i++) {
 		auto arg_type = ExpressionBinder::GetExpressionReturnType(input.GetArgument(i));
-		if (!LogicalType::TryGetMaxLogicalType(context, child_type, arg_type, child_type)) {
+		if (!LogicalType::TryGetMaxLogicalType(context, child_type, arg_type, child_type,
+		                                       input.GetDecimalWidthLimit())) {
 			throw BinderException(input.GetArgument(i).GetQueryLocation(),
 			                      "Cannot combine types of %s and %s - an explicit cast is required",
 			                      child_type.ToString(), arg_type.ToString());

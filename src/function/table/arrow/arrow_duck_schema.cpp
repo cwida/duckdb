@@ -114,7 +114,8 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(string &format) {
 			// We have a bit-width defined
 			bitwidth = std::stoull(parameters[2]);
 		}
-		if (width > 38 || bitwidth > 128) {
+		// decimal256 holds up to 76 digits, above 38 digits it becomes a wide (BIGNUM-backed) DuckDB decimal
+		if (width > 76 || bitwidth > 256 || (width > 38 && bitwidth < 256) || scale > width) {
 			throw NotImplementedException("Unsupported Internal Arrow Type for Decimal %s", format);
 		}
 		switch (bitwidth) {

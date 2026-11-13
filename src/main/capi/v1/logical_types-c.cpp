@@ -193,12 +193,17 @@ void duckdb_destroy_logical_type(duckdb_logical_type *type) {
 	}
 }
 
+//! The uint8_t of the C API holds widths up to 255, wider decimals report 0
+static uint8_t DecimalPropertyToC(uint32_t value) {
+	return value > duckdb::NumericLimits<uint8_t>::Maximum() ? 0 : static_cast<uint8_t>(value);
+}
+
 uint8_t duckdb_decimal_width(duckdb_logical_type type) {
 	if (!AssertLogicalTypeId(type, duckdb::LogicalTypeId::DECIMAL)) {
 		return 0;
 	}
 	auto &logical_type = *(reinterpret_cast<duckdb::LogicalType *>(type));
-	return duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(logical_type));
+	return DecimalPropertyToC(duckdb::DecimalType::GetWidth(logical_type));
 }
 
 uint8_t duckdb_decimal_scale(duckdb_logical_type type) {
@@ -206,7 +211,10 @@ uint8_t duckdb_decimal_scale(duckdb_logical_type type) {
 		return 0;
 	}
 	auto &logical_type = *(reinterpret_cast<duckdb::LogicalType *>(type));
-	return duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(logical_type));
+	if (duckdb::DecimalType::GetWidth(logical_type) > duckdb::NumericLimits<uint8_t>::Maximum()) {
+		return 0;
+	}
+	return DecimalPropertyToC(duckdb::DecimalType::GetScale(logical_type));
 }
 
 duckdb_type duckdb_decimal_internal_type(duckdb_logical_type type) {
@@ -223,6 +231,9 @@ duckdb_type duckdb_decimal_internal_type(duckdb_logical_type type) {
 		return DUCKDB_TYPE_BIGINT;
 	case duckdb::PhysicalType::INT128:
 		return DUCKDB_TYPE_HUGEINT;
+	case duckdb::PhysicalType::VARCHAR:
+		// decimals wider than 38 digits store their unscaled value as BIGNUM storage
+		return DUCKDB_TYPE_BIGNUM;
 	default:
 		return DUCKDB_TYPE_INVALID;
 	}

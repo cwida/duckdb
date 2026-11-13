@@ -6,6 +6,7 @@
 #include "duckdb/common/operator/integer_cast_operator.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 
@@ -145,6 +146,14 @@ bool CSVSniffer::CanYouCastBignum(const char *value_ptr, idx_t value_size) {
 	}
 }
 
+//! Whether a value parses as a decimal of the tier, with the separator of the CSV
+template <class T>
+static bool TryParseDecimal(const char *value_ptr, idx_t value_size, uint32_t width, uint32_t scale,
+                            char decimal_separator) {
+	typename DecimalHelper<T>::OWNED parsed;
+	return DecimalHelper<T>::TryParse(value_ptr, value_size, width, scale, parsed, decimal_separator);
+}
+
 bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, const LogicalType &type,
                               const DialectOptions &dialect_options, const bool is_null, const char decimal_separator,
                               const char thousands_separator) {
@@ -249,61 +258,24 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 	case LogicalTypeId::DECIMAL: {
 		uint32_t width, scale;
 		type.GetDecimalProperties(width, scale);
-		if (decimal_separator == ',') {
-			switch (type.InternalType()) {
-			case PhysicalType::INT16: {
-				int16_t dummy_value;
-				return TryDecimalStringCast<int16_t, ','>(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT32: {
-				int32_t dummy_value;
-				return TryDecimalStringCast<int32_t, ','>(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT64: {
-				int64_t dummy_value;
-				return TryDecimalStringCast<int64_t, ','>(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT128: {
-				hugeint_t dummy_value;
-				return TryDecimalStringCast<hugeint_t, ','>(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			default:
-				throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
-				                        TypeIdToString(type.InternalType()));
-			}
-
-		} else if (decimal_separator == '.') {
-			switch (type.InternalType()) {
-			case PhysicalType::INT16: {
-				int16_t dummy_value;
-				return TryDecimalStringCast(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT32: {
-				int32_t dummy_value;
-				return TryDecimalStringCast(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT64: {
-				int64_t dummy_value;
-				return TryDecimalStringCast(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			case PhysicalType::INT128: {
-				hugeint_t dummy_value;
-				return TryDecimalStringCast(value_ptr, value_size, dummy_value, width, scale);
-			}
-
-			default:
-				throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
-				                        TypeIdToString(type.InternalType()));
-			}
+		if (decimal_separator != ',' && decimal_separator != '.') {
+			throw InvalidInputException("Decimals can only have ',' and '.' as decimal separators");
 		}
-		throw InvalidInputException("Decimals can only have ',' and '.' as decimal separators");
+		switch (type.InternalType()) {
+		case PhysicalType::INT16:
+			return TryParseDecimal<int16_t>(value_ptr, value_size, width, scale, decimal_separator);
+		case PhysicalType::INT32:
+			return TryParseDecimal<int32_t>(value_ptr, value_size, width, scale, decimal_separator);
+		case PhysicalType::INT64:
+			return TryParseDecimal<int64_t>(value_ptr, value_size, width, scale, decimal_separator);
+		case PhysicalType::INT128:
+			return TryParseDecimal<hugeint_t>(value_ptr, value_size, width, scale, decimal_separator);
+		case PhysicalType::VARCHAR:
+			return TryParseDecimal<bignum_t>(value_ptr, value_size, width, scale, decimal_separator);
+		default:
+			throw InternalException("Invalid Physical Type for Decimal Value. Physical Type: " +
+			                        TypeIdToString(type.InternalType()));
+		}
 	}
 	case LogicalTypeId::VARCHAR:
 		return true;

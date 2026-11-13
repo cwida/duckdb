@@ -108,6 +108,14 @@ struct CastLocalStateParameters {
 	optional_ptr<BoundCastData> cast_data;
 };
 
+//! The local state of a cast to or from a wide DECIMAL: the context lets long BIGNUM conversions check for interrupts
+struct WideDecimalCastState : public FunctionLocalState {
+	explicit WideDecimalCastState(optional_ptr<ClientContext> context_p) : context(context_p) {
+	}
+
+	optional_ptr<ClientContext> context;
+};
+
 typedef bool (*cast_function_t)(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 typedef unique_ptr<FunctionLocalState> (*init_cast_local_state_t)(CastLocalStateParameters &parameters);
 
@@ -181,6 +189,9 @@ public:
 	void SetStatisticsCallback(cast_statistics_t new_statistics) {
 		statistics = new_statistics;
 	}
+	void SetInitLocalState(init_cast_local_state_t new_init_local_state) {
+		init_local_state = new_init_local_state;
+	}
 	DUCKDB_API unique_ptr<BaseStatistics> PropagateStatistics(const LogicalType &source_type,
 	                                                          const LogicalType &target_type,
 	                                                          const BaseStatistics &child_stats,
@@ -223,6 +234,11 @@ private:
 struct DefaultCasts {
 	DUCKDB_API static BoundCastInfo GetDefaultCastFunction(BindCastInput &input, const LogicalType &source,
 	                                                       const LogicalType &target);
+	//! Attaches a WideDecimalCastState to a cast whose source or target is a DECIMAL wider than 38 digits
+	DUCKDB_API static BoundCastInfo WideDecimalCast(BoundCastInfo info, const LogicalType &source,
+	                                                const LogicalType &target);
+	//! The client context of a cast with a WideDecimalCastState, null for a cast without one
+	DUCKDB_API static optional_ptr<ClientContext> WideDecimalCastContext(CastParameters &parameters);
 
 	DUCKDB_API static bool NopCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	DUCKDB_API static bool TryVectorNullCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);

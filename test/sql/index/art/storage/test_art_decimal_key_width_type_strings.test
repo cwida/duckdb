@@ -1,0 +1,173 @@
+# name: test/sql/index/art/storage/test_art_decimal_key_width_type_strings.test
+# description: Index keys of functions that parse a type from its text are bound within the decimal width of their storage version
+# group: [storage]
+
+require json
+
+# the storage version is chosen per database below, the configs that force one cannot
+require no_force_storage
+
+# the plan of CREATE INDEX is deserialized before it runs: the keys are rebound within the width they were bound to
+statement ok
+SET debug_verify_serializer = true
+
+# the type names of a json_transform structure and a from_json structure are parsed within the width of the storage
+# version. Created by the default session, written by a session that bounds decimals to 38 digits
+statement ok
+ATTACH '{TEST_DIR}/key_width_type_strings.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.j (v VARCHAR)
+
+statement ok
+CREATE UNIQUE INDEX jx ON d.j ((json_transform(v, '"DECIMAL(40,0)"')::VARCHAR))
+
+statement ok
+INSERT INTO d.j VALUES ('1')
+
+# the type names nested in the objects and arrays of the structure are parsed within the width as well
+statement ok
+CREATE TABLE d.n (v VARCHAR)
+
+statement ok
+CREATE UNIQUE INDEX nx ON d.n ((from_json(v, '{"a": ["DECIMAL(40,0)"]}')::VARCHAR))
+
+statement ok
+INSERT INTO d.n VALUES ('{"a": [1]}')
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_type_strings.db' AS d
+
+# the session cannot parse the structure, the keys are bound within the storage version
+statement error
+SELECT json_transform('1', '"DECIMAL(40,0)"')
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement error
+SELECT from_json('{"a": [1]}', '{"a": ["DECIMAL(40,0)"]}')
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement ok
+INSERT INTO d.j VALUES ('2')
+
+statement error
+INSERT INTO d.j VALUES ('1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO d.n VALUES ('{"a": [2]}')
+
+statement error
+INSERT INTO d.n VALUES ('{"a": [1]}')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+query I
+SELECT count(*) FROM d.j
+----
+2
+
+statement ok
+DETACH d
+
+# the reverse order: the indexes are created by a session that bounds decimals to 38 digits, on tables the default
+# session created, and written by the default session
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_type_strings2.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.j (v VARCHAR)
+
+statement ok
+CREATE TABLE d.n (v VARCHAR)
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_type_strings2.db' AS d
+
+# the keys are parsed within the storage version, while the session cannot parse the structure
+statement error
+SELECT json_transform('1', '"DECIMAL(40,0)"')
+----
+<REGEX>:.*DECIMAL type width 40 exceeds the maximum DECIMAL width of 38.*
+
+statement ok
+CREATE UNIQUE INDEX jx ON d.j ((json_transform(v, '"DECIMAL(40,0)"')::VARCHAR))
+
+statement ok
+INSERT INTO d.j VALUES ('1')
+
+statement error
+INSERT INTO d.j VALUES ('1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+CREATE UNIQUE INDEX nx ON d.n ((from_json(v, '{"a": ["DECIMAL(40,0)"]}')::VARCHAR))
+
+statement ok
+INSERT INTO d.n VALUES ('{"a": [1]}')
+
+statement error
+INSERT INTO d.n VALUES ('{"a": [1]}')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_type_strings2.db' AS d
+
+statement ok
+INSERT INTO d.j VALUES ('2')
+
+statement error
+INSERT INTO d.j VALUES ('1')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+statement ok
+INSERT INTO d.n VALUES ('{"a": [2]}')
+
+statement error
+INSERT INTO d.n VALUES ('{"a": [1]}')
+----
+<REGEX>:.*Duplicate key.*1.*
+
+query I
+SELECT count(*) FROM d.j
+----
+2
+
+statement ok
+DETACH d

@@ -18,6 +18,7 @@
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/geometry_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
+#include "duckdb/storage/statistics/bignum_stats.hpp"
 #include "duckdb/storage/statistics/stats_merge_type.hpp"
 
 namespace duckdb {
@@ -44,7 +45,8 @@ enum class StatisticsType : uint8_t {
 	BASE_STATS,
 	ARRAY_STATS,
 	GEOMETRY_STATS,
-	VARIANT_STATS
+	VARIANT_STATS,
+	BIGNUM_STATS
 };
 
 struct ExtraStatsData {
@@ -70,6 +72,7 @@ class BaseStatistics {
 	friend struct ArrayStats;
 	friend struct GeometryStats;
 	friend struct VariantStats;
+	friend struct BignumStats;
 
 public:
 	DUCKDB_API ~BaseStatistics();
@@ -190,6 +193,8 @@ private:
 		GeometryStatsData geometry_data;
 		//! Variant stats data, for variant stats
 		VariantStatsData variant_data;
+		//! Bignum stats data, for values stored as BIGNUM blobs (decimals wider than 38 digits)
+		BignumStatsData bignum_data;
 	} stats_union;
 	//! Extra stats data, used for e.g. string data if required
 	unique_ptr<ExtraStatsData> extra_data;

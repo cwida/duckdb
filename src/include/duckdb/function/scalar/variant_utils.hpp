@@ -120,6 +120,9 @@ struct VariantUtils {
 	DUCKDB_API static bool IsNestedType(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index);
 	DUCKDB_API static VariantDecimalData DecodeDecimalData(const UnifiedVariantVectorData &variant, idx_t row,
 	                                                       uint32_t value_index);
+	//! The BIGNUM blob of a DECIMAL value wider than 38 digits, which follows the (width, scale) prefix
+	DUCKDB_API static string_t DecodeWideDecimalData(const UnifiedVariantVectorData &variant, idx_t row,
+	                                                 uint32_t value_index);
 	DUCKDB_API static VariantNestedData DecodeNestedData(const UnifiedVariantVectorData &variant, idx_t row,
 	                                                     uint32_t value_index);
 	DUCKDB_API static string_t DecodeStringData(const UnifiedVariantVectorData &variant, idx_t row,

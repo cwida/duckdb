@@ -27,6 +27,7 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/error_manager.hpp"
 #include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
@@ -310,6 +311,11 @@ Value Value::MinimumValue(const LogicalType &type) {
 			return Value::DECIMAL(int64_t(-NumericHelper::POWERS_OF_TEN[width] + 1), width, scale);
 		case PhysicalType::INT128:
 			return Value::DECIMAL(-Hugeint::POWERS_OF_TEN[width] + 1, width, scale);
+		case PhysicalType::VARCHAR: {
+			// the minimum wide decimal is -(10^width - 1)
+			auto blob = Bignum::VarcharToBignum(string_t("-" + string(width, '9')));
+			return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+		}
 		default:
 			throw InternalException("Unknown decimal type");
 		}
@@ -408,6 +414,11 @@ Value Value::MaximumValue(const LogicalType &type) {
 			return Value::DECIMAL(int64_t(NumericHelper::POWERS_OF_TEN[width] - 1), width, scale);
 		case PhysicalType::INT128:
 			return Value::DECIMAL(Hugeint::POWERS_OF_TEN[width] - 1, width, scale);
+		case PhysicalType::VARCHAR: {
+			// the maximum wide decimal is 10^width - 1
+			auto blob = Bignum::VarcharToBignum(string_t(string(width, '9')));
+			return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+		}
 		default:
 			throw InternalException("Unknown decimal type");
 		}
@@ -646,6 +657,9 @@ Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 	case PhysicalType::INT64:
 		result.value_.bigint = value;
 		break;
+	case PhysicalType::VARCHAR:
+		// the unscaled value of a wide decimal is a BIGNUM blob
+		return Value::DECIMAL(hugeint_t(value), width, scale);
 	default:
 		result.value_.hugeint = value;
 		break;
@@ -656,10 +670,37 @@ Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 }
 
 Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
+	if (Decimal::IsWide(width)) {
+		// the unscaled value of a wide decimal is a BIGNUM blob
+		auto blob = DecimalHelper<bignum_t>::FromInteger(value);
+		return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+	}
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT64 && width <= Decimal::MAX_WIDTH_INT128);
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.value_.hugeint = value;
 	result.is_null = false;
+	return result;
+}
+
+Value Value::DECIMAL(bignum_t value, uint32_t width, uint32_t scale) {
+	if (!Decimal::IsWide(width)) {
+		// the fixed-size tiers hold the unscaled value as the integer of their width
+		hugeint_t unscaled;
+		if (!DecimalHelper<bignum_t>::TryToHugeint(value, unscaled)) {
+			throw InternalException("Value::DECIMAL: the BIGNUM does not fit a DECIMAL(%d,%d)", width, scale);
+		}
+		if (width > Decimal::MAX_WIDTH_INT64) {
+			return Value::DECIMAL(unscaled, width, scale);
+		}
+		int64_t narrow;
+		if (!Hugeint::TryCast(unscaled, narrow)) {
+			throw InternalException("Value::DECIMAL: the BIGNUM does not fit a DECIMAL(%d,%d)", width, scale);
+		}
+		return Value::DECIMAL(narrow, width, scale);
+	}
+	Value result(LogicalType::DECIMAL(width, scale));
+	result.is_null = false;
+	result.value_info_ = make_shared_ptr<StringValueInfo>(value.data.GetString());
 	return result;
 }
 
@@ -1794,6 +1835,12 @@ string Value::ToSQLString() const {
 	case LogicalTypeId::MAP:
 	case LogicalTypeId::UNION:
 		return NestedToSQLString(*this, [](const Value &child) { return child.ToSQLString(); });
+	case LogicalTypeId::DECIMAL:
+		// a bare literal would be reparsed as DOUBLE or BIGNUM and lose precision, so emit an explicit cast
+		if (type_.InternalType() == PhysicalType::VARCHAR) {
+			return "'" + ToString() + "'::" + type_.ToString();
+		}
+		return ToString();
 	case LogicalTypeId::FLOAT:
 		if (!FloatIsFinite(FloatValue::Get(*this)) ||
 		    (FloatValue::Get(*this) == 0 && std::signbit(FloatValue::Get(*this)))) {
@@ -2408,23 +2455,15 @@ static bool ValueIsValidShallow(const Value &value) {
 		const auto width = DecimalType::GetWidth(type);
 		switch (type.InternalType()) {
 		case PhysicalType::INT16:
+			return DecimalHelper<int16_t>::FitsWidth(value.GetValueUnsafe<int16_t>(), width);
 		case PhysicalType::INT32:
-		case PhysicalType::INT64: {
-			int64_t decimal_value;
-			if (type.InternalType() == PhysicalType::INT16) {
-				decimal_value = value.GetValueUnsafe<int16_t>();
-			} else if (type.InternalType() == PhysicalType::INT32) {
-				decimal_value = value.GetValueUnsafe<int32_t>();
-			} else {
-				decimal_value = value.GetValueUnsafe<int64_t>();
-			}
-			return decimal_value > -NumericHelper::POWERS_OF_TEN[width] &&
-			       decimal_value < NumericHelper::POWERS_OF_TEN[width];
-		}
-		case PhysicalType::INT128: {
-			const auto decimal_value = value.GetValueUnsafe<hugeint_t>();
-			return decimal_value > -Hugeint::POWERS_OF_TEN[width] && decimal_value < Hugeint::POWERS_OF_TEN[width];
-		}
+			return DecimalHelper<int32_t>::FitsWidth(value.GetValueUnsafe<int32_t>(), width);
+		case PhysicalType::INT64:
+			return DecimalHelper<int64_t>::FitsWidth(value.GetValueUnsafe<int64_t>(), width);
+		case PhysicalType::INT128:
+			return DecimalHelper<hugeint_t>::FitsWidth(value.GetValueUnsafe<hugeint_t>(), width);
+		case PhysicalType::VARCHAR:
+			return DecimalHelper<bignum_t>::FitsWidth(value.GetValueUnsafe<bignum_t>(), width);
 		default:
 			throw InternalException("Invalid physical type for DECIMAL");
 		}

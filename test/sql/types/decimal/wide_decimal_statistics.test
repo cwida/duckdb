@@ -1,0 +1,223 @@
+# name: test/sql/types/decimal/wide_decimal_statistics.test
+# description: Statistics of decimals wider than 38 digits: exact min/max, propagation through arithmetic, pruning
+# group: [decimal]
+
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+statement ok
+CREATE TABLE t(w DECIMAL(40,2), n DECIMAL(10,2));
+
+statement ok
+INSERT INTO t VALUES ('123456789012345678901234567890.12', 1.25), ('-7.50', -10.75), ('0.00', 3.00), (NULL, NULL);
+
+# the column carries exact min/max statistics
+query IIII
+SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT STATS(w) s FROM t LIMIT 1);
+----
+-7.50	123456789012345678901234567890.12	true	true
+
+# arithmetic on wide decimals propagates exact bounds
+query III
+SELECT typeof(w + w), s.min, s.max FROM (SELECT w, STATS(w + w) s FROM t LIMIT 1);
+----
+DECIMAL(41,2)	-15.00	246913578024691357802469135780.24
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w - n) s FROM t LIMIT 1);
+----
+-10.50	123456789012345678901234567900.87
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w * n) s FROM t LIMIT 1);
+----
+-1327160481882716048188271604818.7900	370370367037037036703703703670.3600
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(-w) s FROM t LIMIT 1);
+----
+-123456789012345678901234567890.12	7.50
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w + 1) s FROM t LIMIT 1);
+----
+-6.50	123456789012345678901234567891.12
+
+# the bounds of a wide decimal survive a cast to a wider decimal and to the fixed-size tiers
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w::DECIMAL(50,3)) s FROM t LIMIT 1);
+----
+-7.500	123456789012345678901234567890.120
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n::DECIMAL(40,2)) s FROM t LIMIT 1);
+----
+-10.75	3.00
+
+# modulo has no bounds in the bignum tier
+foreach expr w%7 7%w
+
+query IIII
+SELECT s.min IS NULL, s.max IS NULL, s.has_null, s.has_no_null FROM (SELECT STATS({expr}) s FROM t LIMIT 1);
+----
+true	true	true	true
+
+endloop
+
+# the same operators on fixed-size decimals keep their numeric bounds
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n % 7) s FROM t LIMIT 1);
+----
+-6.99	3.00
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n + n) s FROM t LIMIT 1);
+----
+-21.50	6.00
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(n * n) s FROM t LIMIT 1);
+----
+-32.2500	115.5625
+
+# the results are checked against the propagated statistics when debug_verify_stats is on
+query IIIIIIII
+SELECT w % 7, w + w, w - n, w * n, -w, n % 7, n + n, -n FROM t ORDER BY w NULLS LAST;
+----
+-0.50	-15.00	3.25	80.6250	7.50	-3.75	-21.50	10.75
+0.00	0.00	-3.00	0.0000	0.00	3.00	6.00	-3.00
+0.12	246913578024691357802469135780.24	123456789012345678901234567888.87	154320986265432098626543209862.6500	-123456789012345678901234567890.12	1.25	2.50	-1.25
+NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+# filters tighten the bounds like for the fixed-size tiers
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w) s FROM t WHERE w > '1.00'::DECIMAL(40,2) LIMIT 1);
+----
+1.00	123456789012345678901234567890.12
+
+query I
+SELECT count(*) FROM t WHERE w > 0 AND w % 7 > 0;
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE w % 7 > 5;
+----
+0
+
+# a comparison that the statistics decide folds into a constant
+query I
+SELECT count(*) FROM t WHERE w > '200000000000000000000000000000.00'::DECIMAL(40,2);
+----
+0
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.w AND t1.w + 1 >= t2.w;
+----
+6
+
+# the propagated statistics keep the NULLs of the column through arithmetic, casts and comparisons
+query IIIIII
+SELECT w + n, w - 1, w * w, w::DECIMAL(45,3), TRY_CAST(w AS DECIMAL(20,2)), w > n FROM t ORDER BY w NULLS LAST;
+----
+-18.25	-8.50	56.2500	-7.500	-7.50	true
+3.00	-1.00	0.0000	0.000	0.00	false
+123456789012345678901234567891.37	123456789012345678901234567889.12	15241578753238836750495351562565828416864868162811315348393.6144	123456789012345678901234567890.120	NULL	true
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT s.has_null, s.has_no_null, s.min IS NOT NULL, s.max IS NOT NULL FROM (SELECT STATS(w + n) s FROM t LIMIT 1);
+----
+true	true	true	true
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w + 1 = t2.w + 1 AND t1.w * 2 >= t2.n;
+----
+1
+
+query IIII
+SELECT min(w), max(w), min(w % 7), max(w % 7) FROM t WHERE w % 7 <> 0;
+----
+-7.50	123456789012345678901234567890.12	-0.50	0.12
+
+# modulo by a wide zero divisor still raises
+statement error
+SELECT w % '0'::DECIMAL(40,2) FROM t;
+----
+Division by zero
+
+# row groups are pruned on the exact bounds
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_prune.duckdb' AS db (ROW_GROUP_SIZE 2048, STORAGE_VERSION 'v2.1.0');
+
+# the first row group holds small values, the second values around 10^30
+statement ok
+CREATE TABLE db.p AS
+SELECT CASE WHEN range < 2048 THEN range::DECIMAL(40,2) ELSE '1000000000000000000000000000000.00'::DECIMAL(40,2) + range END w
+FROM range(4096);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w) s FROM db.p LIMIT 1);
+----
+0.00	1000000000000000000000000004095.00
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w > '5000.00'::DECIMAL(40,2);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w < '5000.00'::DECIMAL(40,2);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w = '1000000000000000000000000002048.00'::DECIMAL(40,2);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w IN ('7.00'::DECIMAL(40,2), '8.00'::DECIMAL(40,2));
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w BETWEEN '1000000000000000000000000002048.00'::DECIMAL(40,2) AND '1000000000000000000000000002050.00'::DECIMAL(40,2);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+# a constant comparison outside of the bounds of the column folds the scan away
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM db.p WHERE w > '2000000000000000000000000000000.00'::DECIMAL(40,2);
+----
+analyzed_plan	<REGEX>:.*Empty Result.*
+
+query I
+SELECT count(*) FROM db.p WHERE w > '5000.00'::DECIMAL(40,2);
+----
+2048
+
+query I
+SELECT count(*) FROM db.p WHERE w IN ('7.00'::DECIMAL(40,2), '8.00'::DECIMAL(40,2));
+----
+2
+
+# the statistics are persisted with the column
+statement ok
+CHECKPOINT db;
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(w) s FROM db.p LIMIT 1);
+----
+0.00	1000000000000000000000000004095.00
+
+# the row group reorderer uses the bounds for ORDER BY ... LIMIT
+query I
+SELECT w FROM db.p ORDER BY w DESC LIMIT 1;
+----
+1000000000000000000000000004095.00
+
+query I
+SELECT w FROM db.p ORDER BY w LIMIT 1;
+----
+0.00
