@@ -1196,3 +1196,115 @@ TEST_CASE("Test C-API Arrow round trip of timestamps below the first midnight of
 	duckdb_destroy_data_chunk(&chunk);
 	duckdb_destroy_result(&result);
 }
+
+// A struct dictionary of three values: the struct's capacity already holds the NULL sentinel slot, its zero copy
+// integer field does not.
+TEST_CASE("Test C-API Arrow conversion of a dictionary of structs with a NULL index", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	const int32_t i_values[] = {1, 2, 3};
+	const int32_t s_offsets[] = {0, 1, 2, 3};
+	const void *i_buffers[] = {nullptr, i_values};
+	const void *s_buffers[] = {nullptr, s_offsets, "abc"};
+	ArrowSchema field_schemas[2] = {ArrowSchema(), ArrowSchema()};
+	ArrowArray field_arrays[2] = {ArrowArray(), ArrowArray()};
+	ArrowSchema *field_schema_ptrs[] = {&field_schemas[0], &field_schemas[1]};
+	ArrowArray *field_array_ptrs[] = {&field_arrays[0], &field_arrays[1]};
+	const char *field_formats[] = {"i", "u"};
+	const char *field_names[] = {"i", "s"};
+	const void **field_buffers[] = {i_buffers, s_buffers};
+	for (idx_t field = 0; field < 2; field++) {
+		field_schemas[field].format = field_formats[field];
+		field_schemas[field].name = field_names[field];
+		field_schemas[field].flags = ARROW_FLAG_NULLABLE;
+		field_schemas[field].release = ReleaseUnalignedSchema;
+		field_arrays[field].length = 3;
+		field_arrays[field].n_buffers = field + 2;
+		field_arrays[field].buffers = field_buffers[field];
+		field_arrays[field].release = ReleaseUnalignedArray;
+	}
+
+	ArrowSchema value_schema = ArrowSchema();
+	value_schema.format = "+s";
+	value_schema.flags = ARROW_FLAG_NULLABLE;
+	value_schema.n_children = 2;
+	value_schema.children = field_schema_ptrs;
+	value_schema.release = ReleaseUnalignedSchema;
+	const void *value_buffers[] = {nullptr};
+	ArrowArray value_array = ArrowArray();
+	value_array.length = 3;
+	value_array.n_buffers = 1;
+	value_array.buffers = value_buffers;
+	value_array.n_children = 2;
+	value_array.children = field_array_ptrs;
+	value_array.release = ReleaseUnalignedArray;
+
+	const int8_t indices[] = {2, 0, 1, 0};
+	const uint8_t validity[] = {0x0D};
+	const void *dictionary_buffers[] = {validity, indices};
+	ArrowSchema column_schema = ArrowSchema();
+	column_schema.format = "c";
+	column_schema.name = "d";
+	column_schema.flags = ARROW_FLAG_NULLABLE;
+	column_schema.dictionary = &value_schema;
+	column_schema.release = ReleaseUnalignedSchema;
+	ArrowArray column_array = ArrowArray();
+	column_array.length = 4;
+	column_array.null_count = 1;
+	column_array.n_buffers = 2;
+	column_array.buffers = dictionary_buffers;
+	column_array.dictionary = &value_array;
+	column_array.release = ReleaseUnalignedArray;
+
+	ArrowSchema *column_schema_ptrs[] = {&column_schema};
+	ArrowSchema schema = ArrowSchema();
+	schema.format = "+s";
+	schema.n_children = 1;
+	schema.children = column_schema_ptrs;
+	schema.release = ReleaseUnalignedSchema;
+	ArrowArray *column_array_ptrs[] = {&column_array};
+	const void *struct_buffers[] = {nullptr};
+	ArrowArray array = ArrowArray();
+	array.length = 4;
+	array.n_buffers = 1;
+	array.buffers = struct_buffers;
+	array.n_children = 1;
+	array.children = column_array_ptrs;
+	array.release = ReleaseUnalignedArray;
+
+	duckdb_arrow_converted_schema converted = nullptr;
+	REQUIRE(duckdb_schema_from_arrow(tester.connection, &schema, &converted) == nullptr);
+	duckdb_data_chunk chunk = nullptr;
+	auto err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk);
+	if (err) {
+		FAIL(duckdb_error_data_message(err));
+	}
+	REQUIRE(duckdb_data_chunk_get_size(chunk) == 4);
+
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE dictionary_structs(d STRUCT(i INTEGER, s VARCHAR))"));
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "dictionary_structs", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_data_chunk(appender, chunk) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_destroy(&appender) == DuckDBSuccess);
+
+	auto result = tester.Query("SELECT d IS NULL, d.i, d.s FROM dictionary_structs");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 4);
+	const char *expected_i[] = {"3", nullptr, "2", "1"};
+	const char *expected_s[] = {"c", nullptr, "b", "a"};
+	for (idx_t row = 0; row < 4; row++) {
+		if (!expected_i[row]) {
+			REQUIRE(result->Fetch<bool>(0, row));
+			REQUIRE(result->IsNull(1, row));
+			REQUIRE(result->IsNull(2, row));
+			continue;
+		}
+		REQUIRE(!result->Fetch<bool>(0, row));
+		REQUIRE(result->Fetch<string>(1, row) == expected_i[row]);
+		REQUIRE(result->Fetch<string>(2, row) == expected_s[row]);
+	}
+
+	duckdb_destroy_data_chunk(&chunk);
+	duckdb_destroy_arrow_converted_schema(&converted);
+}

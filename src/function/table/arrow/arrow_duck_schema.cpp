@@ -337,7 +337,7 @@ unique_ptr<ArrowType> ArrowType::CreateListType(ClientContext &context, ArrowSch
 
 LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 	if (use_dictionary && dictionary_type) {
-		return dictionary_type->GetDuckType();
+		return dictionary_type->GetDuckType(true);
 	}
 	if (!use_dictionary) {
 		return type;
@@ -347,6 +347,10 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		// mirror the logical type's children — reconstructing through it would produce a hybrid type.
 		// The logical type is authoritative here; any dictionaries inside the storage are handled by the
 		// storage-side conversion, not by the output type.
+		return type;
+	}
+	if (run_end_encoded) {
+		// the type info describes the run ends and the values, not the value type the rebuild below expects
 		return type;
 	}
 	// Dictionaries can exist in arbitrarily nested schemas
@@ -371,6 +375,10 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		auto &list_info = type_info->Cast<ArrowListInfo>();
 		auto &child = list_info.GetChild();
 		return LogicalType::LIST(child.GetDuckType(true));
+	}
+	case LogicalTypeId::ARRAY: {
+		auto &array_info = type_info->Cast<ArrowArrayInfo>();
+		return LogicalType::ARRAY(array_info.GetChild().GetDuckType(true), array_info.FixedSize());
 	}
 	case LogicalTypeId::MAP: {
 		auto &list_info = type_info->Cast<ArrowListInfo>();
