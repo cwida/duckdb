@@ -1,0 +1,24 @@
+--- a/src/storage/mysql_schema_entry.cpp
++++ b/src/storage/mysql_schema_entry.cpp
+@@ -166,11 +166,6 @@
+ 	throw BinderException("MySQL databases do not support creating pragma functions");
+ }
+ 
+-optional_ptr<CatalogEntry> MySQLSchemaEntry::CreateCollation(CatalogTransaction transaction,
+-                                                             CreateCollationInfo &info) {
+-	throw BinderException("MySQL databases do not support creating collations");
+-}
+-
+ void MySQLSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
+ 	if (info.type != AlterType::ALTER_TABLE) {
+ 		throw BinderException("Only altering tables is supported for now");
+--- a/src/include/storage/mysql_schema_entry.hpp
++++ b/src/include/storage/mysql_schema_entry.hpp
+@@ -38,7 +38,6 @@
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+ 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
