@@ -51,11 +51,7 @@ CompiledGrammar &Parser::GetGrammar() {
 	return *compiled_grammar;
 }
 
-static bool ReplaceUnicodeSpaces(const string &query, string &new_query, vector<UnicodeSpace> &unicode_spaces) {
-	if (unicode_spaces.empty()) {
-		// no unicode spaces found
-		return false;
-	}
+static void RewriteUnicodeSpaces(const string &query, string &new_query, const vector<UnicodeSpace> &unicode_spaces) {
 	idx_t prev = 0;
 	for (auto &usp : unicode_spaces) {
 		new_query += query.substr(prev, usp.pos - prev);
@@ -64,18 +60,59 @@ static bool ReplaceUnicodeSpaces(const string &query, string &new_query, vector<
 		prev = usp.pos + usp.bytes;
 	}
 	new_query += query.substr(prev, query.size() - prev);
-	return true;
 }
 
-static bool IsValidDollarQuotedStringTagFirstChar(const unsigned char &c) {
-	// the first character can be between A-Z, a-z, underscore, or \200 - \377
-	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c >= 0x80;
+//! The byte length of the Unicode space character that starts at `pos`, or 0 when none starts there.
+//! See https://jkorpela.fi/chars/spaces.html for a list of Unicode space characters.
+static idx_t UnicodeSpaceLength(const string &query, idx_t pos) {
+	auto remaining = query.size() - pos;
+	auto bytes = const_uchar_ptr_cast(query.c_str()) + pos;
+	if (remaining >= 2 && bytes[0] == 0xC2 && bytes[1] == 0xA0) {
+		// U+00A0
+		return 2;
+	}
+	if (remaining < 3) {
+		return 0;
+	}
+	if (bytes[0] == 0xE2 && bytes[1] == 0x80 && ((bytes[2] >= 0x80 && bytes[2] <= 0x8B) || bytes[2] == 0xAF)) {
+		// U+2000 to U+200B, U+202F
+		return 3;
+	}
+	if (bytes[0] == 0xE2 && bytes[1] == 0x81 && (bytes[2] == 0x9F || bytes[2] == 0xA0)) {
+		// U+205F, U+2060
+		return 3;
+	}
+	if (bytes[0] == 0xE3 && bytes[1] == 0x80 && bytes[2] == 0x80) {
+		// U+3000
+		return 3;
+	}
+	if (bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) {
+		// U+FEFF
+		return 3;
+	}
+	return 0;
 }
 
-static bool IsValidDollarQuotedStringTagSubsequentChar(const unsigned char &c) {
-	// subsequent characters can also be between 0-9
-	return IsValidDollarQuotedStringTagFirstChar(c) || (c >= '0' && c <= '9');
-}
+class TokenRangeTokenizerBehavior : public TokenizerBehavior {
+public:
+	using TokenizerBehavior::TokenizerBehavior;
+
+	void PushToken(idx_t start, idx_t end, TokenType type, bool unterminated = false) override {
+		AddRange(start, end);
+	}
+	void OnLastToken(const Tokenizer &tokenizer, TokenizeState state, string last_word, idx_t last_pos) override {
+		AddRange(last_pos, last_pos + last_word.size());
+	}
+
+	vector<pair<idx_t, idx_t>> ranges;
+
+private:
+	void AddRange(idx_t start, idx_t end) {
+		// The tokenizer scans left to right, so ranges arrive sorted and disjoint.
+		D_ASSERT(ranges.empty() || ranges.back().second <= start);
+		ranges.emplace_back(start, end);
+	}
+};
 
 //! Throw a ParserException if `query` contains invalid UTF-8, so the tokenizer never reads past
 //! bad bytes (a bad-byte query can otherwise recurse the tokenizer — see ossfuzz clusterfuzz-test-24).
@@ -92,116 +129,46 @@ static UnicodeType ValidateUTF8Query(const string &query) {
 	                                   optional_idx(NumericCast<idx_t>(invalid_pos)));
 }
 
-// This function strips unicode space characters from the query and replaces them with regular spaces
-// It returns true if any unicode space characters were found and stripped
-// See here for a list of unicode space characters - https://jkorpela.fi/chars/spaces.html
 bool Parser::StripUnicodeSpaces(const string &query_str, string &new_query) {
-	const idx_t NBSP_LEN = 2;
-	const idx_t USP_LEN = 3;
-	idx_t pos = 0;
-	unsigned char quote;
-	string_t dollar_quote_tag;
 	vector<UnicodeSpace> unicode_spaces;
-	auto query = const_uchar_ptr_cast(query_str.c_str());
-	auto qsize = query_str.size();
-
-regular:
-	for (; pos + 2 < qsize; pos++) {
-		if (query[pos] == 0xC2) {
-			if (query[pos + 1] == 0xA0) {
-				// U+00A0 - C2A0
-				unicode_spaces.emplace_back(pos, NBSP_LEN);
-			}
-		}
-		if (query[pos] == 0xE2) {
-			if (query[pos + 1] == 0x80) {
-				if (query[pos + 2] >= 0x80 && query[pos + 2] <= 0x8B) {
-					// U+2000 to U+200B
-					// E28080 - E2808B
-					unicode_spaces.emplace_back(pos, USP_LEN);
-				} else if (query[pos + 2] == 0xAF) {
-					// U+202F - E280AF
-					unicode_spaces.emplace_back(pos, USP_LEN);
-				}
-			} else if (query[pos + 1] == 0x81) {
-				if (query[pos + 2] == 0x9F) {
-					// U+205F - E2819f
-					unicode_spaces.emplace_back(pos, USP_LEN);
-				} else if (query[pos + 2] == 0xA0) {
-					// U+2060 - E281A0
-					unicode_spaces.emplace_back(pos, USP_LEN);
-				}
-			}
-		} else if (query[pos] == 0xE3) {
-			if (query[pos + 1] == 0x80 && query[pos + 2] == 0x80) {
-				// U+3000 - E38080
-				unicode_spaces.emplace_back(pos, USP_LEN);
-			}
-		} else if (query[pos] == 0xEF) {
-			if (query[pos + 1] == 0xBB && query[pos + 2] == 0xBF) {
-				// U+FEFF - EFBBBF
-				unicode_spaces.emplace_back(pos, USP_LEN);
-			}
-		} else if (query[pos] == '"' || query[pos] == '\'') {
-			quote = query[pos];
+	for (idx_t pos = 0; pos < query_str.size();) {
+		auto length = UnicodeSpaceLength(query_str, pos);
+		if (length == 0) {
 			pos++;
-			goto in_quotes;
-		} else if (query[pos] == '$' &&
-		           (query[pos + 1] == '$' || IsValidDollarQuotedStringTagFirstChar(query[pos + 1]))) {
-			// (optionally tagged) dollar-quoted string
-			auto start = &query[++pos];
-			for (; pos + 2 < qsize; pos++) {
-				if (query[pos] == '$') {
-					// end of tag
-					dollar_quote_tag =
-					    string_t(const_char_ptr_cast(start), NumericCast<uint32_t, int64_t>(&query[pos] - start));
-					goto in_dollar_quotes;
-				}
+			continue;
+		}
+		unicode_spaces.emplace_back(pos, length);
+		pos += length;
+	}
+	if (unicode_spaces.empty()) {
+		return false;
+	}
+	// The tokenizer reads a Unicode space as part of a word, so it finds the token boundaries the parser will see
+	// only once every Unicode space is rewritten.
+	string candidate;
+	RewriteUnicodeSpaces(query_str, candidate, unicode_spaces);
+	vector<MatcherToken> tokens;
+	TokenRangeTokenizerBehavior behavior(candidate, tokens);
+	Tokenizer tokenizer(DuckDBKeywordHelper::Instance());
+	tokenizer.TokenizeInput(behavior);
 
-				if (!IsValidDollarQuotedStringTagSubsequentChar(query[pos])) {
-					// invalid char in dollar-quoted string, continue as normal
-					goto regular;
-				}
-			}
-			goto end;
-		} else if (query[pos] == '-' && query[pos + 1] == '-') {
-			goto in_comment;
+	vector<UnicodeSpace> between_tokens;
+	auto &ranges = behavior.ranges;
+	idx_t range_idx = 0;
+	for (auto &usp : unicode_spaces) {
+		while (range_idx < ranges.size() && ranges[range_idx].second <= usp.pos) {
+			range_idx++;
 		}
-	}
-	goto end;
-in_quotes:
-	for (; pos + 1 < qsize; pos++) {
-		if (query[pos] == quote) {
-			if (query[pos + 1] == quote) {
-				// escaped quote
-				pos++;
-				continue;
-			}
-			pos++;
-			goto regular;
+		if (range_idx < ranges.size() && ranges[range_idx].first <= usp.pos) {
+			continue;
 		}
+		between_tokens.push_back(usp);
 	}
-	goto end;
-in_dollar_quotes:
-	for (; pos + 2 < qsize; pos++) {
-		if (query[pos] == '$' &&
-		    qsize - (pos + 1) >= dollar_quote_tag.GetSize() + 1 && // found '$' and enough space left
-		    query[pos + dollar_quote_tag.GetSize() + 1] == '$' &&  // ending '$' at the right spot
-		    memcmp(&query[pos + 1], dollar_quote_tag.GetData(), dollar_quote_tag.GetSize()) == 0) { // tags match
-			pos += dollar_quote_tag.GetSize() + 1;
-			goto regular;
-		}
+	if (between_tokens.empty()) {
+		return false;
 	}
-	goto end;
-in_comment:
-	for (; pos < qsize; pos++) {
-		if (query[pos] == '\n' || query[pos] == '\r') {
-			goto regular;
-		}
-	}
-	goto end;
-end:
-	return ReplaceUnicodeSpaces(query_str, new_query, unicode_spaces);
+	RewriteUnicodeSpaces(query_str, new_query, between_tokens);
+	return true;
 }
 
 // vector<string> SplitQueries(const string &input_query) {
