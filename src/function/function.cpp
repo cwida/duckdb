@@ -141,10 +141,11 @@ optional_ptr<const Value> FunctionProperties::GetProperty(const string &name) co
 
 bool FunctionProperties::GetBooleanProperty(const string &name) const {
 	auto value = GetProperty(name);
-	if (!value || value->IsNull()) {
+	// only a BOOLEAN value is a flag - anything else reads as false rather than failing every lookup
+	if (!value || value->IsNull() || value->type().id() != LogicalTypeId::BOOLEAN) {
 		return false;
 	}
-	return BooleanValue::Get(value->DefaultCastAs(LogicalType::BOOLEAN));
+	return BooleanValue::Get(*value);
 }
 
 bool FunctionProperties::operator!=(const FunctionProperties &rhs) const {

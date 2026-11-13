@@ -177,8 +177,8 @@ void SetGenericFunctionProperty(FunctionProperties &props, const char *name, idx
 	props.SetProperty(GenericPropertyName(name, name_length), value);
 }
 
-auto GetGenericFunctionProperty(const FunctionProperties &props, const char *name,
-                                idx_t name_length) -> duckdb_v2_value_handle {
+auto GetGenericFunctionProperty(const FunctionProperties &props, const char *name, idx_t name_length)
+    -> duckdb_v2_value_handle {
 	auto value = props.GetProperty(GenericPropertyName(name, name_length));
 	if (!value) {
 		return nullptr;

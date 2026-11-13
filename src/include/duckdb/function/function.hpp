@@ -595,7 +595,7 @@ public:
 	DUCKDB_API void SetProperty(const string &name, Value value);
 	//! Returns the value of a generic property, or nullptr if it is not set
 	DUCKDB_API optional_ptr<const Value> GetProperty(const string &name) const;
-	//! Returns whether a generic boolean property is set to true, an absent property is false
+	//! Returns whether a generic property is the BOOLEAN true; an absent or non-BOOLEAN property is false
 	DUCKDB_API bool GetBooleanProperty(const string &name) const;
 	auto GetGenericProperties() const -> const unordered_map<string, Value> & {
 		return generic_properties;

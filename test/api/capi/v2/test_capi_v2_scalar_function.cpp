@@ -1025,7 +1025,19 @@ TEST_CASE("V2 scalar: collations are combinable through a generic property", "[c
 	function = MakeVarcharIdentity(fx.conn, "collate_capi_plain", varchar);
 	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_scalar_function_destroy(&function);
+
+	// a property value that is not a BOOLEAN does not make a collation combinable, and does not break it
+	function = MakeVarcharIdentity(fx.conn, "collate_capi_text", varchar);
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, "hello", 5, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
 	duckdb_v2_logical_type_destroy(&varchar);
+	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_text = 'A')::INTEGER") == 1);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE nfc.capi_text = 'A'") == DUCKDB_V2_ERROR_QUERY_BINDER);
 
 	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_plain = 'A')::INTEGER") == 1);
 	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE nocase.capi_plain = 'a')::INTEGER") == 1);
