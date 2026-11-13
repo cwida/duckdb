@@ -37,8 +37,10 @@ public:
 	                                             Value value);
 
 private:
-	//! Returns the rewrite rules, constructing them on first access
+	//! Returns the custom rules if any were added, otherwise the default rules shared by the client context
 	const vector<unique_ptr<Rule>> &GetRules();
+	//! Creates the default rules, which only use the rewriter to reach its client context
+	static vector<unique_ptr<Rule>> CreateDefaultRules(ExpressionRewriter &rewriter);
 
 	//! Apply a set of rules to a specific expression
 	static unique_ptr<Expression> ApplyRules(LogicalOperator &op, const vector<reference<Rule>> &rules,
