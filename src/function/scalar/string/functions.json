@@ -182,6 +182,12 @@
         "name": "octet_length",
         "variants": [
             {
+                "parameters": [{"name": "string", "type": "VARCHAR"}],
+                "description": "Number of bytes in a `string`.",
+                "example": "octet_length('abc')",
+                "categories": ["string"]
+            },
+            {
                 "parameters": [
                     {"name": "blob", "type": "BLOB"}
                 ],

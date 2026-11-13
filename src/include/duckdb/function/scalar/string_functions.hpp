@@ -211,10 +211,10 @@ struct BitLengthFun {
 
 struct OctetLengthFun {
 	static constexpr const char *Name = "octet_length";
-	static constexpr const char *Parameters = "blob::BLOB\001bitstring::BIT";
-	static constexpr const char *Description = "Number of bytes in `blob`.\001Returns the number of bytes in the `bitstring`.";
-	static constexpr const char *Example = "octet_length('\\xAA\\xBB'::BLOB)\001octet_length('1101011'::BITSTRING)";
-	static constexpr const char *Categories = "blob\001bitstring";
+	static constexpr const char *Parameters = "string::VARCHAR\001blob::BLOB\001bitstring::BIT";
+	static constexpr const char *Description = "Number of bytes in a `string`.\001Number of bytes in `blob`.\001Returns the number of bytes in the `bitstring`.";
+	static constexpr const char *Example = "octet_length('abc')\001octet_length('\\xAA\\xBB'::BLOB)\001octet_length('1101011'::BITSTRING)";
+	static constexpr const char *Categories = "string\001blob\001bitstring";
 
 	static ScalarFunctionSet GetFunctions();
 };

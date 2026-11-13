@@ -1,0 +1,64 @@
+# name: test/sql/function/string/test_octet_length.test
+# description: OCTET_LENGTH test
+# group: [string]
+
+# test on scalars
+query IIIIII
+select OCTET_LENGTH(NULL::VARCHAR), OCTET_LENGTH(''), OCTET_LENGTH('$'), OCTET_LENGTH('¢'), OCTET_LENGTH('€'), OCTET_LENGTH('𐍈')
+----
+NULL	0	1	2	3	4
+
+# matches strlen
+query II
+select OCTET_LENGTH('héllo'), STRLEN('héllo')
+----
+6	6
+
+# test on tables
+statement ok
+CREATE TABLE strings(a STRING, b STRING)
+
+statement ok
+INSERT INTO strings VALUES ('', 'Zero'), ('$', NULL), ('¢','Two'), ('€', NULL), ('𐍈','Four')
+
+query I
+select OCTET_LENGTH(a) FROM strings
+----
+0
+1
+2
+3
+4
+
+query I
+select OCTET_LENGTH(b) FROM strings
+----
+4
+NULL
+3
+NULL
+4
+
+query I
+select OCTET_LENGTH(a) FROM strings WHERE b IS NOT NULL
+----
+0
+2
+4
+
+# BLOB and BIT overloads
+query III
+select OCTET_LENGTH('\xAA\xBB'::BLOB), OCTET_LENGTH('1101011'::BITSTRING), OCTET_LENGTH(NULL::BLOB)
+----
+2	1	NULL
+
+# test incorrect usage
+statement error
+select OCTET_LENGTH()
+----
+No function matches
+
+statement error
+select OCTET_LENGTH(1, 2)
+----
+No function matches
