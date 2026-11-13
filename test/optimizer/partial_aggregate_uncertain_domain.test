@@ -20,40 +20,29 @@ statement ok
 CREATE TABLE small_native AS SELECT i % 10 AS k FROM range(100) t(i)
 
 statement ok
-CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
+CREATE TABLE arms_native AS SELECT i % 50 AS k, i % 50 AS g FROM range(500) t(i)
+
+statement ok
+CREATE TABLE large_native AS SELECT i % 50 AS k, i AS tag FROM range(50000) t(i)
+
+statement ok
+CREATE TABLE moderate_native AS SELECT i % 50 AS k FROM range(400) t(i)
+
+statement ok
+CREATE TABLE low_native AS SELECT i % 50 AS k FROM range(100) t(i)
 
 statement ok
 ANALYZE
 
-statement ok
-COPY unique_native TO '{TEST_DIR}/pap_unique.parquet' (FORMAT PARQUET)
+foreach name unique repeated asymmetric small arms large moderate low
 
 statement ok
-COPY repeated_native TO '{TEST_DIR}/pap_repeated.parquet' (FORMAT PARQUET)
+COPY {name}_native TO '{TEST_DIR}/pap_{name}.parquet' (FORMAT PARQUET)
 
 statement ok
-COPY asymmetric_native TO '{TEST_DIR}/pap_asymmetric.parquet' (FORMAT PARQUET)
+CREATE VIEW {name}_parquet AS FROM read_parquet('{TEST_DIR}/pap_{name}.parquet')
 
-statement ok
-COPY small_native TO '{TEST_DIR}/pap_small.parquet' (FORMAT PARQUET)
-
-statement ok
-COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
-
-statement ok
-CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
-
-statement ok
-CREATE VIEW repeated_parquet AS FROM read_parquet('{TEST_DIR}/pap_repeated.parquet')
-
-statement ok
-CREATE VIEW asymmetric_parquet AS FROM read_parquet('{TEST_DIR}/pap_asymmetric.parquet')
-
-statement ok
-CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
-
-statement ok
-CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
+endloop
 
 foreach storage native parquet
 
@@ -103,7 +92,7 @@ SELECT sum(n), sum(s) FROM (
 ----
 35000	124975000000.0
 
-# Reduction on one input still avoids expanding the other input.
+# Extra grouping columns retain every row on one input.
 query II
 SELECT count(*), sum(n) FROM (
 	SELECT a.tag, count(*) AS n
@@ -112,6 +101,26 @@ SELECT count(*), sum(n) FROM (
 )
 ----
 5000	500000
+
+# A small grouped partner can reduce join work even with a large unchanged grouping set.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.tag, count(*) AS n
+	FROM large_{storage} a JOIN moderate_{storage} b USING (k)
+	GROUP BY a.tag
+)
+----
+50000	400000
+
+# Low fanout does not pay for aggregating the unchanged input.
+query II
+SELECT count(*), sum(n) FROM (
+	SELECT a.tag, count(*) AS n
+	FROM large_{storage} a JOIN low_{storage} b USING (k)
+	GROUP BY a.tag
+)
+----
+50000	100000
 
 # Group columns on both inputs must be included in the estimated reduction.
 query II
@@ -158,19 +167,19 @@ SELECT count(*), sum(n) FROM (
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000
+2500	265000
 
 query III
 WITH v AS MATERIALIZED (SELECT * FROM union_{storage})
 SELECT count(*), sum(n), count(*) FILTER (
-	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 5000*(ag=0 AND bg=0)::INTEGER
 ) FROM (
 	SELECT a.g ag, b.g bg, count(*) n
 	FROM v a JOIN v b USING (k)
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000	0
+2500	265000	0
 
 query III
 WITH v AS MATERIALIZED (
@@ -178,13 +187,13 @@ WITH v AS MATERIALIZED (
 	SELECT key AS k, label AS g FROM x
 )
 SELECT count(*), sum(n), count(*) FILTER (
-	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 50000*(ag=0 AND bg=0)::INTEGER
+	WHERE n <> 100 + 100*(ag=0)::INTEGER + 100*(bg=0)::INTEGER + 5000*(ag=0 AND bg=0)::INTEGER
 ) FROM (
 	SELECT a.g ag, b.g bg, count(*) n
 	FROM v a JOIN v b USING (k)
 	GROUP BY a.g, b.g
 )
 ----
-250000	25150000	0
+2500	265000	0
 
 endloop

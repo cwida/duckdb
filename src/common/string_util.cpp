@@ -995,6 +995,17 @@ string StringUtil::ReplaceFileName(const string &file_path, const string &file_n
 	return file_path.substr(0, pos + 1) + file_name;
 }
 
+string StringUtil::GetURIAuthority(const string &str) {
+	auto scheme_end = str.find("://");
+	bool has_uri_scheme = scheme_end != string::npos && scheme_end > 0 && str.find_first_of("/\\") == scheme_end + 1;
+	if (!has_uri_scheme) {
+		return {};
+	}
+	auto authority_start = scheme_end + 3;
+	auto authority_end = str.find_first_of("/\\?#", authority_start);
+	return str.substr(authority_start, authority_end == string::npos ? string::npos : authority_end - authority_start);
+}
+
 struct URLEncodeLength {
 	using RESULT_TYPE = idx_t;
 

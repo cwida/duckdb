@@ -76,7 +76,7 @@ void FieldID::GenerateFieldIDs(ChildFieldIDs &field_ids, idx_t &field_id, const 
 	}
 }
 
-void FieldID::GetFieldIDs(const Value &field_ids_value, ChildFieldIDs &field_ids,
+void FieldID::GetFieldIDs(Context &context, const Value &field_ids_value, ChildFieldIDs &field_ids,
                           unordered_set<uint32_t> &unique_field_ids,
                           const case_insensitive_map_t<LogicalType> &name_to_type_map) {
 	const auto &struct_type = field_ids_value.type();
@@ -132,7 +132,7 @@ void FieldID::GetFieldIDs(const Value &field_ids_value, ChildFieldIDs &field_ids
 
 		FieldID field_id;
 		if (field_id_value) {
-			Value field_id_integer_value = field_id_value->DefaultCastAs(LogicalType::INTEGER);
+			Value field_id_integer_value = field_id_value->CastAs(context, LogicalType::INTEGER);
 			if (field_id_integer_value.IsNull() || IntegerValue::Get(field_id_integer_value) < 0) {
 				throw BinderException("Invalid field_id %s found in FIELD_IDS: field ids must be non-negative integers",
 				                      field_id_value->ToString());
@@ -154,7 +154,7 @@ void FieldID::GetFieldIDs(const Value &field_ids_value, ChildFieldIDs &field_ids
 				                      col_name, LogicalTypeIdToString(col_type.id()));
 			}
 
-			GetFieldIDs(*child_field_ids_value, inserted.first->second.child_field_ids, unique_field_ids,
+			GetFieldIDs(context, *child_field_ids_value, inserted.first->second.child_field_ids, unique_field_ids,
 			            GetChildNameToTypeMap(col_type));
 		}
 	}

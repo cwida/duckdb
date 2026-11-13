@@ -442,7 +442,7 @@ class MemberVariable:
             self.deserialize_default = entry["deserialize_default"]
         if "status" in entry:
             self.status = parse_status(entry["status"])
-        if self.default is None:
+        if self.default is None and self.deserialize_default is None:
             # default default
             self.has_default = has_default_by_default(self.type)
         if "required_until" in entry:

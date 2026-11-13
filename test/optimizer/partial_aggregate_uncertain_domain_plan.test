@@ -10,7 +10,7 @@ SELECT i::VARCHAR AS k, i % 7 AS g, i AS m FROM range(5000) t(i)
 
 statement ok
 CREATE TABLE repeated_native AS
-SELECT i % 50 AS k, i % 7 AS g, i AS tag FROM range(5000) t(i)
+SELECT i % 50 AS k, i % 17 AS g, i AS tag FROM range(5000) t(i)
 
 statement ok
 CREATE TABLE asymmetric_native AS
@@ -23,37 +23,26 @@ statement ok
 CREATE TABLE arms_native AS SELECT i % 500 AS k, i % 500 AS g FROM range(5000) t(i)
 
 statement ok
+CREATE TABLE large_native AS SELECT i % 50 AS k, i AS tag FROM range(50000) t(i)
+
+statement ok
+CREATE TABLE moderate_native AS SELECT i % 50 AS k FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE low_native AS SELECT i % 50 AS k FROM range(100) t(i)
+
+statement ok
 ANALYZE
 
-statement ok
-COPY unique_native TO '{TEST_DIR}/pap_unique.parquet' (FORMAT PARQUET)
+foreach name unique repeated asymmetric small arms large moderate low
 
 statement ok
-COPY repeated_native TO '{TEST_DIR}/pap_repeated.parquet' (FORMAT PARQUET)
+COPY {name}_native TO '{TEST_DIR}/pap_{name}.parquet' (FORMAT PARQUET)
 
 statement ok
-COPY asymmetric_native TO '{TEST_DIR}/pap_asymmetric.parquet' (FORMAT PARQUET)
+CREATE VIEW {name}_parquet AS FROM read_parquet('{TEST_DIR}/pap_{name}.parquet')
 
-statement ok
-COPY small_native TO '{TEST_DIR}/pap_small.parquet' (FORMAT PARQUET)
-
-statement ok
-COPY arms_native TO '{TEST_DIR}/pap_arms.parquet' (FORMAT PARQUET)
-
-statement ok
-CREATE VIEW unique_parquet AS FROM read_parquet('{TEST_DIR}/pap_unique.parquet')
-
-statement ok
-CREATE VIEW repeated_parquet AS FROM read_parquet('{TEST_DIR}/pap_repeated.parquet')
-
-statement ok
-CREATE VIEW asymmetric_parquet AS FROM read_parquet('{TEST_DIR}/pap_asymmetric.parquet')
-
-statement ok
-CREATE VIEW small_parquet AS FROM read_parquet('{TEST_DIR}/pap_small.parquet')
-
-statement ok
-CREATE VIEW arms_parquet AS FROM read_parquet('{TEST_DIR}/pap_arms.parquet')
+endloop
 
 foreach storage native parquet
 
@@ -72,6 +61,22 @@ FROM repeated_{storage} a JOIN repeated_{storage} b USING (k)
 GROUP BY a.g
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, count(*)
+FROM large_{storage} a JOIN moderate_{storage} b USING (k)
+GROUP BY a.tag
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN
+SELECT a.tag, count(*)
+FROM large_{storage} a JOIN low_{storage} b USING (k)
+GROUP BY a.tag
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
 
 query II
 EXPLAIN

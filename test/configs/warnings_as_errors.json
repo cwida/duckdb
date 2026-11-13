@@ -9,6 +9,7 @@
         "test/logging/warnings_as_errors.test",
         "test/sql/attach/attach_ducklake_metadata_warning.test",
         "test/sql/attach/external_resource_show_subquery.test",
+        "test/sql/logging/logging_deprecated_names.test",
         "test/sql/pragma/test_show_tables.test",
         "test/sql/settings/pragma_assignment_deprecated.test",
         "test/sql/settings/setting_null_order.test",

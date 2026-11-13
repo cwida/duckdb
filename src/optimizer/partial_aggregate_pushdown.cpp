@@ -25,8 +25,7 @@
 
 namespace duckdb {
 
-PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p, unique_ptr<LogicalOperator> &plan_p)
-    : optimizer(optimizer_p), plan(plan_p) {
+PartialAggregatePushdown::PartialAggregatePushdown(Optimizer &optimizer_p) : optimizer(optimizer_p) {
 }
 
 //===--------------------------------------------------------------------===//
@@ -672,40 +671,39 @@ struct DoubleEagerHeuristics {
 	static constexpr idx_t MIN_LARGE_COLLAPSE = 8;
 };
 
-static bool DEHasSufficientCollapse(idx_t cardinality, idx_t group_count) {
-	const auto min_collapse = group_count <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT
-	                              ? DoubleEagerHeuristics::MIN_SMALL_COLLAPSE
-	                              : DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
-	return cardinality > 0 && cardinality / min_collapse >= group_count;
+static idx_t DERequiredCollapse(idx_t group_count) {
+	return group_count <= DoubleEagerHeuristics::MAX_SMALL_GROUP_COUNT ? DoubleEagerHeuristics::MIN_SMALL_COLLAPSE
+	                                                                   : DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
 }
 
-static optional_ptr<LogicalOperator> DEFindCTEDefinition(LogicalOperator &op, TableIndex index) {
-	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE &&
-	    op.Cast<LogicalMaterializedCTE>().table_index == index) {
-		return op.children[0].get();
-	}
-	for (auto &child : op.children) {
-		auto definition = DEFindCTEDefinition(*child, index);
-		if (definition) {
-			return definition;
-		}
-	}
-	return nullptr;
-}
-
-static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, LogicalComparisonJoin &join,
+static bool DEEstimateCollapse(RelationStatsExtractor &extractor, LogicalComparisonJoin &join,
                                const DoubleEagerSide (&sides)[2], idx_t (&lower_cardinalities)[2],
                                idx_t &join_cardinality) {
 	if (!join.has_estimated_cardinality) {
 		return false;
 	}
-	RelationStatsExtractor extractor(context, [&](TableIndex index) { return DEFindCTEDefinition(root, index); });
-	// One side can reduce join work even when the other retains every group.
-	bool sufficient_collapse = false;
+	// Reject selective joins before extracting their input statistics.
+	for (auto &child : join.children) {
+		if (child->has_estimated_cardinality &&
+		    static_cast<double>(join.estimated_cardinality) < PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION *
+		                                                          static_cast<double>(child->estimated_cardinality)) {
+			return false;
+		}
+	}
 	double retained_fraction = 1;
+	double input_cardinality = 0;
+	idx_t work_margin = DoubleEagerHeuristics::MIN_LARGE_COLLAPSE;
+	bool both_inputs_collapse = true;
 	for (idx_t side = 0; side < 2; side++) {
 		auto stats = extractor.Extract(*join.children[side]);
 		if (!stats) {
+			return false;
+		}
+		const auto cardinality = stats->cardinality;
+		const auto join_retains_rows =
+		    static_cast<double>(join.estimated_cardinality) >=
+		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
+		if (!join_retains_rows || cardinality == 0) {
 			return false;
 		}
 		vector<idx_t> groups;
@@ -716,22 +714,29 @@ static bool DEEstimateCollapse(ClientContext &context, LogicalOperator &root, Lo
 			}
 			groups.push_back(column.GetIndex());
 		}
-		const auto cardinality = stats->cardinality;
 		lower_cardinalities[side] = RelationStatisticsHelper::EstimateGroupCardinality(*join.children[side], *stats,
 		                                                                               std::move(groups), extractor);
-		const auto join_retains_rows =
-		    static_cast<double>(join.estimated_cardinality) >=
-		    PartialAggregatePushdownHeuristics::MIN_JOIN_RETENTION * static_cast<double>(cardinality);
-		sufficient_collapse |= join_retains_rows && DEHasSufficientCollapse(cardinality, lower_cardinalities[side]);
-		retained_fraction *=
-		    static_cast<double>(lower_cardinalities[side]) / static_cast<double>(MaxValue<idx_t>(cardinality, 1));
+		const auto min_collapse = DERequiredCollapse(lower_cardinalities[side]);
+		const auto input_collapses = cardinality / min_collapse >= lower_cardinalities[side];
+		both_inputs_collapse &= input_collapses;
+		if (input_collapses) {
+			work_margin = MinValue(work_margin, min_collapse);
+		}
+		input_cardinality += static_cast<double>(cardinality);
+		retained_fraction *= static_cast<double>(lower_cardinalities[side]) / static_cast<double>(cardinality);
 	}
 	// Scale the join estimate by grouping reduction without interpreting its selectivity as an NDV.
 	const auto cross_product =
 	    static_cast<double>(lower_cardinalities[0]) * static_cast<double>(lower_cardinalities[1]);
 	join_cardinality = RelationStatisticsHelper::CardinalityFromDouble(
 	    MinValue(cross_product, static_cast<double>(join.estimated_cardinality) * retained_fraction));
-	return sufficient_collapse;
+	// Uneven collapse must save enough join output work to pay for aggregating both inputs.
+	if (!both_inputs_collapse &&
+	    static_cast<double>(join.estimated_cardinality) <
+	        static_cast<double>(work_margin) * (input_cardinality + static_cast<double>(join_cardinality))) {
+		return false;
+	}
+	return true;
 }
 
 static bool DECanRepeatAggregateState(const BoundAggregateExpression &aggr) {
@@ -812,16 +817,21 @@ static bool DEValidateGroups(const LogicalAggregate &aggr, const unordered_set<T
 	return true;
 }
 
-static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr,
-                              vector<DoubleEagerAggregate> &aggregates,
-                              const unordered_set<TableIndex> (&side_bindings)[2],
-                              const vector<ColumnBinding> (&join_keys)[2],
-                              const vector<LogicalType> (&join_key_types)[2], DoubleEagerSide (&sides)[2]) {
+static void DECollectLowerGroups(Optimizer &optimizer, const LogicalAggregate &aggr,
+                                 const unordered_set<TableIndex> (&side_bindings)[2],
+                                 const vector<ColumnBinding> (&join_keys)[2],
+                                 const vector<LogicalType> (&join_key_types)[2], DoubleEagerSide (&sides)[2]) {
 	for (idx_t s = 0; s < 2; s++) {
 		sides[s].group_index = optimizer.binder.GenerateTableIndex();
-		sides[s].aggregate_index = optimizer.binder.GenerateTableIndex();
 		CollectLowerSideGroups(sides[s].group_index, join_keys[s], join_key_types[s], aggr.groups, s, side_bindings,
 		                       sides[s].groups, sides[s].group_map, sides[s].group_types);
+	}
+}
+
+static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr,
+                              vector<DoubleEagerAggregate> &aggregates, DoubleEagerSide (&sides)[2]) {
+	for (idx_t s = 0; s < 2; s++) {
+		sides[s].aggregate_index = optimizer.binder.GenerateTableIndex();
 		auto count_star = DEBindAggregate(optimizer.context, "count_star", {});
 		if (!count_star) {
 			return false;
@@ -970,18 +980,22 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	if (!DECollectJoinKeys(join, side_bindings, join_keys, join_key_types) || !DEValidateGroups(aggr, side_bindings)) {
 		return false;
 	}
-	if (AggregateArgumentsCanThrow(optimizer, op)) {
-		return false;
-	}
-
 	DoubleEagerSide sides[2];
-	if (!DEBuildLowerSides(optimizer, aggr, aggregates, side_bindings, join_keys, join_key_types, sides)) {
-		return false;
-	}
+	DECollectLowerGroups(optimizer, aggr, side_bindings, join_keys, join_key_types, sides);
 
 	idx_t lower_cardinalities[2];
 	idx_t join_cardinality;
-	if (!DEEstimateCollapse(optimizer.context, *plan, join, sides, lower_cardinalities, join_cardinality)) {
+	RelationStatsExtractor extractor(optimizer.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		auto entry = cte_definitions.find(index.index);
+		if (entry == cte_definitions.end()) {
+			return nullptr;
+		}
+		return entry->second.get().children[0].get();
+	});
+	if (!DEEstimateCollapse(extractor, join, sides, lower_cardinalities, join_cardinality)) {
+		return false;
+	}
+	if (AggregateArgumentsCanThrow(optimizer, op) || !DEBuildLowerSides(optimizer, aggr, aggregates, sides)) {
 		return false;
 	}
 
@@ -1225,6 +1239,10 @@ bool PartialAggregatePushdown::FuseInterveningProjections(LogicalOperator &op) {
 }
 
 void PartialAggregatePushdown::VisitOperator(unique_ptr<LogicalOperator> &op) {
+	if (op->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		auto &cte = op->Cast<LogicalMaterializedCTE>();
+		cte_definitions.emplace(cte.table_index.index, cte);
+	}
 	LogicalOperatorVisitor::VisitOperator(op);
 	FuseInterveningProjections(*op);
 	if (TryDoubleEagerPushdown(op) || TryOwnerOuterCountPushdown(op) || TryPushdownAggregate(op)) {

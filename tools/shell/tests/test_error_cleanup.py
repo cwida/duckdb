@@ -312,7 +312,7 @@ def test_database_shutdown_keeps_output_open(shell, tmp_path, exit_code):
     database = tmp_path / "shutdown_logging.duckdb"
     output = tmp_path / "shutdown.log"
     setup = (
-        "CALL enable_logging(level='TRACE', storage='shell_log_storage');"
+        "CALL enable_logging(level='TRACE', storage='shell_log_sink');"
         "SET wal_autocheckpoint='1TB'; CREATE TABLE saved AS SELECT 42 AS value;"
     )
     result = run_shell(
