@@ -81,22 +81,8 @@ CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX '' USING PUB
 statement ok
 DROP EXTENSION REPOSITORY 'pointing.example'
 
-# A host reached over https needs httpfs: when it is not there, that is the error, not a missing file.
-statement ok
-SET autoload_known_extensions=false
-
-statement error
-CREATE EXTENSION REPOSITORY 'needs-httpfs.example'
-----
-<REGEX>:Missing Extension Error.*requires the httpfs extension.*INSTALL AND LOAD httpfs;.*
-
-statement error
-CREATE EXTENSION REPOSITORY byurl WITH PREFIX 'https://needs-httpfs.example/repo'
-----
-<REGEX>:Missing Extension Error.*requires the httpfs extension.*
-
-statement ok
-RESET autoload_known_extensions
+# A host reached over https needs httpfs: the error when it is not there is checked in
+# extension_repository_from_host_no_httpfs.test, which only runs where httpfs is neither loaded nor autoloadable.
 
 # Without a prefix the name must be a host on the public internet: two or more labels, letters-only last label, not
 # localhost. Anything else is refused before any network is touched; it can still be a repository WITH PREFIX.
