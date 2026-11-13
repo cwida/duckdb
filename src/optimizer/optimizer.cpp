@@ -36,6 +36,7 @@
 #include "duckdb/optimizer/scalar_aggregate_merger.hpp"
 #include "duckdb/optimizer/scalar_fn_pushdown.hpp"
 #include "duckdb/optimizer/self_join_aggregate.hpp"
+#include "duckdb/optimizer/semi_join_key_filter_transfer.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/optimizer/aggregate_function_rewriter.hpp"
 #include "duckdb/optimizer/aggregate_reuse.hpp"
@@ -261,6 +262,7 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = filter_pushdown.Rewrite(std::move(plan));
 	});
 
+	unordered_set<TableIndex> key_filtered_ctes;
 	if (!CTEContainsDML(*plan)) {
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
@@ -269,11 +271,20 @@ void Optimizer::RunBuiltInOptimizers() {
 
 		FilterStatisticsOptimizer filter_statistics(*this);
 		filter_statistics.Optimize(plan);
+
+		// copies the key predicates of the right side of a SEMI / MARK join onto a materialized CTE on its left
+		// side, so that the CTE filter pusher below restricts the CTE
+		RunOptimizer(OptimizerType::SEMI_JOIN_KEY_FILTER_TRANSFER, [&]() {
+			SemiJoinKeyFilterTransfer key_filter_transfer;
+			key_filter_transfer.Optimize(plan);
+			key_filtered_ctes = key_filter_transfer.FilteredCTEs();
+		});
 	}
 
 	// derive and push filters into materialized CTEs
 	RunOptimizer(OptimizerType::CTE_FILTER_PUSHER, [&]() {
 		CTEFilterPusher cte_filter_pusher(*this);
+		cte_filter_pusher.SetKeyFilteredCTEs(std::move(key_filtered_ctes));
 		plan = cte_filter_pusher.Optimize(std::move(plan));
 	});
 	CTEFilterPusher::ClearDependencies(*plan);

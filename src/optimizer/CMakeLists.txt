@@ -43,6 +43,7 @@ add_library_unity(
   in_clause_rewriter.cpp
   join_filter_pushdown_optimizer.cpp
   runtime_filter_cast.cpp
+  semi_join_key_filter_transfer.cpp
   late_materialization.cpp
   late_materialization_helper.cpp
   optimizer.cpp
