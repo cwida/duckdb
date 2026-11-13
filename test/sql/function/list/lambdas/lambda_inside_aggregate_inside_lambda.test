@@ -1,0 +1,147 @@
+# name: test/sql/function/list/lambdas/lambda_inside_aggregate_inside_lambda.test
+# description: A lambda function inside an aggregate inside a lambda is not passed the parameters of the enclosing lambda
+# group: [lambdas]
+
+# the aggregate is computed over the rows of the query, outside the enclosing lambda
+query I
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y))) AS r;
+----
+[[1]]
+
+query I
+SELECT list_filter([1], lambda x: min(list_transform([1], lambda y: y))[1] = 1) AS r;
+----
+[1]
+
+# the aggregate is computed once over the rows of the query
+query I
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y))) AS r FROM range(3);
+----
+[[1]]
+
+statement error
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y + x))) AS r;
+----
+aggregate functions cannot reference lambda parameters
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ([1, 2], 10, 100), ([3], 20, 200), ([0, 5, 6], 30, 300)) v(l, c, d);
+
+# the lambda inside the aggregate captures columns of the query
+query I
+SELECT list_transform([1, 2], lambda x: min(list_transform(l, lambda y: y + c))) FROM t;
+----
+[[11, 12], [11, 12]]
+
+query I
+SELECT list_transform([1], lambda x: max(list_transform(l, lambda y: y * d + c))) FROM t;
+----
+[[620]]
+
+# the enclosing lambda uses its parameter next to the aggregate
+query I
+SELECT list_transform([1, 2], lambda x: x + min(list_transform(l, lambda y: y + c))[1]) FROM t;
+----
+[12, 13]
+
+# two enclosing lambdas
+query I
+SELECT list_transform([1], lambda x: list_transform([2, 3], lambda z: z + min(list_transform(l, lambda y: y + c))[1])) FROM t;
+----
+[[13, 14]]
+
+# a lambda nested inside the aggregate's lambda still sees that lambda's parameter
+query I
+SELECT list_transform([1], lambda x: min(list_transform(l, lambda y: list_transform([1, 2], lambda z: z * y + c)))) FROM t;
+----
+[[[11, 12], [12, 14]]]
+
+query I
+SELECT list_transform([1], lambda x: min(list_transform(l, lambda y: y + c)) FILTER (WHERE d > 100)) FROM t;
+----
+[[23]]
+
+query I
+SELECT list_transform([1], lambda x: sum(list_reduce(list_filter(l, lambda y: y + c > 11), lambda a, b: a + b))) FROM t;
+----
+[16]
+
+query I
+SELECT list_filter([1, 2, 3], lambda x: x <= min(list_transform(l, lambda y: y + c))[2] / 10) FROM t;
+----
+[1]
+
+query II
+SELECT c % 20, list_transform([1], lambda x: max(list_transform(l, lambda y: y + d))) FROM t GROUP BY 1 ORDER BY 1;
+----
+0	[[203]]
+10	[[300, 305, 306]]
+
+# list_reduce with an initial value, with and without the index parameter
+query I
+SELECT list_transform([1, 2], lambda x: x + sum(list_reduce(l, lambda a, b: a + b, 1000))) FROM t;
+----
+[3018, 3019]
+
+query I
+SELECT list_transform([1], lambda x: sum(list_reduce(l, lambda a, b, i: a + b + i, 1000))) FROM t;
+----
+[3027]
+
+# index parameters on both lambdas
+query I
+SELECT list_transform([1, 2], lambda x, i: x + i + min(list_transform(l, lambda y, j: y + j + c))[1]) FROM t;
+----
+[14, 16]
+
+# two enclosing lambdas outside the aggregate and one inside it
+query I
+SELECT list_transform([1], lambda w: list_transform([2], lambda x: w + x + min(list_transform(l, lambda y: list_transform([3], lambda z: z + y + c)))[1][1])) FROM t;
+----
+[[17]]
+
+query I
+SELECT list_transform([1, 2], lambda x: x + count(DISTINCT list_transform(l, lambda y: y % 2))) FROM t;
+----
+[4, 5]
+
+query I
+SELECT list_transform([1], lambda x: string_agg(c, ',' ORDER BY list_transform(l, lambda y: -y)[1])) FROM t;
+----
+['20,10,30']
+
+query I
+SELECT list_transform([1, 2], lambda x: x + sum(c) FILTER (WHERE list_filter(l, lambda y: y > 2) != [])) FROM t;
+----
+[51, 52]
+
+statement ok
+PREPARE p AS SELECT list_transform([1, 2], lambda x: x + min(list_transform(l, lambda y: y + ?))[1]) FROM t;
+
+query I
+EXECUTE p(5);
+----
+[6, 7]
+
+query I
+EXECUTE p(7);
+----
+[8, 9]
+
+statement ok
+CREATE MACRO m_v(lst, v) AS list_transform([1], lambda x: min(list_transform(lst, lambda y: y + v)));
+
+query I
+SELECT m_v(l, c) FROM t;
+----
+[[11, 12]]
+
+statement error
+SELECT m_v(l, x) FROM t;
+----
+aggregate functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: min(list_transform(l, lambda y: y + max(c)))) FROM t;
+----
+aggregate function calls cannot be nested
