@@ -1,18 +1,18 @@
 #include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/logging/log_manager.hpp"
-#include "duckdb/logging/log_storage.hpp"
+#include "duckdb/logging/log_sink.hpp"
 
 namespace duckdb {
 
-class CallbackLogStorage : public LogStorage {
+class CallbackLogSink : public LogSink {
 public:
-	CallbackLogStorage(const string &name, duckdb_logger_write_log_entry_t write_log_entry_fun, void *extra_data,
-	                   duckdb_delete_callback_t delete_callback)
+	CallbackLogSink(const string &name, duckdb_logger_write_log_entry_t write_log_entry_fun, void *extra_data,
+	                duckdb_delete_callback_t delete_callback)
 	    : name(name), write_log_entry_fun(write_log_entry_fun), extra_data(extra_data),
 	      delete_callback(delete_callback) {
 	}
 
-	~CallbackLogStorage() override {
+	~CallbackLogSink() override {
 		if (!extra_data || !delete_callback) {
 			return;
 		}
@@ -38,7 +38,7 @@ public:
 		return true;
 	}
 
-	const string GetStorageName() override {
+	const string GetSinkName() override {
 		return name;
 	}
 
@@ -117,12 +117,12 @@ duckdb_state duckdb_register_log_storage(duckdb_database database, duckdb_log_st
 	}
 
 	const auto &db = *db_wrapper->database;
-	auto shared_storage_ptr = duckdb::make_shared_ptr<duckdb::CallbackLogStorage>(
+	auto shared_storage_ptr = duckdb::make_shared_ptr<duckdb::CallbackLogSink>(
 	    log_storage_wrapper->name, log_storage_wrapper->write_log_entry, log_storage_wrapper->extra_data,
 	    log_storage_wrapper->delete_callback);
-	duckdb::shared_ptr<duckdb::LogStorage> storage_ptr = shared_storage_ptr;
+	duckdb::shared_ptr<duckdb::LogSink> storage_ptr = shared_storage_ptr;
 
-	const auto success = db.instance->GetLogManager().RegisterLogStorage(log_storage_wrapper->name, storage_ptr);
+	const auto success = db.instance->GetLogManager().RegisterLogSink(log_storage_wrapper->name, storage_ptr);
 	if (!success) {
 		return DuckDBError;
 	}

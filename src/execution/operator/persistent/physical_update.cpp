@@ -24,13 +24,12 @@ PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> 
                                vector<unique_ptr<Expression>> expressions,
                                vector<unique_ptr<Expression>> bound_defaults,
                                vector<unique_ptr<BoundConstraint>> bound_constraints, idx_t estimated_cardinality,
-                               bool return_chunk, bool capture_old_rows, vector<idx_t> old_row_columns,
-                               RowIdHandling row_id_handling)
+                               bool return_chunk, bool capture_old_rows, vector<idx_t> old_row_columns)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::UPDATE, std::move(types), estimated_cardinality),
       tableref(tableref), table(table), columns(std::move(columns)), expressions(std::move(expressions)),
       bound_defaults(std::move(bound_defaults)), bound_constraints(std::move(bound_constraints)),
       return_chunk(return_chunk), capture_old_rows(capture_old_rows), old_row_columns(std::move(old_row_columns)),
-      row_id_handling(row_id_handling), index_update(false) {
+      index_update(false) {
 	auto &indexes = table.GetDataTableInfo().get()->GetIndexes();
 	auto index_columns = indexes.GetIndexedColumns();
 
@@ -58,9 +57,9 @@ PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> 
 class UpdateGlobalState : public GlobalSinkState {
 public:
 	explicit UpdateGlobalState(ClientContext &context, const vector<LogicalType> &return_types,
-	                           RowIdHandling row_id_handling)
+	                           bool update_is_del_and_insert)
 	    : updated_count(0), return_collection(context, return_types) {
-		if (row_id_handling != RowIdHandling::ASSUME_UNIQUE) {
+		if (update_is_del_and_insert) {
 			updated_rows = make_uniq<RowIdDeduplicator>(context, vector<LogicalType> {LogicalType::ROW_TYPE});
 		}
 	}
@@ -203,71 +202,44 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 
 	// Regular in-place update.
 	if (!update_is_del_and_insert) {
-		// Apply the duplicate row-id policy: ASSUME_UNIQUE keeps the lock-free path; KEEP_FIRST (UPDATE ... FROM)
-		// deduplicates so each row is updated at most once, keeping RETURNING and transition tables predictable.
-		idx_t update_count = update_chunk.size();
-		SelectionVector sel;
-		Vector update_row_ids(Vector::Ref(row_ids));
-		const bool deduplicate = row_id_handling != RowIdHandling::ASSUME_UNIQUE;
-		if (deduplicate) {
-			sel.Initialize(update_chunk.size());
-			lock_guard<mutex> glock(g_state.lock);
-			D_ASSERT(g_state.updated_rows);
-			update_count = g_state.updated_rows->Register(row_ids, update_chunk.size(), sel);
-			if (row_id_handling == RowIdHandling::ERROR && update_count != update_chunk.size()) {
-				throw InvalidInputException("UPDATE command cannot update the same row more than once");
-			}
-			if (update_count != update_chunk.size()) {
-				update_chunk.Slice(sel, update_count);
-				update_row_ids.Slice(row_ids, sel, update_count);
-			}
-		}
-
 		if (return_chunk) {
 			// (re)reference all output columns first, then validate + set the cardinality. mock_chunk is not reset
 			// here, but with return_chunk the update projects every table column, so all columns are referenced.
 			for (idx_t i = 0; i < columns.size(); i++) {
 				mock_chunk.data[columns[i].index].Reference(update_chunk.data[i]);
 			}
-			mock_chunk.CheckCardinality(update_count);
+			mock_chunk.CheckCardinality(update_chunk.size());
 		}
 		auto &update_state = l_state.GetUpdateState(table, tableref, context.client);
-		table.Update(update_state, context.client, tableref, update_row_ids, columns, update_chunk);
+		table.Update(update_state, context.client, tableref, row_ids, columns, update_chunk);
 
 		if (return_chunk) {
 			lock_guard<mutex> glock(g_state.lock);
 			if (capture_old_rows) {
-				// When we deduplicated, apply the selection vector to the OLD columns so they line up with NEW.
+				// In-place update: every input row is affected, so no selection vector is needed.
 				AppendReturnRows(g_state.return_collection, l_state.combined_chunk, mock_chunk, chunk,
-				                 mock_chunk.ColumnCount(), old_row_columns, update_count, deduplicate ? &sel : nullptr);
+				                 mock_chunk.ColumnCount(), old_row_columns, update_chunk.size(), nullptr);
 			} else {
 				g_state.return_collection.Append(mock_chunk);
 			}
 		}
-		g_state.updated_count += update_count;
+		g_state.updated_count += chunk.size();
 		return SinkResultType::NEED_MORE_INPUT;
 	}
 
 	// We update an index or a complex type, so we need to split the UPDATE into DELETE + INSERT.
 
-	// Apply the duplicate row-id policy. This path holds the lock for its whole body (the append is serialized),
-	// so deduplication runs under it. ASSUME_UNIQUE (plain UPDATE and MERGE-driven updates) keeps every row;
-	// KEEP_FIRST (UPDATE ... FROM) drops repeated row-ids so we never delete+insert the same row twice.
+	// Keep track of the rows that have not yet been deleted in this UPDATE.
+	// This is required since we might see the same row_id multiple times, e.g.,
+	// during an UPDATE containing joins.
 	SelectionVector sel(update_chunk.size());
 	lock_guard<mutex> glock(g_state.lock);
-	idx_t update_count = update_chunk.size();
-	const bool deduplicate = row_id_handling != RowIdHandling::ASSUME_UNIQUE;
-	if (deduplicate) {
-		D_ASSERT(g_state.updated_rows);
-		update_count = g_state.updated_rows->Register(row_ids, update_chunk.size(), sel);
-		if (row_id_handling == RowIdHandling::ERROR && update_count != update_chunk.size()) {
-			throw InvalidInputException("UPDATE command cannot update the same row more than once");
-		}
-	}
+	D_ASSERT(g_state.updated_rows);
+	auto update_count = g_state.updated_rows->Register(row_ids, update_chunk.size(), sel);
 
 	// The update chunk now contains exactly those rows that we are deleting.
 	Vector del_row_ids(Vector::Ref(row_ids));
-	if (deduplicate && update_count != update_chunk.size()) {
+	if (update_count != update_chunk.size()) {
 		update_chunk.Slice(sel, update_count);
 		del_row_ids.Slice(row_ids, sel, update_count);
 	}
@@ -310,20 +282,20 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	table.LocalAppend(tableref, context.client, mock_chunk, bound_constraints, del_row_ids, delete_chunk);
 	if (return_chunk) {
 		if (capture_old_rows) {
-			// Apply the dedup selection vector to the OLD columns so they line up with the NEW image.
+			// Apply the dedup/del+insert selection vector to the OLD columns so they line up with the NEW image.
 			AppendReturnRows(g_state.return_collection, l_state.combined_chunk, mock_chunk, chunk,
-			                 mock_chunk.ColumnCount(), old_row_columns, update_count, deduplicate ? &sel : nullptr);
+			                 mock_chunk.ColumnCount(), old_row_columns, update_count, &sel);
 		} else {
 			g_state.return_collection.Append(mock_chunk);
 		}
 	}
 
-	g_state.updated_count += update_count;
+	g_state.updated_count += chunk.size();
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
 unique_ptr<GlobalSinkState> PhysicalUpdate::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<UpdateGlobalState>(context, GetTypes(), row_id_handling);
+	return make_uniq<UpdateGlobalState>(context, GetTypes(), update_is_del_and_insert);
 }
 
 unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &context) const {

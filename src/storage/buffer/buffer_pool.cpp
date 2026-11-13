@@ -323,9 +323,10 @@ bool BufferPool::AddToEvictionQueue(BlockLock &lock, shared_ptr<BlockHandle> &ha
 	// (uncontended) lock of the freshly created block before calling.
 	memory.VerifyMutex(lock);
 	D_ASSERT(memory.GetReaders() == 0);
-	// Repeated hash-table appends can reuse an entry while leaving the block evictable.
+	// Reusing the entry keeps a stale queue position, so a block in active use can be evicted earlier under pressure.
+	const auto tag = memory.GetMemoryTag();
 	if (!track_eviction_timestamps && memory.GetBufferType() == FileBufferType::MANAGED_BUFFER &&
-	    memory.GetMemoryTag() == MemoryTag::HASH_TABLE && memory.HasLiveQueueEntry(lock)) {
+	    (tag == MemoryTag::HASH_TABLE || tag == MemoryTag::PARQUET_READER) && memory.HasLiveQueueEntry(lock)) {
 		return false;
 	}
 	auto &queue = GetEvictionQueueForBlockMemory(memory);

@@ -111,33 +111,48 @@ INSERT INTO table2 VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (100, 100, 100), (200
 statement ok
 INSERT INTO table3 VALUES (1, 4, 4), (2, 6, 7), (8, 8, 8);
 
-# update with a cross product: each row of table3 joins with every row of table2, but UPDATE ... FROM now
-# updates each target row at most once (one arbitrary match), so RETURNING yields one row per target row and
-# the winning c3 is one of the matching t2.c2 values (which one is unspecified).
+# update with a cross product
+# because each row of table3 is joined with each row of table 2, only the first tuples
+# for every c3 = t2.c2 are respected in the update
 query III rowsort
 UPDATE table3
 SET c3 = t2.c2
 FROM table2 AS t2
-RETURNING a3, b3, c3 IN (1, 2, 3, 100, 200);
+RETURNING *;
 ----
 1	4	1
+1	4	100
+1	4	2
+1	4	200
+1	4	3
 2	6	1
+2	6	100
+2	6	2
+2	6	200
+2	6	3
 8	8	1
+8	8	100
+8	8	2
+8	8	200
+8	8	3
 
-# the stored c3 is one of the matching t2.c2 values (which one is unspecified)
+# depending on the vector size, the updates of the above test
+# can occur in a different order than as they are written (see the rowsort arg).
+# When the updates occur in a different order, a different result is recorded
+# therefore the IN (1, 200) clause for c3.
 query III
-SELECT a3, b3, c3 IN (1, 2, 3, 100, 200) FROM table3;
+SELECT a3, b3, c3 IN (1, 200) FROM table3;
 ----
 1	4	1
 2	6	1
 8	8	1
 
-# update using other table (automatic join should happen here); a3 = a2 matches at most one row
+# update using other table (automatic join should happen here)
 query III
 UPDATE table3
 SET b3 = t2.b2
 FROM table2 AS t2
-WHERE table3.a3 = t2.a2 RETURNING a3, b3, c3 IN (1, 2, 3, 100, 200);
+WHERE table3.a3 = t2.a2 RETURNING a3, b3, c3 IN (1, 200);
 ----
 1	1	1
 2	2	1

@@ -79,3 +79,37 @@ Hello from the explicit_extension_schema_alias
 # we can check functions with
 # query I
 # SELECT * from duckdb_functions() where extension_name = LIKE ....;
+
+# aliased loads of installed extensions keep their own row
+load
+
+statement ok
+SET extension_directories=['{TEST_DIR}/aliasing_installed']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+statement ok
+LOAD loadable_extension_demo AS demo
+
+query III
+SELECT extension_name, loaded, installed FROM duckdb_extensions() WHERE extension_name IN ('demo', 'loadable_extension_demo') ORDER BY ALL
+----
+demo	true	false
+loadable_extension_demo	false	true
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo_double.duckdb_extension'
+
+statement ok
+LOAD loadable_extension_demo_double AS double
+
+statement ok
+LOAD loadable_extension_demo_double AS second
+
+query III
+SELECT extension_name, loaded, installed FROM duckdb_extensions() WHERE extension_name IN ('double', 'second', 'loadable_extension_demo_double') ORDER BY ALL
+----
+double	true	false
+loadable_extension_demo_double	false	true
+second	true	false

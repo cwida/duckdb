@@ -23,8 +23,7 @@ BindResult ExpressionBinder::BindExpression(ParameterExpression &expr, idx_t dep
 			auto return_type = parameters->GetReturnType(parameter_id);
 			bool is_literal =
 			    return_type.id() == LogicalTypeId::INTEGER_LITERAL || return_type.id() == LogicalTypeId::STRING_LITERAL;
-			auto constant = make_uniq<BoundConstantExpression>(data.GetValue());
-			constant->SetAlias(expr.GetAlias());
+			auto constant = make_uniq<BoundConstantExpression>(data.GetValue(), expr.GetAlias());
 			if (is_literal) {
 				return BindResult(std::move(constant));
 			}
@@ -37,8 +36,7 @@ BindResult ExpressionBinder::BindExpression(ParameterExpression &expr, idx_t dep
 	    PreparedStatement::AllowsUserVariableFallback(parameter_id)) {
 		Value variable_value;
 		if (ClientConfig::GetConfig(context).GetUserVariable(parameter_id, variable_value)) {
-			auto constant = make_uniq<BoundConstantExpression>(variable_value);
-			constant->SetAlias(expr.GetAlias());
+			auto constant = make_uniq<BoundConstantExpression>(variable_value, expr.GetAlias());
 			return BindResult(std::move(constant));
 		}
 	}

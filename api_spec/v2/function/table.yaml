@@ -21,6 +21,20 @@ enums:
         value: 3
         description: The partitions the scan produces are disjoint ranges.
 
+  TABLE_VIRTUAL_COLUMN:
+    description: |
+      A column a table function can produce next to the columns it declares in bind. A query asks for it by name,
+      but it is not part of the function's result columns. Declared with `[[table_function_add_virtual_column]]`.
+      In the column lists of the scan (e.g. `[[table_function_exec_get_column_index]]`), a virtual column is
+      identified by 2^63 plus its value in this enum.
+    values:
+      TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER:
+        value: 0
+        description: |
+          `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting
+          from 0. A function that reads a single file produces it when it is wrapped in a multi-file function (see
+          `[[multi_file_function_create]]`), which is where the name of the file comes from.
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
 #-----------------------------------------------------------------------------------------------------------------------
@@ -95,6 +109,12 @@ handles:
       A borrowed opaque handle to the arguments supplied to a table function when a scanning thread claims its
       next batch of work. The "claim batch" callback receives this handle and can use it to claim the next part of
       the scan from the shared global state for the thread's local state, and to report whether it claimed one.
+
+  table_function_metrics_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function when the engine collects the metrics
+      of a scan. The "metrics" callback receives this handle and can use it to report the operator metrics of the scan,
+      e.g. how many row groups it read.
 
   table_function_get_bind_info_info:
     description: |
@@ -182,6 +202,20 @@ callbacks:
     parameters:
       info:
         type: table_function_progress_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+  table_function_metrics_callback:
+    parameters:
+      info:
+        type: table_function_metrics_info
         description: Borrowed opaque handle providing access to the information available to the callback.
       context:
         type: context
@@ -555,6 +589,57 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  table_function_add_virtual_column:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Declares that the table function can produce the given virtual column.
+
+      A virtual column is not one of the columns declared in bind: the query asks for it by name, and the function
+      only produces it when it is asked for. It then takes up a vector of the exec callback's output chunk, like any
+      other column the scan produces. This requires projection pushdown (see
+      `[[table_function_set_projection_pushdown]]`), which is what lets the engine ask for it. The global init, local
+      init and exec callbacks recognize the vector by its column index, which is 2^63 plus the value of the
+      `[[TABLE_VIRTUAL_COLUMN]]` (see e.g. `[[table_function_exec_get_column_index]]`).
+    parameters:
+      function:
+        type: table_function
+        description: The function to configure.
+      column:
+        type: TABLE_VIRTUAL_COLUMN
+        description: The virtual column the function can produce.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_set_metrics_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Sets the optional metrics callback of the table function.
+
+      The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is
+      enabled, and can report what the scan did through its `[[table_function_metrics_info]]`.
+
+      DuckDB does not synchronize the callback with the scan: each thread that scanned invokes it when it finishes,
+      so it can run while other threads still scan and while other threads invoke it. The global state it reads is
+      shared with those threads, so the function must synchronize what the callback reads from it, e.g. by keeping
+      counters in atomics and reading them with an exchange, so that each amount is reported once.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the metrics callback of.
+      callback:
+        type: table_function_metrics_callback
+        description: The metrics callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   table_function_set_filter_pushdown_callback:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-03" ]
@@ -569,6 +654,14 @@ functions:
       keeps applying the rest above the scan, so accepting a predicate is a promise to filter the rows exactly as
       it would have. The optimizer may invoke the callback more than once for the same query, each time with the
       predicates not yet accepted; it is not invoked when there are none.
+
+      A function that also has projection pushdown (see `[[table_function_set_projection_pushdown]]`) is offered the
+      predicates that apply to a single column of it once more when a scan starts, just before the global init
+      callback, in the same form, with the column references resolved by `[[table_function_filter_pushdown_get_column_index]]`
+      as at optimization time. This is how the callback of a function wrapped in a multi-file function sees the
+      predicates, which the optimizer only offers to the wrapper. The engine applies these predicates to the rows the
+      function produces itself, so the function may use them to skip what the query can never use but does not have to
+      understand them, and accepting one has no effect. The scan keeps the columns the predicates are applied to.
     parameters:
       function:
         type: table_function
@@ -886,9 +979,6 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  #---------------------------------------------------------------------------------------------------------------------
-  # Local Init Callback Functions
-  #---------------------------------------------------------------------------------------------------------------------
   table_function_init_local_get_user_data:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-01" ]
@@ -1893,6 +1983,109 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Metrics Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  table_function_metrics_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_global_state:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Retrieves the global state set by the function's global init callback.
+
+      The metrics callback can run while the scan is still running, so it must read the global state in a
+      thread-safe way. The global state is null if the scan has not been initialized.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the global state pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_set:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Reports an operator metric of the scan, by the name DuckDB's profiler uses for it (the names `tracked_metrics`
+      accepts).
+
+      The metrics a scan can report are counters:
+      - `operator.rows_scanned`: the rows the scan read.
+      - `operator.row_groups_scanned`: the row groups the scan read. A row group is the unit a format lets the scan
+        skip, e.g. a Parquet row group or an ORC stripe.
+      - `operator.total_row_groups_to_scan`: the row groups the scan read or skipped.
+      - `operator.bytes_scanned`: the bytes the scan read.
+
+      The engine may collect the metrics of a scan more than once, and adds up what it is told: each value is the
+      amount since the metrics were last collected, except `operator.total_row_groups_to_scan`, which is the number
+      found so far in all. Fails for a name that is not one of the above.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      name:
+        type: char
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name of the metric. Borrowed.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8 and need not be null-terminated.
+      value:
+        type: u64
+        description: The value of the metric.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
   # Register

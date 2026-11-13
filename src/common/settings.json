@@ -34,7 +34,13 @@
         "description": "If a bulk deallocation larger than this occurs, flush outstanding allocations.",
         "type": "VARCHAR",
         "scope": "global",
-        "custom_implementation": true
+        "default_value": "512.0 MiB",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "allocator_flush_threshold",
@@ -250,13 +256,15 @@
         "description": "The WAL size threshold at which to automatically trigger a checkpoint, e.g. 1GB.",
         "type": "VARCHAR",
         "scope": "global",
-        "internal_setting": "checkpoint_wal_size",
-        "custom_implementation": [
-            "set",
-            "get"
-        ],
         "aliases": [
             "wal_autocheckpoint"
+        ],
+        "default_value": "16.0 MiB",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
         ]
     },
     {
@@ -294,9 +302,12 @@
         "description": "HTTP request metadata that can be set by callers/wrappers to tag their own traffic when DuckDB makes a request.",
         "type": "VARCHAR",
         "scope": "global",
+        "default_value": "",
         "custom_implementation": [
-            "set",
-            "reset"
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
         ]
     },
     {
@@ -343,10 +354,16 @@
         "description": "Enables the Parquet reader to identify a Variant structurally.",
         "type": "BOOLEAN",
         "scope": "global",
-        "custom_implementation": true,
         "is_debug": true,
         "aliases": [
             "__delta_only_variant_encoding_enabled"
+        ],
+        "default_value": "false",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
         ]
     },
     {
@@ -450,12 +467,18 @@
         "description": "Enable mbedtls for encryption. Unsafe to use.",
         "type": "BOOLEAN",
         "scope": "global",
-        "custom_implementation": true,
         "is_debug": true,
         "aliases": [
             "force_mbedtls_unsafe"
         ],
-        "struct": "ForceMbedtlsUnsafeSetting"
+        "struct": "ForceMbedtlsUnsafeSetting",
+        "default_value": "false",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "debug_force_no_cross_product",
@@ -482,12 +505,18 @@
         "description": "Forces the VARIANT shredding that happens during checkpointing to use the provided schema for the shredding.",
         "type": "VARCHAR",
         "scope": "global",
-        "custom_implementation": true,
         "is_debug": true,
         "aliases": [
             "force_variant_shredding"
         ],
-        "struct": "ForceVariantShredding"
+        "struct": "ForceVariantShredding",
+        "default_value": "INVALID",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "debug_force_wal_fsync_failure",
@@ -540,10 +569,16 @@
     {
         "name": "debug_verification_mode",
         "description": "Toggle the verification mode.",
-        "type": "VARCHAR",
+        "type": "ENUM<DebugVerificationMode>",
         "scope": "global",
-        "custom_implementation": true,
-        "is_debug": true
+        "is_debug": true,
+        "default_value": "NONE",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "debug_verification_projection",
@@ -742,7 +777,13 @@
         "description": "Disable a specific, comma-separated set of compression methods.",
         "type": "VARCHAR",
         "scope": "global",
-        "custom_implementation": true
+        "default_value": "",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "disabled_filesystems",
@@ -764,7 +805,13 @@
         "description": "Disable a specific, comma-separated set of optimizers.",
         "type": "VARCHAR",
         "scope": "global",
-        "custom_implementation": true
+        "default_value": "",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "duckdb_api",
@@ -942,7 +989,13 @@
         "description": "Set the directories to store extensions in.",
         "type": "VARCHAR[]",
         "scope": "global",
-        "custom_implementation": true
+        "default_value": "[]",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "extension_directory",
@@ -1246,12 +1299,21 @@
         "custom_implementation": true
     },
     {
+        "name": "logging_sink",
+        "description": "Set the logging sink, options are 'memory', 'stdout', 'file', '<custom>'.",
+        "type": "VARCHAR",
+        "scope": "global",
+        "struct": "LoggingSink",
+        "custom_implementation": true
+    },
+    {
         "name": "logging_storage",
-        "description": "Set the logging storage, options are 'memory', 'stdout', 'file', '<custom>'.",
+        "description": "Deprecated setting. Use logging_sink instead.",
         "type": "VARCHAR",
         "scope": "global",
         "struct": "LoggingStorage",
-        "custom_implementation": true
+        "custom_implementation": true,
+        "is_deprecated": true
     },
     {
         "name": "match_recognize_max_states",
@@ -1441,9 +1503,15 @@
     {
         "name": "profiling_coverage",
         "description": "The profiling coverage, either SELECT (only SELECT queries) or ALL (all queries are profiled).",
-        "type": "VARCHAR",
+        "type": "ENUM<ProfilingCoverage>",
         "scope": "local",
-        "custom_implementation": true
+        "default_value": "SELECT",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "profiling_mode",
@@ -1458,9 +1526,15 @@
         "description": "The file to which profiler output is written. When empty, the output is printed to the terminal.",
         "type": "VARCHAR",
         "scope": "local",
-        "custom_implementation": true,
         "aliases": [
             "profile_output"
+        ],
+        "default_value": "",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
         ]
     },
     {

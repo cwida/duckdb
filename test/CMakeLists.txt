@@ -71,6 +71,32 @@ endif()
 
 add_executable(unittest unittest.cpp ${UNITTEST_OBJECT_FILES})
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND NOT CMAKE_CROSSCOMPILING
+   AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND ENABLE_UNITTEST_CPP_TESTS
+   AND TARGET duckdb)
+  # Exercise real allocator failures without installing hooks in the library.
+  add_executable(
+    block_allocator_fault_injection api/block_allocator_fault_injection.cpp
+                                    ../src/storage/block_allocator.cpp)
+  target_link_libraries(block_allocator_fault_injection duckdb pthread)
+  target_link_options(
+    block_allocator_fault_injection
+    PRIVATE
+    -Wl,--wrap=malloc
+    -Wl,--wrap=_Znwm
+    -Wl,--wrap=_ZdlPv
+    -Wl,--wrap=_ZdlPvm
+    -Wl,--wrap=mmap
+    -Wl,--wrap=mprotect
+    -Wl,--wrap=munmap)
+  set_target_properties(block_allocator_fault_injection
+                        PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
+  target_sources(unittest PRIVATE api/test_block_allocator_fault_injection.cpp)
+  add_dependencies(unittest block_allocator_fault_injection)
+endif()
+
 # Enable best-effort stack traces for fatal signals in the test runner without
 # enabling stack traces for every DuckDB exception.
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MUSL_ENABLED) OR APPLE)

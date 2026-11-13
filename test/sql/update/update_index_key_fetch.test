@@ -184,7 +184,7 @@ SELECT count(*), sum(a), count(DISTINCT d), max(d) FROM g;
 statement ok
 ROLLBACK
 
-# UPDATE ... FROM with duplicate row-ids deduplicates them before fetching the old keys
+# UPDATE ... FROM with duplicate row-ids
 statement ok
 CREATE TABLE src AS SELECT i % 100 AS k FROM range(3000) r(i);
 
@@ -197,9 +197,33 @@ INSERT INTO h SELECT i, i, i FROM range(100) r(i);
 query I
 UPDATE h SET k = h.k + 1000 FROM src WHERE h.k = src.k;
 ----
-100
+3000
 
 query IIII
 SELECT count(*), min(k), max(k), sum(w) FROM h;
 ----
 100	1000	1099	4950
+
+# the old keys are fetched for the deduplicated row-ids, not the first rows of the input
+statement ok
+CREATE TABLE target_pk (id INTEGER PRIMARY KEY, value INTEGER);
+
+statement ok
+INSERT INTO target_pk VALUES (1, 0), (2, 0);
+
+statement ok
+CREATE TABLE source_dup (id INTEGER, value INTEGER);
+
+statement ok
+INSERT INTO source_dup VALUES (1, 10), (1, 11), (2, 20), (2, 21);
+
+query I rowsort
+UPDATE target_pk SET value = source_dup.value FROM source_dup WHERE target_pk.id = source_dup.id RETURNING id;
+----
+1
+2
+
+query I
+SELECT count(*) FROM target_pk WHERE (id = 1 AND value IN (10, 11)) OR (id = 2 AND value IN (20, 21));
+----
+2

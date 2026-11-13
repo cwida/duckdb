@@ -15,16 +15,20 @@ pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the malloc shim is preloaded with LD_PRELOAD"
 )
 
-# LD_PRELOAD shim: after FAILMALLOC_AFTER bytes have been requested through the malloc family, every request fails
+# LD_PRELOAD shim: after FAILMALLOC_AFTER bytes have been requested through the malloc family, every request fails.
+# With FAILMALLOC_MAIN_THREAD_FROM=N, every request the main thread makes from its N-th one on fails while the other
+# threads keep allocating; FAILMALLOC_REPORT prints the main thread's request count when it first creates a thread.
 SHIM_SOURCE = r"""
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static void *(*real_malloc)(size_t);
@@ -33,8 +37,14 @@ static void *(*real_realloc)(void *, size_t);
 static int (*real_posix_memalign)(void **, size_t, size_t);
 static void *(*real_aligned_alloc)(size_t, size_t);
 static void *(*real_memalign)(size_t, size_t);
+static int (*real_pthread_create)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 static atomic_size_t total;
 static size_t limit = (size_t)-1;
+static pid_t main_thread;
+static int track_main_thread;
+static atomic_size_t main_thread_calls;
+static size_t main_thread_from = (size_t)-1;
+static atomic_int reported_first_thread;
 /* dlsym may allocate while the real functions are still unresolved: serve those requests from a static buffer */
 static char boot[65536];
 static size_t boot_used;
@@ -51,11 +61,23 @@ static void init(void) {
 	real_posix_memalign = dlsym(RTLD_NEXT, "posix_memalign");
 	real_aligned_alloc = dlsym(RTLD_NEXT, "aligned_alloc");
 	real_memalign = dlsym(RTLD_NEXT, "memalign");
+	real_pthread_create = dlsym(RTLD_NEXT, "pthread_create");
 	const char *env = getenv("FAILMALLOC_AFTER");
 	if (env) {
 		limit = strtoull(env, NULL, 10);
 	}
+	/* the first request comes from the main thread, before any other thread exists */
+	main_thread = getpid();
+	env = getenv("FAILMALLOC_MAIN_THREAD_FROM");
+	if (env) {
+		main_thread_from = strtoull(env, NULL, 10);
+	}
+	track_main_thread = env != NULL || getenv("FAILMALLOC_REPORT") != NULL;
 	initializing = 0;
+}
+
+static int on_main_thread(void) {
+	return (pid_t)syscall(SYS_gettid) == main_thread;
 }
 
 static void *boot_alloc(size_t n) {
@@ -69,6 +91,13 @@ static int over(size_t n) {
 	if (t > limit) {
 		errno = ENOMEM;
 		return 1;
+	}
+	if (track_main_thread && on_main_thread()) {
+		size_t c = atomic_fetch_add(&main_thread_calls, 1) + 1;
+		if (c >= main_thread_from) {
+			errno = ENOMEM;
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -113,6 +142,18 @@ void *memalign(size_t al, size_t n) {
 	return over(n) ? NULL : real_memalign(al, n);
 }
 
+/* with FAILMALLOC_REPORT set, print the main thread's request count the first time it creates a thread */
+int pthread_create(pthread_t *t, const pthread_attr_t *a, void *(*f)(void *), void *arg) {
+	init();
+	if (track_main_thread && getenv("FAILMALLOC_REPORT") && on_main_thread() &&
+	    !atomic_exchange(&reported_first_thread, 1)) {
+		char buf[64];
+		int n = snprintf(buf, sizeof(buf), "failmalloc_first_thread=%zu\n", (size_t)atomic_load(&main_thread_calls));
+		write(2, buf, (size_t)n);
+	}
+	return real_pthread_create(t, a, f, arg);
+}
+
 /* with FAILMALLOC_REPORT set, print the bytes requested through the shim at exit */
 __attribute__((destructor)) static void report(void) {
 	if (getenv("FAILMALLOC_REPORT")) {
@@ -128,7 +169,7 @@ STARTUP_SQL = "SELECT 42"
 LARGE_SQL = "SELECT " + ",".join(["1"] * 200000)
 
 
-def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
+def run_with_malloc_budget(shell, shim, sql, budget=None, report=False, main_thread_from=None):
     env = dict(os.environ)
     # agent-mode variables of the runner must not switch the shell under test into agent mode
     for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
@@ -136,8 +177,11 @@ def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
     env["LD_PRELOAD"] = shim
     env.pop("FAILMALLOC_AFTER", None)
     env.pop("FAILMALLOC_REPORT", None)
+    env.pop("FAILMALLOC_MAIN_THREAD_FROM", None)
     if budget is not None:
         env["FAILMALLOC_AFTER"] = str(budget)
+    if main_thread_from is not None:
+        env["FAILMALLOC_MAIN_THREAD_FROM"] = str(main_thread_from)
     if report:
         env["FAILMALLOC_REPORT"] = "1"
     # the SQL goes through stdin: the large query does not fit in an argument
@@ -186,6 +230,18 @@ def startup_bytes(request, malloc_shim):
     return int(match.group(1))
 
 
+# the requests the main thread makes before it starts the first worker thread: the failures below begin around there
+@pytest.fixture(scope="module")
+def first_thread_calls(request, malloc_shim):
+    shell = request.config.getoption("--shell-binary")
+    result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, report=True)
+    assert result.returncode == 0, result.stderr
+    match = re.search(rb"failmalloc_first_thread=(\d+)", result.stderr)
+    if not match:
+        pytest.skip("this shell binary starts no worker thread")
+    return int(match.group(1))
+
+
 def check_out_of_memory_exit(result):
     assert result.returncode == 1, (result.returncode, result.stderr)
     assert b"Out of Memory" in result.stderr, result.stderr
@@ -215,3 +271,11 @@ def test_malloc_failure_tail(shell, malloc_shim, startup_bytes, fraction):
     assert b"terminate called" not in result.stderr, result.stderr
     if result.returncode == 1:
         assert b"Out of Memory" in result.stderr, result.stderr
+
+
+# the heap runs out for the main thread while the scheduler launches its worker threads, from the allocation that
+# precedes the first thread to the ones after it: the scheduler must keep every thread it started, not abort
+@pytest.mark.parametrize("offset", range(61))
+def test_malloc_failure_thread_launch(shell, malloc_shim, first_thread_calls, offset):
+    result = run_with_malloc_budget(shell, malloc_shim, STARTUP_SQL, main_thread_from=first_thread_calls + offset)
+    check_out_of_memory_exit(result)

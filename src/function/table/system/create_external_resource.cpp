@@ -60,7 +60,7 @@ static bool MapTryGet(const Value &map_value, const string &key, string &out) {
 	return false;
 }
 
-Value RequireResourceMap(const Value &value, const string &function_name, const string &column) {
+Value RequireResourceMap(Context &context, const Value &value, const string &function_name, const string &column) {
 	if (value.IsNull()) {
 		return value;
 	}
@@ -68,7 +68,7 @@ Value RequireResourceMap(const Value &value, const string &function_name, const 
 		throw InvalidInputException("external resource callback \"%s\" must return a MAP in its '%s' column, got %s",
 		                            function_name, column, value.type().ToString());
 	}
-	return value.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	return value.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 }
 
 //===--------------------------------------------------------------------===//
@@ -200,7 +200,7 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	const bool adopting = !bind_data.adopt_handle.IsNull();
 	Value handle;
 	if (adopting) {
-		handle = RequireResourceMap(bind_data.adopt_handle, bind_data.type_name, "handle");
+		handle = RequireResourceMap(context.GetContext(), bind_data.adopt_handle, bind_data.type_name, "handle");
 	} else {
 		if (type->create_function.empty()) {
 			throw InvalidInputException("create_external_resource: resource type \"%s\" has no create function",
@@ -220,7 +220,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 				throw InvalidInputException("create_external_resource: create function \"%s\" returned no rows",
 				                            type->create_function);
 			}
-			handle = RequireResourceMap(result->Collection().GetRows().GetValue(0, 0), type->create_function, "handle");
+			handle = RequireResourceMap(context.GetContext(), result->Collection().GetRows().GetValue(0, 0),
+			                            type->create_function, "handle");
 			if (handle.IsNull()) {
 				// the handle identifies the resource for status and teardown - without one it can never be destroyed
 				throw InvalidInputException("create_external_resource: create function \"%s\" returned a NULL handle",
@@ -313,7 +314,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 				                  bind_data.type_name);
 			}
 			if (status_state == "ready") {
-				status_result = RequireResourceMap(status_rows.GetValue(1, 0), type->status_function, "result");
+				status_result = RequireResourceMap(context.GetContext(), status_rows.GetValue(1, 0),
+				                                   type->status_function, "result");
 				ready = true;
 			} else if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
 				throw IOException("create_external_resource: timed out awaiting readiness for \"%s\" (last state '%s')",

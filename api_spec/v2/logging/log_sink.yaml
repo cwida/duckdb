@@ -3,7 +3,7 @@ module: log sink
 # Receiving DuckDB's log entries in code of your own. A log sink is built with the setters below and registered on an
 # instance under a name, which makes it available to DuckDB's logging configuration: once the configuration directs
 # entries to it, by its name, its write callback receives them. Currently a sink is selected with
-# `SET logging_storage = '<name>'`.
+# `SET logging_sink = '<name>'`.
 #
 # A log sink only receives entries: they cannot be read back through `duckdb_logs`.
 #

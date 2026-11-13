@@ -539,11 +539,10 @@ private:
 			unique_ptr<Expression> replacement;
 			if (key_of[k] != DConstants::INVALID_INDEX) {
 				replacement = make_uniq<BoundColumnRefExpression>(
-				    expr->GetReturnType(), ColumnBinding(group_index, ProjectionIndex(key_of[k])));
+				    expr->GetAlias(), expr->GetReturnType(), ColumnBinding(group_index, ProjectionIndex(key_of[k])));
 			} else {
-				replacement = make_uniq<BoundConstantExpression>(Value(expr->GetReturnType()));
+				replacement = make_uniq<BoundConstantExpression>(Value(expr->GetReturnType()), expr->GetAlias());
 			}
-			replacement->SetAlias(expr->GetAlias());
 			expr = std::move(replacement);
 		}
 		// drops the filters, the join and the other scan

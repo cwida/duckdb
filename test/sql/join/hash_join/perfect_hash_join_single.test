@@ -1,0 +1,77 @@
+# name: test/sql/join/hash_join/perfect_hash_join_single.test
+# description: Scalar joins check every remaining candidate after the first true match
+# group: [hash_join]
+
+# Keep the operator logs across statements.
+require skip_reload
+
+statement ok
+SET VARIABLE check_perfect_activation =
+    NOT current_setting('debug_force_external') AND NOT current_setting('debug_disable_optimizer');
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,join_filter_pushdown,statistics_propagation,compressed_materialization';
+
+statement ok
+CREATE TABLE p(k BIGINT,v INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1,5),(2,6),(3,0);
+
+statement ok
+CREATE TABLE b(k BIGINT,v INTEGER);
+
+statement ok
+INSERT INTO b VALUES (1,10),(1,5),(1,20),(2,7),(2,6);
+
+query II
+EXPLAIN SELECT k,(SELECT b.v FROM b WHERE b.k=p.k AND b.v!=p.v) FROM p;
+----
+physical_plan	<REGEX>:.*Join Type: SINGLE.*v != v.*
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement error
+SELECT k,(SELECT b.v FROM b WHERE b.k=p.k AND b.v!=p.v) FROM p;
+----
+More than one row returned by a subquery used as an expression
+
+statement ok
+SET scalar_subquery_error_on_multiple_rows=false;
+
+query II
+SELECT k,CASE WHEN k=1 THEN v IN (10,20) WHEN k=2 THEN v=7 ELSE v IS NULL END
+FROM (SELECT k,(SELECT b.v FROM b WHERE b.k=p.k AND b.v!=p.v) v FROM p) ORDER BY k;
+----
+1	true
+2	true
+3	true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT NOT getvariable('check_perfect_activation') OR count(*)=2
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Lookup' AND info['backend']='direct';
+----
+true
+
+# The duplicate-match check also applies to the normal hash backend.
+statement ok
+SET scalar_subquery_error_on_multiple_rows=true;
+
+statement ok
+CREATE TABLE p_string AS SELECT k::VARCHAR k, v FROM p;
+
+statement ok
+CREATE TABLE b_string AS SELECT k::VARCHAR k, v FROM b;
+
+statement error
+SELECT k,(SELECT b.v FROM b_string b WHERE b.k=p.k AND b.v!=p.v) FROM p_string p;
+----
+More than one row returned by a subquery used as an expression

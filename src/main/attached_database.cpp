@@ -7,6 +7,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/main/error_manager.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
@@ -286,6 +287,10 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		}
 		attached_db->is_closing = true;
 	}
+	// use_count() is a relaxed load, so it doesn't order accesses through references dropped without close_lock.
+	// Dropping a copy does (acq_rel decrement, never reaching zero); a fence would too, but TSan ignores fences.
+	auto synchronizing_reference = attached_db;
+	synchronizing_reference.reset();
 	attached_db->Close(close_action);
 	attached_db.reset();
 }
@@ -356,13 +361,43 @@ bool AttachedDatabase::IsInitialDatabase() const {
 	return is_initial_database;
 }
 
-void AttachedDatabase::Invalidate(const string &reason) {
+bool AttachedDatabase::SupportsScopedInvalidation() const {
+	return !IsSystem() && !IsTemporary() && !IsInitialDatabase();
+}
+
+void AttachedDatabase::Invalidate(const string &cause, const string &error) {
+	if (!SupportsScopedInvalidation()) {
+		ValidChecker::Invalidate(db,
+		                         StringUtil::Format("Database %s has been invalidated because %s. Original error: %s",
+		                                            GetName(), cause, error));
+		return;
+	}
 	string recovery = HasStorageManager() && GetStorageManager().InMemory()
 	                      ? "It is an in-memory database, so its data cannot be recovered."
 	                      : "Detach and reattach it before using it again.";
-	ValidChecker::Invalidate(*this, StringUtil::Format("Database %s has been invalidated because checkpointing "
-	                                                   "failed. %s Original error: %s",
-	                                                   GetName(), recovery, reason));
+	validity.InvalidateIfValid(StringUtil::Format("Database %s has been invalidated because %s. %s Original error: %s",
+	                                              GetName(), cause, recovery, error));
+}
+
+ErrorData AttachedDatabase::ScopeFatalError(ErrorData error) {
+	if (!error.HasError() || !Exception::InvalidatesDatabase(error.Type()) || !SupportsScopedInvalidation()) {
+		return error;
+	}
+	Invalidate("of a fatal error", error.RawMessage());
+	error.SetExtraInfo(Exception::INVALIDATED_DATABASE_KEY, GetName().GetIdentifierName());
+	return error;
+}
+
+ErrorData AttachedDatabase::InvalidationError(const string &operation) {
+	if (ValidChecker::IsInvalidated(*this)) {
+		return ErrorData(IOException("Cannot %s: %s", operation, ValidChecker::InvalidatedMessage(*this)));
+	}
+	if (ValidChecker::IsInvalidated(db)) {
+		auto message = ErrorManager::Get(db).FormatException(ErrorType::INVALIDATED_DATABASE,
+		                                                     ValidChecker::InvalidatedMessage(db));
+		return ErrorData(IOException("Cannot %s: %s", operation, message));
+	}
+	return ErrorData();
 }
 
 void AttachedDatabase::SetInitialDatabase() {

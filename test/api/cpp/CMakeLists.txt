@@ -29,6 +29,7 @@ add_library(
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_scalar_function.cpp
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_stats.cpp
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_table_function.cpp
+  ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_table_function_scan.cpp
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_tokenizer.cpp
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_types_values.cpp
   ${CMAKE_SOURCE_DIR}/tools/cpp/tests/test_cpp_api_vector.cpp)

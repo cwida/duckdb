@@ -73,6 +73,8 @@ bool Exception::InvalidatesTransaction(ExceptionType exception_type) {
 	}
 }
 
+constexpr const char *Exception::INVALIDATED_DATABASE_KEY;
+
 bool Exception::InvalidatesDatabase(ExceptionType exception_type) {
 	switch (exception_type) {
 	case ExceptionType::FATAL:
