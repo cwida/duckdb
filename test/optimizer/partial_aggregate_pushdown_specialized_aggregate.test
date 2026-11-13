@@ -1,0 +1,77 @@
+# name: test/optimizer/partial_aggregate_pushdown_specialized_aggregate.test
+# description: Partial aggregate pushdown exports the state of the aggregate as bound, not a specialized implementation
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact AS SELECT (i % 100)::BIGINT AS k, (1.25 + (i % 3))::DECIMAL(7,2) AS price FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE dim AS SELECT (i % 100)::BIGINT AS k, (i % 5)::BIGINT AS attr FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE other AS SELECT i::BIGINT AS attr, i::BIGINT AS x FROM range(5) t(i);
+
+# the filter over both join sides makes statistics propagation swap in sum_no_overflow before the pushdown
+query II
+EXPLAIN SELECT a.attr, a.s
+FROM (SELECT d.attr, sum(f.price) AS s FROM fact f JOIN dim d ON f.k = d.k GROUP BY d.attr) a
+LEFT JOIN other o ON a.attr = o.attr
+WHERE a.s > 0 OR o.x > 0
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+SELECT a.attr, a.s
+FROM (SELECT d.attr, sum(f.price) AS s FROM fact f JOIN dim d ON f.k = d.k GROUP BY d.attr) a
+LEFT JOIN other o ON a.attr = o.attr
+WHERE a.s > 0 OR o.x > 0
+ORDER BY 1
+----
+0	179980.00
+1	180000.00
+2	180020.00
+3	179980.00
+4	180000.00
+
+query II
+SELECT a.attr, a.s
+FROM (SELECT d.attr, avg(f.price) AS s FROM fact f JOIN dim d ON f.k = d.k GROUP BY d.attr) a
+LEFT JOIN other o ON a.attr = o.attr
+WHERE a.s > 0 OR o.x > 0
+ORDER BY 1
+----
+0	2.24975
+1	2.25
+2	2.25025
+3	2.24975
+4	2.25
+
+# integer sums keep their specialized implementation
+query II
+SELECT a.attr, a.s
+FROM (SELECT d.attr, sum(f.k) AS s FROM fact f JOIN dim d ON f.k = d.k GROUP BY d.attr) a
+LEFT JOIN other o ON a.attr = o.attr
+WHERE a.s > 0 OR o.x > 0
+ORDER BY 1
+----
+0	3800000
+1	3880000
+2	3960000
+3	4040000
+4	4120000
+
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown'
+
+query II
+SELECT a.attr, a.s
+FROM (SELECT d.attr, sum(f.price) AS s FROM fact f JOIN dim d ON f.k = d.k GROUP BY d.attr) a
+LEFT JOIN other o ON a.attr = o.attr
+WHERE a.s > 0 OR o.x > 0
+ORDER BY 1
+----
+0	179980.00
+1	180000.00
+2	180020.00
+3	179980.00
+4	180000.00
