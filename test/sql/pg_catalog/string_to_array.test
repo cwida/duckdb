@@ -1,0 +1,165 @@
+# name: test/sql/pg_catalog/string_to_array.test
+# description: Scalar and table string_to_array, unqualified and pg_catalog-qualified
+# group: [pg_catalog]
+
+# scalar, unqualified
+
+query I
+SELECT string_to_array('x.y.z', '.')
+----
+[x, y, z]
+
+query I
+SELECT string_to_array(NULL, '.')
+----
+NULL
+
+query I
+SELECT string_to_array('a.b', NULL)
+----
+[a.b]
+
+query I
+SELECT string_to_array('a..b', '.')
+----
+[a, '', b]
+
+query I
+SELECT string_to_array('', '.')
+----
+['']
+
+query I
+SELECT string_to_array('a.b.', '.')
+----
+[a, b, '']
+
+query I
+SELECT string_to_array('abc', '')
+----
+[a, b, c]
+
+# scalar, pg_catalog
+
+query I
+SELECT pg_catalog.string_to_array('x.y.z', '.')
+----
+[x, y, z]
+
+query I
+SELECT pg_catalog.string_to_array(NULL, '.')
+----
+NULL
+
+query I
+SELECT pg_catalog.string_to_array('a.b', NULL)
+----
+[a.b]
+
+query I
+SELECT pg_catalog.string_to_array('a..b', '.')
+----
+[a, '', b]
+
+query I
+SELECT pg_catalog.string_to_array('', '.')
+----
+['']
+
+query I
+SELECT pg_catalog.string_to_array('a.b.', '.')
+----
+[a, b, '']
+
+query I
+SELECT pg_catalog.string_to_array('abc', '')
+----
+[a, b, c]
+
+# table, unqualified. An empty piece is (empty). A NULL input returns no rows.
+
+query I
+SELECT * FROM string_to_array('x.y.z', '.')
+----
+x
+y
+z
+
+query I
+SELECT * FROM string_to_array(NULL, '.')
+----
+
+query I
+SELECT * FROM string_to_array('a.b', NULL)
+----
+a.b
+
+query I
+SELECT * FROM string_to_array('a..b', '.')
+----
+a
+(empty)
+b
+
+query I
+SELECT * FROM string_to_array('', '.')
+----
+(empty)
+
+query I
+SELECT * FROM string_to_array('a.b.', '.')
+----
+a
+b
+(empty)
+
+query I
+SELECT * FROM string_to_array('abc', '')
+----
+a
+b
+c
+
+# table, pg_catalog
+
+query I
+SELECT * FROM pg_catalog.string_to_array('x.y.z', '.')
+----
+x
+y
+z
+
+query I
+SELECT * FROM pg_catalog.string_to_array(NULL, '.')
+----
+
+query I
+SELECT * FROM pg_catalog.string_to_array('a.b', NULL)
+----
+a.b
+
+query I
+SELECT * FROM pg_catalog.string_to_array('a..b', '.')
+----
+a
+(empty)
+b
+
+query I
+SELECT * FROM pg_catalog.string_to_array('', '.')
+----
+(empty)
+
+query I
+SELECT * FROM pg_catalog.string_to_array('a.b.', '.')
+----
+a
+b
+(empty)
+
+query I
+SELECT * FROM pg_catalog.string_to_array('abc', '')
+----
+a
+b
+c

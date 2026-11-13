@@ -75,6 +75,8 @@ SELECT * EXCLUDE (message),
 FROM duckdb_logs(denormalized_table=1)
 WHERE type ILIKE log_type
 )"},
+	{"pg_catalog", "string_to_array", {"s", "delim", nullptr}, {},
+	 "SELECT unnest(string_split(s, delim)) AS string_to_array"},
 	{DEFAULT_SCHEMA, "duckdb_profiling_settings", {}, {}, R"(
 SELECT * EXCLUDE(input_type, scope, aliases, typed_value)
   FROM duckdb_settings(deprecated := false)

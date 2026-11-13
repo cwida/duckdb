@@ -132,6 +132,20 @@ static const DefaultMacro internal_macros[] = {
     {"pg_catalog", "pg_size_pretty", "(bytes) AS format_bytes(bytes)"},
     {"pg_catalog", "pg_sleep", "(seconds) AS sleep_ms(CAST(seconds * 1000 AS BIGINT))"},
 
+    // identifier and array bound helpers
+    {"pg_catalog", "quote_ident",
+     "(s) AS CASE WHEN regexp_full_match(s, '[a-z_][a-z0-9_]*') THEN s "
+     "ELSE '\"' || replace(s, '\"', '\"\"') || '\"' END"},
+    {"pg_catalog", "parse_ident",
+     "(s) AS list_transform("
+     "regexp_extract_all(s, '(\"(?:[^\"]|\"\")*\"|[^.\"]+)'), "
+     "lambda x: CASE WHEN starts_with(x, '\"') "
+     "THEN replace(x[2:-2], '\"\"', '\"') ELSE lower(trim(x)) END)"},
+    {"pg_catalog", "array_lower", "(arr, dim) AS CASE WHEN array_length(arr, dim) > 0 THEN 1 END"},
+    {"pg_catalog", "array_upper", "(arr, dim) AS nullif(array_length(arr, dim), 0)"},
+    // The built-in scalar lives in main. This macro is only used as pg_catalog.string_to_array.
+    {"pg_catalog", "string_to_array", "(s, delim) AS string_split(s, delim)"},
+
     {DEFAULT_SCHEMA, "nullif", "(a, b) AS CASE WHEN a=b THEN NULL ELSE a END"},
     {DEFAULT_SCHEMA, "if", "(a, b, c) AS CASE WHEN a THEN b ELSE c END"},
     {DEFAULT_SCHEMA, "assert_true",
