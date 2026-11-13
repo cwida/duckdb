@@ -1826,7 +1826,7 @@ bool StringValueScanner::FirstValueEndsOnQuote(CSVIterator iterator) const {
 }
 
 bool StringValueScanner::SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator,
-                                        bool &quoted) const {
+                                        bool &quoted, optional_ptr<bool> unterminated_quote) const {
 	CSVStates current_state;
 	current_state.Initialize(initial_state);
 	bool first_column = true;
@@ -1859,6 +1859,9 @@ bool StringValueScanner::SkipUntilState(CSVState initial_state, CSVState until_s
 		if (current_state.IsState(CSVState::INVALID)) {
 			return false;
 		}
+	}
+	if (unterminated_quote) {
+		*unterminated_quote = current_state.IsQuotedCurrent() || current_state.IsState(CSVState::ESCAPE);
 	}
 	return false;
 }
@@ -1925,7 +1928,8 @@ ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t e
 	current_iterator.SetStart(start_pos);
 	current_iterator.SetEnd(end_pos);
 	bool quoted = false;
-	if (SkipUntilState(state, CSVState::RECORD_SEPARATOR, current_iterator, quoted)) {
+	bool unterminated_quote = false;
+	if (SkipUntilState(state, CSVState::RECORD_SEPARATOR, current_iterator, quoted, &unterminated_quote)) {
 		auto iterator_start = current_iterator;
 		idx_t current_pos = current_iterator.pos.buffer_pos;
 		current_iterator.SetEnd(iterator.GetEndPos());
@@ -1935,6 +1939,10 @@ ValidRowInfo StringValueScanner::TryRow(CSVState state, idx_t start_pos, idx_t e
 			}
 			return {true, current_pos, current_iterator.pos.buffer_idx, current_iterator.pos.buffer_pos, quoted};
 		}
+	}
+	if (unterminated_quote) {
+		// A quoted value that never closes tells us nothing about where a row starts
+		current_iterator.pos.buffer_pos = start_pos;
 	}
 	return {false, current_iterator.pos.buffer_pos, current_iterator.pos.buffer_idx, current_iterator.pos.buffer_pos,
 	        quoted};

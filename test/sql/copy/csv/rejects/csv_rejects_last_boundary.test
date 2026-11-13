@@ -1,0 +1,71 @@
+# name: test/sql/copy/csv/rejects/csv_rejects_last_boundary.test
+# description: An invalid first row in the last scan boundary must not drop the rest of the file
+# group: [rejects]
+
+# The layout is load-bearing: the bad row must be the first full row after the start of the last scan boundary.
+
+# Explicit buffer size: each boundary is one 10000-byte buffer, so with a 4-byte header and 100-byte rows the last
+# buffer starts inside row 199 and row 200 is the first full row in it
+statement ok
+COPY (
+	SELECT l FROM (
+		SELECT -1 AS i, 'a,b' AS l
+		UNION ALL
+		SELECT i, CASE WHEN i = 200 THEN i || ',' || repeat('x', 96 - length(i::VARCHAR)) || ',x'
+		               ELSE i || ',' || repeat('x', 98 - length(i::VARCHAR)) END
+		FROM range(250) t(i)
+	) ORDER BY i
+) TO '{TEMP_DIR}/bad_row_after_small_boundary.csv' (FORMAT csv, HEADER false, QUOTE '', DELIMITER '\t');
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/bad_row_after_small_boundary.csv', header = true, auto_detect = false,
+	columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, buffer_size = 10000);
+----
+Expected Number of Columns: 2 Found: 3
+
+query II
+SELECT count(*), max(a) FROM read_csv('{TEMP_DIR}/bad_row_after_small_boundary.csv', header = true,
+	auto_detect = false, columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, buffer_size = 10000, store_rejects = true);
+----
+249	249
+
+query II
+SELECT line, error_type FROM reject_errors;
+----
+202	TOO MANY COLUMNS
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# Default buffer size: boundaries are 8MB apart, so with a 4-byte header and 1000-byte rows row 8000 is the first
+# full row after the boundary at 8000000
+statement ok
+COPY (
+	SELECT l FROM (
+		SELECT -1 AS i, 'a,b' AS l
+		UNION ALL
+		SELECT i, CASE WHEN i = 8000 THEN i || ',' || repeat('x', 996 - length(i::VARCHAR)) || ',x'
+		               ELSE i || ',' || repeat('x', 998 - length(i::VARCHAR)) END
+		FROM range(10000) t(i)
+	) ORDER BY i
+) TO '{TEMP_DIR}/bad_row_after_boundary.csv' (FORMAT csv, HEADER false, QUOTE '', DELIMITER '\t');
+
+statement error
+SELECT count(*) FROM read_csv('{TEMP_DIR}/bad_row_after_boundary.csv', header = true, auto_detect = false,
+	columns = {'a': 'BIGINT', 'b': 'VARCHAR'});
+----
+Expected Number of Columns: 2 Found: 3
+
+query II
+SELECT count(*), max(a) FROM read_csv('{TEMP_DIR}/bad_row_after_boundary.csv', header = true, auto_detect = false,
+	columns = {'a': 'BIGINT', 'b': 'VARCHAR'}, store_rejects = true);
+----
+9999	9999
+
+query II
+SELECT line, error_type FROM reject_errors;
+----
+8002	TOO MANY COLUMNS

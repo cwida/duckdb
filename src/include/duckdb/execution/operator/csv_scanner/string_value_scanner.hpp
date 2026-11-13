@@ -416,8 +416,9 @@ private:
 	//! Main function, sets the correct start
 	void SetStart();
 	//! From a given initial state, it skips until we reach the until_state
-	bool SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator,
-	                    bool &quoted) const;
+	//! If unterminated_quote is set, it reports whether we stopped inside a quoted value
+	bool SkipUntilState(CSVState initial_state, CSVState until_state, CSVIterator &current_iterator, bool &quoted,
+	                    optional_ptr<bool> unterminated_quote = nullptr) const;
 	//! If the current row we found is valid
 	bool IsRowValid(CSVIterator &current_iterator) const;
 	ValidRowInfo TryRow(CSVState state, idx_t start_pos, idx_t end_pos) const;
