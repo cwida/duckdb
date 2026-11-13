@@ -169,12 +169,14 @@ void AllowCommunityExtensionsSetting::OnSet(SettingCallbackInfo &info, Value &in
 // Allow Extension Repositories
 //===----------------------------------------------------------------------===//
 // Ordering of the access levels, independent of the enum's numeric values: while the database is running the setting
-// can only move to a lower level ('undecided' -> 'allowed' -> 'forbidden')
+// can only move to a lower level ('hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden')
 static int ExtensionRepositoryAccessLevel(ExtensionRepositoryAccess access) {
 	switch (access) {
-	case ExtensionRepositoryAccess::UNDECIDED:
-		return 2;
+	case ExtensionRepositoryAccess::HOSTS:
+		return 3;
 	case ExtensionRepositoryAccess::ALLOWED:
+		return 2;
+	case ExtensionRepositoryAccess::HOSTS_ONLY:
 		return 1;
 	default: // FORBIDDEN
 		return 0;
@@ -191,13 +193,13 @@ void AllowExtensionRepositoriesSetting::OnSet(SettingCallbackInfo &info, Value &
 		// the value is set before the database is running (startup) - any value is allowed
 		return;
 	}
-	// while the database is running the setting can only move down: the 'undecided' default can be decided either way,
-	// 'allowed' can still be forbidden, but a decision cannot be reverted. This makes 'forbidden' a one-way ratchet
-	// within a session
+	// while the database is running the setting can only move down: the 'hosts' default can be opened up to 'allowed'
+	// or tightened, 'allowed' can still be tightened, but no step can be reverted. This makes 'forbidden' a one-way
+	// ratchet within a session
 	auto current_access = ExtensionRepositoryManager::GetAccess(*info.db);
 	if (ExtensionRepositoryAccessLevel(new_access) > ExtensionRepositoryAccessLevel(current_access)) {
-		throw InvalidInputException("allow_extension_repositories can only be changed from 'undecided' to 'allowed' or "
-		                            "'forbidden', or from 'allowed' to 'forbidden', while the database is running");
+		throw InvalidInputException("allow_extension_repositories can only be tightened while the database is running: "
+		                            "'hosts' -> 'allowed' -> 'hosts_only' -> 'forbidden'");
 	}
 }
 

@@ -97,6 +97,27 @@ Failed to read the metadata file of the extension repository
 statement ok
 DROP EXTENSION REPOSITORY IF EXISTS parsed_data_repo
 
+# the host form prints without a prefix; it fails here (no httpfs to reach a host, or no such host), after it has been
+# copied and reparsed
+statement ok
+SET autoload_known_extensions=false
+
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY parsed_data.example
+----
+<REGEX>:.*
+
+statement error
+CREATE EXTENSION REPOSITORY IF NOT EXISTS "parsed-data.example"
+----
+<REGEX>:.*
+
+statement ok
+RESET autoload_known_extensions
+
+statement ok
+DROP EXTENSION REPOSITORY IF EXISTS "parsed-data.example"
+
 # Trigger variants
 statement ok
 DROP TABLE IF EXISTS parsed_data_trigger_target
