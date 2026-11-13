@@ -1,0 +1,14 @@
+diff --git a/test/sql/hive/hive_scan/hive_scan_formats.test b/test/sql/hive/hive_scan/hive_scan_formats.test
+index 1b31526..68b5dfb 100644
+--- a/test/sql/hive/hive_scan/hive_scan_formats.test
++++ b/test/sql/hive/hive_scan/hive_scan_formats.test
+@@ -2,6 +2,9 @@
+ # description: hive_scan() over local parquet, csv and json Hive layouts (no catalog, no cloud)
+ # group: [hive_scan]
+
++# Local partition scans return no rows on Windows.
++require notwindows
++
+ require parquet
+
+ require json

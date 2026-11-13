@@ -273,8 +273,8 @@ class ParsedEntries:
         self.types = {}
         self.copy_functions = {}
 
-        file = open(file_path, 'r')
-        file_blob = file.read()
+        with open(file_path, 'r') as file:
+            file_blob = file.read()
 
         # Get the extension functions
         ext_functions_file_blob = get_slice_of_file("EXTENSION_FUNCTIONS", file_blob)
@@ -1078,7 +1078,8 @@ def main():
 
     for extension_name in extension_names:
         # For every extension, add the functions/settings added by the extension
-        extension_data.add_extension(extension_name)
+        if extension_name not in extension_data.added_extensions:
+            extension_data.add_extension(extension_name)
 
     # Add hardcoded extension entries (
     for key, value in HARDCODED_EXTENSION_FUNCTIONS.items():
