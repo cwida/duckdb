@@ -155,6 +155,10 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 		return false;
 	}
 	const auto &cast = input.expr.Cast<BoundFunctionExpression>();
+	// CSV scanner only hard-casts; leave TRY_CAST in the projection (issue #23818)
+	if (BoundCastExpression::IsTryCast(cast)) {
+		return false;
+	}
 	const auto &target_type = cast.GetReturnType();
 	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
 	// With a custom schema (the 'schema' option, or a MultiFileReader that binds its own schema) the files are mapped

@@ -156,11 +156,17 @@ FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1, 
 3	3
 3	3
 
-# TRY_CAST: column is only used with try_cast
+# TRY_CAST: must not be pushed into CSV reader types (issue #23818).
+# Scanner hard-casts only; keep TRY_CAST in the projection.
 query II
 EXPLAIN SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|');
 ----
-physical_plan	<!REGEX>:.*PROJECTION.*
+physical_plan	<REGEX>:.*PROJECTION.*
+
+query II
+EXPLAIN SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|');
+----
+physical_plan	<REGEX>:.*CAST.*
 
 query I
 SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1;

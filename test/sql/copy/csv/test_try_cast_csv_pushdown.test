@@ -1,0 +1,149 @@
+# name: test/sql/copy/csv/test_try_cast_csv_pushdown.test
+# description: TRY_CAST must not be pushed into CSV reader types (issue #23818)
+# group: [csv]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# Dirty integer CSV (VARCHAR column, invalid cells)
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('not_a_number'), ('2'), (NULL)) t(v))
+TO '{TEMP_DIR}/try_cast_int.csv' (HEADER false);
+
+# Dirty TRY_CAST → NULL (must not hard-fail in scanner)
+query I
+SELECT TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+1
+2
+NULL
+NULL
+
+# Clean TRY_CAST works
+query I
+SELECT TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false)
+WHERE column0 IS NOT NULL AND column0 != 'not_a_number'
+ORDER BY 1;
+----
+1
+2
+
+# Plain CAST on dirty cells throws
+statement error
+SELECT CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false);
+----
+Conversion Error
+
+# CAST + TRY_CAST together: CAST may push, TRY_CAST must stay (not both pushed as hard cast)
+query II
+EXPLAIN
+SELECT column0::INTEGER, TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false)
+WHERE column0 IS NOT NULL AND column0 != 'not_a_number';
+----
+physical_plan	<REGEX>:.*CAST.*
+
+query II
+SELECT column0::INTEGER, TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false)
+WHERE column0 IS NOT NULL AND column0 != 'not_a_number'
+ORDER BY 1, 2;
+----
+1	1
+2	2
+
+# Dirty DATE
+statement ok
+COPY (SELECT * FROM (VALUES ('1992-01-01'), ('not-a-date'), ('2000-12-31')) t(v))
+TO '{TEMP_DIR}/try_cast_date.csv' (HEADER false);
+
+query I
+SELECT TRY_CAST(column0 AS DATE)
+FROM read_csv('{TEMP_DIR}/try_cast_date.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+1992-01-01
+2000-12-31
+NULL
+
+# Dirty TIMESTAMP
+statement ok
+COPY (SELECT * FROM (VALUES ('2020-01-01 12:00:00'), ('bad-ts'), ('2021-06-15 08:30:00')) t(v))
+TO '{TEMP_DIR}/try_cast_ts.csv' (HEADER false);
+
+query I
+SELECT TRY_CAST(column0 AS TIMESTAMP)
+FROM read_csv('{TEMP_DIR}/try_cast_ts.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+2020-01-01 12:00:00
+2021-06-15 08:30:00
+NULL
+
+# Dirty DECIMAL
+statement ok
+COPY (SELECT * FROM (VALUES ('1.5'), ('nope'), ('3.25')) t(v))
+TO '{TEMP_DIR}/try_cast_dec.csv' (HEADER false);
+
+query I
+SELECT TRY_CAST(column0 AS DECIMAL(10, 2))
+FROM read_csv('{TEMP_DIR}/try_cast_dec.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+1.50
+3.25
+NULL
+
+# Dirty BOOL
+statement ok
+COPY (SELECT * FROM (VALUES ('true'), ('maybe'), ('false')) t(v))
+TO '{TEMP_DIR}/try_cast_bool.csv' (HEADER false);
+
+query I
+SELECT TRY_CAST(column0 AS BOOLEAN)
+FROM read_csv('{TEMP_DIR}/try_cast_bool.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+false
+true
+NULL
+
+# EXPLAIN: TRY_CAST alone keeps projection/cast (not pushed into CSV types)
+query II
+EXPLAIN SELECT TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false);
+----
+physical_plan	<REGEX>:.*PROJECTION.*
+
+query II
+EXPLAIN SELECT TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false);
+----
+physical_plan	<REGEX>:.*CAST.*
+
+# Optimizer off: same NULL semantics
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT TRY_CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false)
+ORDER BY 1 NULLS LAST;
+----
+1
+2
+NULL
+NULL
+
+statement error
+SELECT CAST(column0 AS INTEGER)
+FROM read_csv('{TEMP_DIR}/try_cast_int.csv', columns = {'column0': 'VARCHAR'}, header = false);
+----
+Conversion Error
+
+statement ok
+PRAGMA enable_optimizer;
