@@ -246,3 +246,80 @@ query I
 SELECT (0, 0) < ANY(SELECT 1, 0);
 ----
 true
+
+# Issue #22304: row comparison where the LHS struct and the subquery columns
+# have different but castable types must reconcile both sides to a common type.
+# Previously this triggered an internal error in the struct comparator
+# (e.g. "Expected unified vector format of type INT32, but found type INT64").
+statement ok
+CREATE TABLE tenk1 AS SELECT i AS unique1, i * 2 AS unique2 FROM range(10) t(i);
+
+query II
+SELECT unique1, unique2 FROM tenk1 WHERE ((unique1, unique2) < ANY (SELECT 2, 4)) ORDER BY unique1;
+----
+0	0
+1	2
+
+query I
+SELECT count(*) FROM tenk1 WHERE (unique1, unique2) <= ANY (SELECT 2, 4);
+----
+3
+
+query I
+SELECT count(*) FROM tenk1 WHERE (unique1, unique2) > ANY (SELECT 2, 4);
+----
+7
+
+query I
+SELECT count(*) FROM tenk1 WHERE (unique1, unique2) >= ANY (SELECT 2, 4);
+----
+8
+
+query II
+SELECT unique1, unique2 FROM tenk1 WHERE ((unique1, unique2) < ALL (SELECT 2, 4)) ORDER BY unique1;
+----
+0	0
+1	2
+
+# both LHS-wider and RHS-wider mixes, plus float and decimal targets
+query I
+SELECT (1::INT, 2::INT) < ANY(SELECT 1::BIGINT, 3::BIGINT);
+----
+true
+
+query I
+SELECT (1::BIGINT, 2::BIGINT) < ANY(SELECT 1::INT, 2::INT);
+----
+false
+
+query I
+SELECT (1::TINYINT, 2::INT, 3::BIGINT) < ANY(SELECT 1::BIGINT, 2::SMALLINT, 4::INT);
+----
+true
+
+query I
+SELECT (1::INT, 2::INT) <= ANY(SELECT 1.5::DOUBLE, 2.5::DOUBLE);
+----
+true
+
+query I
+SELECT (1, 2) < ANY(SELECT 1::DECIMAL(10,2), 5::DECIMAL(10,2));
+----
+true
+
+# genuinely incompatible element types still produce a clean binder error
+statement error
+SELECT (1, 'x') < ANY(SELECT 1, DATE '2020-01-01');
+----
+<REGEX>:.*Cannot compare values of type TUPLE\(INTEGER, VARCHAR\) and TUPLE\(INTEGER, DATE\) in IN/ANY/ALL clause.*
+
+# mismatched row/column counts produce a clean binder error instead of an internal error
+statement error
+SELECT (1, 2) < ANY(SELECT 1, 2, 3);
+----
+Subquery returns 3 columns - expected 2
+
+statement error
+SELECT (1, 2, 3) < ANY(SELECT 1, 2);
+----
+Subquery returns 2 columns - expected 3
