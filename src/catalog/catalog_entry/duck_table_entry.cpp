@@ -1355,6 +1355,24 @@ unique_ptr<CatalogEntry> DuckTableEntry::SetColumnComment(ClientContext &context
 
 unique_ptr<CatalogEntry> DuckTableEntry::AddForeignKeyConstraint(AlterForeignKeyInfo &info) {
 	D_ASSERT(info.type == AlterForeignKeyType::AFT_ADD);
+	// Loading a checkpoint re-creates every referencing table, which re-adds the primary-key side constraint that the
+	// referenced table has already deserialized - adding it a second time duplicates the constraint on every reopen.
+	for (auto &constraint : constraints) {
+		if (constraint->type != ConstraintType::FOREIGN_KEY) {
+			continue;
+		}
+		auto &fk = constraint->Cast<ForeignKeyConstraint>();
+		if (fk.info.type != ForeignKeyType::FK_TYPE_PRIMARY_KEY_TABLE) {
+			continue;
+		}
+		if (fk.info.schema != info.GetQualifiedName().Schema() || fk.info.table != info.fk_table) {
+			continue;
+		}
+		if (fk.info.pk_keys != info.pk_keys || fk.info.fk_keys != info.fk_keys) {
+			continue;
+		}
+		return nullptr;
+	}
 	auto create_info = make_uniq<CreateTableInfo>(schema, name);
 	create_info->temporary = temporary;
 	create_info->comment = comment;
