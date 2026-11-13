@@ -331,6 +331,8 @@ public:
 	DUCKDB_API IndexTypeSet &GetIndexTypes();
 	static idx_t GetSystemMaxThreads(FileSystem &fs);
 	static idx_t GetSystemMaxAsyncThreads(FileSystem &fs);
+	//! The default number of async threads is never below this, even on machines with few cores
+	static constexpr idx_t MINIMUM_ASYNC_THREADS = 32;
 	static idx_t GetSystemAvailableMemory(FileSystem &fs);
 	static optional_idx ParseMemoryLimitSlurm(const string &arg);
 	void SetDefaultMaxMemory();

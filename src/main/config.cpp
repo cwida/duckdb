@@ -743,7 +743,8 @@ idx_t DBConfig::GetSystemMaxAsyncThreads(FileSystem &fs) {
 #ifdef DUCKDB_NO_THREADS
 	return 0;
 #else
-	return MinValue<idx_t>(4 * GetSystemMaxThreads(fs), 256);
+	// remote reads wait on latency rather than CPU, so small machines still need enough I/O threads
+	return MinValue<idx_t>(MaxValue<idx_t>(4 * GetSystemMaxThreads(fs), MINIMUM_ASYNC_THREADS), 256);
 #endif
 }
 

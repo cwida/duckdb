@@ -144,12 +144,13 @@ enum class ScanReadAheadAcquire : uint8_t {
 class ScanReadAhead {
 public:
 	ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
-	              unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p);
+	              unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p, bool remote_files = false);
 	~ScanReadAhead();
 
 	//! Create the read-ahead driver from the read_ahead_depth setting, returns null when read-ahead is disabled.
 	//! -1 means automatic mode, unlimited depth with the backlog bounded by a temp-memory reservation.
-	static unique_ptr<ScanReadAhead> Create(ClientContext &context);
+	//! remote_files lets the scan open files as far ahead as the async pool allows, to hide per-file latency.
+	static unique_ptr<ScanReadAhead> Create(ClientContext &context, bool remote_files = false);
 
 public:
 	//! Claims the next job and schedules its I/O, filling io_tasks when the I/O was detached to the pool.

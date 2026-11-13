@@ -6,6 +6,7 @@
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -150,11 +151,20 @@ static idx_t GetOpenFileBudget(ClientContext &context) {
 	return FileSystem::GetFileDescriptorShare(file_descriptor_limit);
 }
 
+static idx_t GetOpenWindow(ClientContext &context, bool remote_files) {
+	const auto async_threads = TaskScheduler::GetScheduler(context).NumberOfAsyncThreads();
+	if (remote_files) {
+		return async_threads * 2;
+	}
+	// local opens are cheap and consumed by the worker threads, so a larger async pool should not widen the window
+	const auto threads = MaxValue<idx_t>(DBConfig::GetConfig(context).options.maximum_threads, 1);
+	return MinValue<idx_t>(async_threads, 4 * threads) * 2;
+}
+
 ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
-                             unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p)
+                             unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p, bool remote_files)
     : context(context), read_ahead_depth(read_ahead_depth_p), memory_governor(std::move(memory_governor_p)),
-      open_window(MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
-                                  memory_governor ? 0 : read_ahead_depth)),
+      open_window(MaxValue<idx_t>(GetOpenWindow(context, remote_files), memory_governor ? 0 : read_ahead_depth)),
       open_file_budget(GetOpenFileBudget(context)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
@@ -169,7 +179,7 @@ void ScanReadAhead::CancelAndDrain() {
 	executor->CancelAndDrain();
 }
 
-unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
+unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context, bool remote_files) {
 	if (TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() == 0) {
 		// read-ahead schedules its I/O on the async pool, without async threads there is nothing to gain
 		return nullptr;
@@ -181,9 +191,9 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
 		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context.GetContext()));
+		                                make_uniq<ManagedAsyncMemoryGovernor>(context.GetContext()), remote_files);
 	}
-	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
+	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr, remote_files);
 }
 
 bool ScanReadAhead::TryProduceJob(const ProduceJobCallback &claim_and_schedule) {
