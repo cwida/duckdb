@@ -1,0 +1,132 @@
+# name: test/sql/subquery/lateral/lateral_filter_into_delim_cte.test
+# description: Filters reach the lateral UNNEST or table function of a delim join that was rewritten into CTEs
+# group: [lateral]
+
+require json
+
+statement ok
+CREATE TABLE notes AS SELECT * FROM (VALUES
+    (1, '[{"kind": "X", "n": 1}]'),
+    (2, '[{"kind": "Y"}]'),
+    (3, 'a free text note, not JSON')) v(id, payload);
+
+# a guard on the input of a lateral table function also protects it inside a correlated subquery
+query I
+SELECT count(*) FROM notes d
+WHERE NOT EXISTS (
+    SELECT 1 FROM notes AS a, range(0, CAST(coalesce(json_array_length(a.payload), 0) AS BIGINT)) AS t(i)
+    WHERE a.id = d.id AND json_valid(a.payload)
+      AND json_extract_string(json_extract(a.payload, '$[' || t.i || ']'), '$.kind') = 'X');
+----
+2
+
+query I
+SELECT d.id FROM notes d
+WHERE EXISTS (
+    SELECT 1 FROM notes AS a, range(0, CAST(coalesce(json_array_length(a.payload), 0) AS BIGINT)) AS t(i)
+    WHERE a.id = d.id AND json_valid(a.payload)
+      AND json_extract_string(json_extract(a.payload, '$[' || t.i || ']'), '$.kind') = 'X')
+ORDER BY d.id;
+----
+1
+
+query I
+SELECT count(*) FROM notes d
+WHERE NOT EXISTS (
+    SELECT 1 FROM notes AS a, unnest(CAST(a.payload AS JSON[])) AS t(item)
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.item, '$.kind') = 'X');
+----
+2
+
+query I
+SELECT count(*) FROM notes d
+WHERE NOT EXISTS (
+    SELECT 1 FROM notes AS a, LATERAL (SELECT unnest(CAST(a.payload AS JSON[])) AS item) t
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.item, '$.kind') = 'X');
+----
+2
+
+query I
+SELECT count(*) FROM notes d
+WHERE NOT EXISTS (
+    SELECT 1 FROM notes AS a, json_each(a.payload) AS t
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.value, '$.kind') = 'X');
+----
+2
+
+statement ok
+CREATE TABLE docs AS
+SELECT i AS id,
+       to_json([{'id': i, 'items': [{'id': j, 'type': CASE WHEN j = 0 THEN 'a' ELSE 'b' END} FOR j IN range(5)]}]) AS doc
+FROM range(4) t(i);
+
+# a filter that can throw on the unnested side of an inner lateral join is applied to the unnest output
+query II
+EXPLAIN (FORMAT compact) SELECT count(*)
+FROM docs, unnest(CAST(docs.doc AS JSON[])) AS t(thread), unnest(CAST(json_extract(thread, '$.items') AS JSON[])) AS i(item)
+WHERE json_extract_string(item, '$.type') = 'a';
+----
+physical_plan	<REGEX>:.*FILTER[^\n]*json_extract_string\(item, '\$\.type'\) = 'a'[^\n]*\n( *PROJECTION[^\n]*\n)* *INOUT_FUNCTION[^\n]*Name: unnest.*
+
+query I
+SELECT count(*)
+FROM docs, unnest(CAST(docs.doc AS JSON[])) AS t(thread), unnest(CAST(json_extract(thread, '$.items') AS JSON[])) AS i(item)
+WHERE json_extract_string(item, '$.type') = 'a';
+----
+4
+
+# above a LEFT lateral join, the filter has to see the rows without a match
+query I
+SELECT count(*)
+FROM docs LEFT JOIN LATERAL unnest(CAST(json_extract(docs.doc, '$[0].items') AS JSON[])) AS i(item) ON true
+WHERE item IS NULL;
+----
+0
+
+# rows without a match, including an empty list, a missing key and a duplicate outer row, are null-extended
+statement ok
+CREATE TABLE sparse_docs AS SELECT * FROM (VALUES
+    (1, '[{"items": [{"type": "a"}]}]'),
+    (2, '[{"items": []}]'),
+    (3, '[{"other": 1}]'),
+    (3, '[{"other": 1}]')) v(id, doc);
+
+query II
+SELECT id, count(*)
+FROM sparse_docs LEFT JOIN LATERAL unnest(CAST(json_extract(sparse_docs.doc, '$[0].items') AS JSON[])) AS i(item) ON true
+WHERE item IS NULL
+GROUP BY id ORDER BY id;
+----
+2	1
+3	2
+
+# a filter that can throw still runs after a guard of a subquery
+statement ok
+CREATE TABLE raw AS SELECT * FROM (VALUES (1, '[{"type": "a"}, {"type": "b"}]'), (2, '[{"type": "b"}]'), (3, 'not json')) v(id, doc);
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r, unnest(CAST(r.doc AS JSON[])) AS i(item)
+WHERE json_extract_string(r.doc, '$[0].type') = 'a';
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r
+WHERE EXISTS (SELECT 1 FROM unnest(CAST(r.doc AS JSON[])) AS i(item) WHERE json_extract_string(item, '$.type') = 'a')
+  AND json_extract_string(r.doc, '$[0].type') = 'a';
+----
+1
+
+# without identity projections above the delim join CTEs, unused columns are still pruned from the CTE input
+statement ok
+CREATE TABLE wide AS SELECT i AS id, repeat('a', 50) pad1, repeat('b', 50) pad2 FROM range(1000) t(i);
+
+query II
+EXPLAIN (FORMAT compact) SELECT max(sub.pad1) FROM (SELECT d.*, t.i FROM wide d, range(0, d.id % 3) t(i) WHERE t.i = 0) sub;
+----
+physical_plan	<REGEX>:.*SEQ_SCAN[^\n]*Table: [^\n]*\.wide;[^\n]*Projections: id, pad1\n.*
+
+query II
+SELECT max(sub.pad1) = repeat('a', 50), count(*) FROM (SELECT d.*, t.i FROM wide d, range(0, d.id % 3) t(i) WHERE t.i = 0) sub;
+----
+true	666

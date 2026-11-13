@@ -7,7 +7,8 @@
     {
       "reason": "Measures CTE restrictions using planner dependencies deliberately discarded by serialization",
       "paths": [
-        "test/optimizer/pushdown/cte_domain_join_filter.test"
+        "test/optimizer/pushdown/cte_domain_join_filter.test",
+        "test/sql/subquery/lateral/lateral_filter_into_delim_cte.test"
       ]
     },
     {
