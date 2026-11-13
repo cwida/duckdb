@@ -36,6 +36,24 @@ SELECT value FROM duckdb_settings() WHERE name = 'disabled_filesystems'
 ----
 LocalFileSystem
 
+# Thread settings can still detect system CPU limits
+statement ok
+SET async_threads = 2;
+
+query I
+SELECT current_setting('async_threads')
+----
+2
+
+statement ok
+RESET async_threads;
+
+statement ok
+RESET threads;
+
+statement ok
+RESET http_client_pool_capacity;
+
 statement error
 RESET disabled_filesystems;
 ----

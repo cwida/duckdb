@@ -260,11 +260,10 @@ void HTTPTransportManager::Initialize(const DBConfig &config) {
 }
 
 idx_t HTTPTransportManager::AutomaticCapacity(const DBConfig &config) {
-	auto &fs = *config.file_system;
 	auto io_concurrency = config.options.async_threads == DConstants::INVALID_INDEX
-	                          ? DBConfig::GetSystemMaxAsyncThreads(fs)
+	                          ? DBConfig::GetSystemMaxAsyncThreads()
 	                          : config.options.async_threads;
-	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), FileSystem::GetFileDescriptorLimit(), io_concurrency);
+	return CalculateCapacity(DBConfig::GetSystemMaxThreads(), FileSystem::GetFileDescriptorLimit(), io_concurrency);
 }
 
 idx_t HTTPTransportManager::GetCapacity() const {
