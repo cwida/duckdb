@@ -1,0 +1,197 @@
+# name: test/sql/storage/delete_second_transaction_mask.test
+# description: A second transaction deleting from a vector that already holds a committed delete keeps both deletes in bitmasks instead of a pinned per-row delete id array
+# group: [storage]
+
+# the BASE_TABLE byte thresholds below are calibrated for the default 256KB block size
+require block_size 262144
+
+load __TEST_DIR__/delete_second_transaction_mask.db
+
+statement ok
+SET threads = 1
+
+statement ok
+PRAGMA force_checkpoint
+
+# 600 vectors, and every vector holds a row for each residue modulo 1000
+statement ok
+CREATE TABLE u AS SELECT i AS k, i::DOUBLE AS v FROM range(1228800) r(i)
+
+statement ok
+CHECKPOINT
+
+# a snapshot from before any delete: the committed delete id stays above its start
+statement ok con_old
+BEGIN
+
+query I con_old
+SELECT COUNT(*) FROM u
+----
+1228800
+
+# the first delete of every vector (single-transaction bitmask)
+query I
+DELETE FROM u WHERE k % 1000 = 1
+----
+1229
+
+statement ok
+CHECKPOINT
+
+statement ok
+CREATE TABLE m0 AS SELECT COALESCE(SUM(memory_usage_bytes), 0) AS b FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+
+# the second delete lands in vectors that already hold a committed delete
+statement ok
+BEGIN
+
+query I
+DELETE FROM u WHERE k % 1000 = 2
+----
+1229
+
+# inside the transaction: no per-row delete id arrays (600 vectors * 16KB would be ~9.8MB)
+query I
+SELECT COALESCE(SUM(memory_usage_bytes), 0) - (SELECT b FROM m0) < 2000000 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+# the transaction sees both deletes, the old snapshot sees neither
+query I
+SELECT COUNT(*) FROM u
+----
+1226342
+
+query I con_old
+SELECT COUNT(*) FROM u
+----
+1228800
+
+statement ok
+COMMIT
+
+# after the commit the memory is still not pinned
+query I
+SELECT COALESCE(SUM(memory_usage_bytes), 0) - (SELECT b FROM m0) < 2000000 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+query I
+SELECT COUNT(*) FROM u
+----
+1226342
+
+query I con_old
+SELECT COUNT(*) FROM u
+----
+1228800
+
+# the rows of the old snapshot are all still readable
+query II con_old
+SELECT COUNT(*), SUM(k) FROM u WHERE k % 1000 IN (1, 2)
+----
+2458	1509215687
+
+# rows that are deleted already cannot be deleted again
+query I
+DELETE FROM u WHERE k % 1000 IN (1, 2)
+----
+0
+
+# a rolled back delete restores the vectors to the two committed deletes
+statement ok
+BEGIN
+
+query I
+DELETE FROM u WHERE k % 1000 = 3
+----
+1229
+
+query I
+SELECT COUNT(*) FROM u
+----
+1225113
+
+statement ok
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM u
+----
+1226342
+
+query I con_old
+SELECT COUNT(*) FROM u
+----
+1228800
+
+# deletes of concurrent transactions into the same vectors conflict on the same rows only
+statement ok con1
+BEGIN
+
+statement ok
+DELETE FROM u WHERE k % 1000 = 4
+
+statement error con1
+DELETE FROM u WHERE k % 1000 = 4
+----
+Conflict on tuple deletion
+
+statement ok con1
+ROLLBACK
+
+# the old snapshot ends: the checkpoint folds both deletes into one mask
+statement ok con_old
+COMMIT
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM u
+----
+1225113
+
+query I
+SELECT COALESCE(SUM(memory_usage_bytes), 0) - (SELECT b FROM m0) < 2000000 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+# a settled vector accepts the delete of another transaction without a per-row array
+query I
+DELETE FROM u WHERE k % 1000 = 5
+----
+1229
+
+query I
+SELECT COALESCE(SUM(memory_usage_bytes), 0) - (SELECT b FROM m0) < 2000000 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+query I
+SELECT COUNT(*) FROM u
+----
+1223884
+
+query I
+SELECT COUNT(*) FROM u WHERE k % 1000 IN (1, 2, 4, 5)
+----
+0
+
+# everything survives a restart
+restart
+
+query I
+SELECT COUNT(*) FROM u
+----
+1223884
+
+query I
+SELECT COUNT(*) FROM u WHERE k % 1000 IN (1, 2, 4, 5)
+----
+0
+
+query I
+SELECT COUNT(*) FROM u WHERE k % 1000 = 3
+----
+1229

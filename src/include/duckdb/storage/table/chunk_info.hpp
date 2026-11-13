@@ -47,7 +47,10 @@ enum class VersionCompressionResult : uint8_t {
 
 //! The storage state of the delete side of a ChunkVectorInfo. Exhaustive and mutually exclusive:
 //! CONSTANT - all rows share constant_delete_id
-//! MASKED   - the rows in deleted_mask share mask_delete_id, the others constant_delete_id (never a delete)
+//! MASKED   - the rows in deleted_mask share mask_delete_id, the others constant_delete_id (never a delete).
+//!            Optionally a second, earlier committed delete is kept in base_mask (see base_mask below), so that a
+//!            vector that already holds a committed delete can take the delete of another transaction without
+//!            materializing the per-row array
 //! ARRAY    - per-row ids in deleted_data
 enum class DeleteIdState : uint8_t { CONSTANT, MASKED, ARRAY };
 
@@ -120,8 +123,16 @@ private:
 	//! ARRAY -> MASKED: record alive rows as invalid bits, free the per-row delete array. mask_id is the
 	//! shared committed id of the deleted rows (0 when they are already visible to all transactions)
 	void CompressDeleteToMask(transaction_t mask_id);
-	//! MASKED -> ARRAY: re-materialize the per-row delete array from the bitmask
+	//! MASKED -> ARRAY: re-materialize the per-row delete array from the bitmask(s)
 	void DecompressDeleteMask();
+	//! Whether the MASKED state carries a second (base) delete mask
+	bool HasBaseMask() const {
+		return base_mask.IsMaskSet();
+	}
+	//! The writes of the transaction in deleted_mask were all reverted: the base mask becomes the only mask again
+	void RestoreBaseMask();
+	//! Folds base_mask into deleted_mask once both deletes are visible to all transactions
+	void MergeBaseMask();
 	//! The delete id or update marker of a row of a vector without per-row ids
 	transaction_t GetDeleteId(idx_t row) const;
 	//! Whether the rows (0, 1, ..., count - 1 if rows is nullptr) are all rows outside of the mask
@@ -148,6 +159,13 @@ private:
 	ValidityMask deleted_mask;
 	//! The id of the rows in the mask in the MASKED state (0 for deletes visible to all, as read from disk)
 	transaction_t mask_delete_id = 0;
+	//! Second bitmask of the MASKED state, only set while a committed delete and the delete of another transaction
+	//! live in the same vector: valid bit == the row holds base_delete_id. It never overlaps with deleted_mask, and
+	//! the rows in neither mask hold constant_delete_id (NOT_DELETED_ID whenever this mask is set). This keeps the
+	//! delete of a second transaction in a few hundred bytes instead of a 16 KB per-row array.
+	ValidityMask base_mask;
+	//! The committed id of the rows in base_mask (0 if they are visible to all, as read from disk)
+	transaction_t base_delete_id = 0;
 	//! The current delete-side storage state - the single source of truth for the delete side
 	DeleteIdState delete_state = DeleteIdState::CONSTANT;
 	//! Whether a compression pass could achieve anything for this vector: armed by any id modification,
