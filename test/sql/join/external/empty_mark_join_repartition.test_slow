@@ -1,0 +1,20 @@
+# name: test/sql/join/external/empty_mark_join_repartition.test_slow
+# description: Test external MARK join repartition with an empty hash table
+# group: [external]
+
+statement ok
+PRAGMA threads=4;
+
+statement ok
+PRAGMA memory_limit='8MB';
+
+query I
+SELECT count(*) FILTER (WHERE marker IS NULL)
+FROM (
+    SELECT (i, i) = ANY (
+        SELECT NULL::BIGINT, NULL::BIGINT FROM range(5000000)
+    ) AS marker
+    FROM range(5000000) t(i)
+);
+----
+5000000

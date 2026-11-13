@@ -1452,8 +1452,14 @@ public:
 			total_size += sink_collection.SizeInBytes();
 			total_count += sink_collection.Count();
 		}
-		auto total_blocks = (total_size + block_size - 1) / block_size;
-		auto count_per_block = total_count / total_blocks;
+		if (total_count == 0) {
+			for (auto &local_ht : local_hts) {
+				local_ht.get().Repartition(*sink.hash_table);
+			}
+			return;
+		}
+		auto total_blocks = MaxValue<idx_t>((total_size + block_size - 1) / block_size, 1);
+		auto count_per_block = MaxValue<idx_t>(total_count / total_blocks, 1);
 		auto blocks_per_vector = MaxValue<idx_t>(STANDARD_VECTOR_SIZE / count_per_block, 2);
 
 		// Assume 8 blocks per partition per thread (4 input, 4 output)
