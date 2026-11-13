@@ -173,7 +173,7 @@ unique_ptr<Expression> ExpressionBinder::CreateBoundComparison(ExpressionType co
                                                                unique_ptr<Expression> left,
                                                                unique_ptr<Expression> right, ErrorData &error) {
 	try {
-		return BoundComparisonExpression::Bind(context, comparison_type, std::move(left), std::move(right));
+		return BoundComparisonExpression::Bind(context, comparison_type, std::move(left), std::move(right), binder);
 	} catch (const std::exception &ex) {
 		error = ErrorData(ex);
 		return nullptr;

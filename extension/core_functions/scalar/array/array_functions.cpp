@@ -1,4 +1,5 @@
 #include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "core_functions/scalar/array_functions.hpp"
 #include "core_functions/array_kernels.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -41,7 +42,8 @@ static void ArrayGenericBinaryResolveTypes(ResolveScalarFunctionTypesInput &inpu
 
 	// Resolve common type
 	LogicalType common_type;
-	if (!LogicalType::TryGetMaxLogicalType(context, lhs_element_type, rhs_element_type, common_type)) {
+	if (!LogicalType::TryGetMaxLogicalType(context, lhs_element_type, rhs_element_type, common_type,
+	                                       input.GetDecimalWidthLimit())) {
 		throw BinderException("%s: Cannot infer common element type (left = '%s', right = '%s')",
 		                      SQLIdentifier(bound_function.GetName()), lhs_element_type.ToString(),
 		                      rhs_element_type.ToString());

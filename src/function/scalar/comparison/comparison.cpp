@@ -192,13 +192,14 @@ unique_ptr<Expression> BoundComparisonExpression::Create(ExpressionType type, un
 }
 
 unique_ptr<Expression> BoundComparisonExpression::Bind(ClientContext &context, ExpressionType type,
-                                                       unique_ptr<Expression> left, unique_ptr<Expression> right) {
+                                                       unique_ptr<Expression> left, unique_ptr<Expression> right,
+                                                       optional_ptr<Binder> binder) {
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(left));
 	children.push_back(std::move(right));
 
 	BoundScalarFunction function(GetComparisonFunction(type));
-	BindScalarFunctionInput input(context, function, children);
+	BindScalarFunctionInput input(context, function, children, binder);
 	function.GetBindCallback()(input);
 	return make_uniq<BoundFunctionExpression>(std::move(function), std::move(children), nullptr, true);
 }

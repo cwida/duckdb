@@ -696,6 +696,7 @@ public:
 	using BindFunctionInput::GetConstant;
 	using BindFunctionInput::GetDecimalWidthLimit;
 	using BindFunctionInput::GetNonNullConstant;
+	using BindFunctionInput::TryGetBinder;
 	using BindFunctionInput::TryGetConstant;
 
 	BoundScalarFunction &GetBoundFunction() const {

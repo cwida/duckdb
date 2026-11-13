@@ -391,6 +391,8 @@ class FunctionBinder {
 public:
 	DUCKDB_API explicit FunctionBinder(Binder &binder);
 	DUCKDB_API explicit FunctionBinder(ClientContext &context);
+	//! Binds within the query of the binder, if any: a bind callback that binds a nested function passes its own on
+	DUCKDB_API FunctionBinder(ClientContext &context, optional_ptr<Binder> binder);
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;

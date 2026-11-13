@@ -727,6 +727,9 @@ public:
 		return binder != nullptr;
 	}
 	DUCKDB_API Binder &GetBinder();
+	optional_ptr<Binder> TryGetBinder() const {
+		return binder;
+	}
 	//! The widest DECIMAL the bind constructs: the limit of the binder, or the max_decimal_width setting without one
 	DUCKDB_API DecimalWidthLimit GetDecimalWidthLimit() const;
 	vector<unique_ptr<Expression>> &GetArguments() const {

@@ -107,6 +107,223 @@ DETACH d
 statement ok
 RESET max_decimal_width
 
+# functions that bind a nested function or combine types while they bind follow the width of the storage version as
+# well: the sum list_aggr binds, the accumulator of list_reduce and the common type of a comparison. Created by the
+# default session, written by a session that bounds decimals to 38 digits
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.s (a DECIMAL(40,0))
+
+statement ok
+CREATE UNIQUE INDEX sx ON d.s ((list_aggr([a], 'sum')))
+
+statement ok
+INSERT INTO d.s SELECT i FROM range(1000) r(i)
+
+statement ok
+CREATE TABLE d.r (a DECIMAL(38,0), b DECIMAL(38,1))
+
+query I
+SELECT typeof(list_reduce([NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)], lambda x, y: x + y))
+----
+DECIMAL(40,1)
+
+statement ok
+CREATE UNIQUE INDEX rx ON d.r ((typeof(list_reduce([a, b], lambda x, y: x + y))))
+
+statement ok
+INSERT INTO d.r VALUES (1, 0.1)
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+statement ok
+CREATE TABLE d.c (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE INDEX cx ON d.c ((a < b))
+
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.5)
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+# a read-only session binds the indexes of a table it scans with a filter
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d (READ_ONLY)
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+query I
+SELECT count(*) FROM d.c WHERE b = 0.5
+----
+1
+
+statement ok
+DETACH d
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions.db' AS d
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement ok
+INSERT INTO d.s VALUES (1000)
+
+# the session combines the types within 38 digits, the key still holds the type name the default session computed
+query I
+SELECT typeof(list_reduce([NULL::DECIMAL(38,0), NULL::DECIMAL(38,1)], lambda x, y: x + y))
+----
+DECIMAL(38,0)
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+# the comparison of the key is computed in DECIMAL(39,1), as the default session computed it: a value of 38 digits fits
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)
+
+query I
+SELECT count(*) FROM d.c
+----
+2
+
+statement ok
+DETACH d
+
+# the reverse order: the indexes are created by a session that bounds decimals to 38 digits, on tables the default
+# session created, and written by the default session
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d (STORAGE_VERSION 'v2.1.0')
+
+statement ok
+CREATE TABLE d.s (a DECIMAL(40,0))
+
+statement ok
+CREATE TABLE d.r (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CREATE TABLE d.c (a DECIMAL(38,0), b DECIMAL(38,1))
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+SET max_decimal_width = 38
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d
+
+# the keys are bound without a bound, as the storage version binds them, although the session bounds decimals
+statement ok
+CREATE UNIQUE INDEX sx ON d.s ((list_aggr([a], 'sum')))
+
+statement ok
+INSERT INTO d.s SELECT i FROM range(1000) r(i)
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement ok
+CREATE UNIQUE INDEX rx ON d.r ((typeof(list_reduce([a, b], lambda x, y: x + y))))
+
+statement ok
+INSERT INTO d.r VALUES (1, 0.1)
+
+# the key holds the type name the storage version binds, not the one the session binds
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+statement ok
+CREATE INDEX cx ON d.c ((a < b))
+
+# the comparison of the key is computed in DECIMAL(39,1), so a value of 38 digits fits, while a query of the session
+# compares within 38 digits and overflows
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.5)
+
+statement error
+SELECT count(*) FROM d.c WHERE a < b
+----
+<REGEX>:.*out of range.*
+
+statement ok
+CHECKPOINT d
+
+statement ok
+DETACH d
+
+statement ok
+RESET max_decimal_width
+
+statement ok
+ATTACH '{TEST_DIR}/key_width_functions2.db' AS d
+
+query I
+SELECT a FROM d.s WHERE a = 7
+----
+7
+
+statement error
+INSERT INTO d.s VALUES (7)
+----
+<REGEX>:.*Duplicate key.*7.*
+
+statement error
+INSERT INTO d.r VALUES (2, 0.2)
+----
+<REGEX>:.*Duplicate key.*DECIMAL\(40,1\).*
+
+query I
+SELECT count(*) FROM d.c WHERE a < b
+----
+0
+
+statement ok
+INSERT INTO d.c VALUES (99999999999999999999999999999999999999, 0.6)
+
+query I
+SELECT count(*) FROM d.c
+----
+2
+
+statement ok
+DETACH d
+
 # a database of a storage version before wide decimals binds its keys within 38 digits, as the engines of that version
 # do: the key of the sum stays DECIMAL(38,2) while the session binds the sum to DECIMAL(39,2)
 statement ok

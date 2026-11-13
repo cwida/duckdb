@@ -28,6 +28,9 @@ FunctionBinder::FunctionBinder(ClientContext &context_p) : binder(nullptr), cont
 }
 FunctionBinder::FunctionBinder(Binder &binder_p) : binder(&binder_p), context(binder_p.context) {
 }
+FunctionBinder::FunctionBinder(ClientContext &context_p, optional_ptr<Binder> binder_p)
+    : binder(binder_p), context(context_p) {
+}
 
 optional_ptr<const DecimalWidthLimit> FunctionBinder::FixedDecimalWidthLimit() const {
 	return binder ? binder->GetFixedDecimalWidthLimit() : nullptr;
