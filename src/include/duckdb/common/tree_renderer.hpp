@@ -56,6 +56,9 @@ public:
 	//! client's "profiling_renderer_settings". Matched case-insensitively; throws if unknown, nullptr for "no_output".
 	static unique_ptr<TreeRenderer> CreateRenderer(ClientContext &context, const string &name);
 	static unique_ptr<TreeRenderer> CreateRenderer(ClientContext &context, const ProfilerPrintFormat &format);
+	//! As above, but configures built-ins from the given renderer settings
+	static unique_ptr<TreeRenderer> CreateRenderer(ClientContext &context, const string &name,
+	                                               const unordered_map<string, Value> &settings);
 
 	//! Create a built-in renderer without configuring it or consulting the registry (no ClientContext available)
 	static unique_ptr<TreeRenderer> CreateRenderer(const string &name);
