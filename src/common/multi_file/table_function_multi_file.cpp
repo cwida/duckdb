@@ -858,9 +858,7 @@ unique_ptr<FunctionData> TableFunctionMultiFileWrapper::MultiFileBindCopyWith(
 	    make_uniq<TableFunctionMultiFileWrapper>(std::move(single_file_function), std::move(settings)));
 }
 
-//! Report the metrics of the scan: the shared multi-file ones, plus those the wrapped function keeps for each of
-//! the files that have been opened
-static void TableFunctionMultiFileGetMetrics(TableFunctionGetMetricsInput &input) {
+void TableFunctionMultiFileWrapper::GetMetrics(TableFunctionGetMetricsInput &input) {
 	TableFunctionMultiFileFunction::MultiFileGetMetrics(input);
 	if (!input.global_state) {
 		return;
@@ -878,14 +876,14 @@ static void TableFunctionMultiFileGetMetrics(TableFunctionGetMetricsInput &input
 			if (!reader_data || reader_data->file_state != MultiFileFileState::OPEN || !reader_data->reader) {
 				continue;
 			}
-			reader_data->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
+			reader_data->reader->CollectMetrics(input.context, scan_state);
 		}
 	}
 	if (input.local_state) {
 		// a batch this thread stopped short, e.g. at a LIMIT, can have counted more for a file that is already finished
 		auto &local = input.local_state->Cast<MultiFileLocalState>();
 		if (local.job && local.job->reader) {
-			local.job->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
+			local.job->reader->CollectMetrics(input.context, scan_state);
 		}
 	}
 	lock_guard<mutex> metrics_guard(scan_state.metrics_lock);
@@ -954,7 +952,7 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	}
 	if (single_file_function.get_metrics) {
 		// the metrics of the scan include those the wrapped function keeps per file
-		result.get_metrics = TableFunctionMultiFileGetMetrics;
+		result.get_metrics = GetMetrics;
 	}
 	if (single_file_function.statistics && !single_file_function.statistics_extended) {
 		throw InternalException("Table function %s defines statistics, but a function wrapped in a multi file function "
