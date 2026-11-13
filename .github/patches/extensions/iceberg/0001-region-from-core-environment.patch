@@ -1,0 +1,26 @@
+diff --git a/src/catalog/rest/catalog_entry/table/iceberg_table.cpp b/src/catalog/rest/catalog_entry/table/iceberg_table.cpp
+index 3ab22b0ca..075581ad1 100644
+--- a/src/catalog/rest/catalog_entry/table/iceberg_table.cpp
++++ b/src/catalog/rest/catalog_entry/table/iceberg_table.cpp
+@@ -149,13 +149,14 @@ static void ParseS3ConfigOptions(const case_insensitive_map_t<string> &config, c
+ 	}
+ }
+ string RetrieveRegion(DBConfig &db_config) {
+-	char *retrieved_region = std::getenv("AWS_REGION");
+-	if (retrieved_region) {
+-		return string(retrieved_region);
+-	}
+-	retrieved_region = std::getenv("AWS_DEFAULT_REGION");
+-	if (retrieved_region) {
+-		return string(retrieved_region);
++	// read the environment through the core rather than libc, so the extension has no environment access of its own
++	auto retrieved_region = FileSystem::GetEnvVariable("AWS_REGION");
++	if (!retrieved_region.empty()) {
++		return retrieved_region;
++	}
++	retrieved_region = FileSystem::GetEnvVariable("AWS_DEFAULT_REGION");
++	if (!retrieved_region.empty()) {
++		return retrieved_region;
+ 	}
+ 
+ 	Value region_value;
