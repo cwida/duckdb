@@ -43,7 +43,10 @@ public:
 	}
 
 private:
-	void BeginWriteInternal(WriteStream &writer, const int64_t &first_value) {
+	//! PHYSICAL_TYPE is the signed Parquet physical type (int32_t or int64_t)
+	template <class PHYSICAL_TYPE>
+	void BeginWriteInternal(WriteStream &writer, const int64_t &value) {
+		const int64_t first_value = static_cast<PHYSICAL_TYPE>(value);
 		// <block size in values> <number of miniblocks in a block> <total value count> <first value>
 
 		// the block size is a multiple of 128; it is stored as a ULEB128 int
@@ -70,6 +73,7 @@ private:
 		block_count = 0;
 	}
 
+	template <class PHYSICAL_TYPE>
 	void WriteValueInternal(WriteStream &writer, const int64_t &value) {
 		// 1. Compute the differences between consecutive elements. For the first element in the block,
 		// use the last element in the previous block or, in the case of the first block,
@@ -81,7 +85,10 @@ private:
 		// so that the original values are correctly restituted.
 		// This may require explicit care in some programming languages
 		// (for example by doing all arithmetic in the unsigned domain).
-		const auto delta = static_cast<int64_t>(static_cast<uint64_t>(value) - static_cast<uint64_t>(previous_value));
+		// Wrap around in the width of the physical type
+		using UNSIGNED_TYPE = typename std::make_unsigned<PHYSICAL_TYPE>::type;
+		const int64_t delta =
+		    static_cast<PHYSICAL_TYPE>(static_cast<UNSIGNED_TYPE>(value) - static_cast<UNSIGNED_TYPE>(previous_value));
 		previous_value = value;
 		// Compute the frame of reference (the minimum of the deltas in the block).
 		min_delta = MinValue(min_delta, delta);
@@ -188,42 +195,42 @@ private:
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const int32_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal<int32_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const int64_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal<int64_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const uint32_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal<int32_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::BeginWrite(WriteStream &writer, const uint64_t &first_value) {
-	BeginWriteInternal(writer, first_value);
+	BeginWriteInternal<int64_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const int32_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal<int32_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const int64_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal<int64_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const uint32_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal<int32_t>(writer, static_cast<int64_t>(first_value));
 }
 
 template <>
 inline void DbpEncoder::WriteValue(WriteStream &writer, const uint64_t &first_value) {
-	WriteValueInternal(writer, first_value);
+	WriteValueInternal<int64_t>(writer, static_cast<int64_t>(first_value));
 }
 
 } // namespace duckdb

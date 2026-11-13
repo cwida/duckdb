@@ -1,0 +1,77 @@
+# name: test/sql/copy/parquet/parquet_dbp_wrap_around.test
+# description: DELTA_BINARY_PACKED deltas wrap around in the width of the physical type
+# group: [parquet]
+
+require parquet
+
+# INT32 deltas that overflow 32 bits must wrap, so that the min delta and the miniblock bit widths fit in 32 bits
+statement ok
+COPY (SELECT x::INTEGER x FROM (VALUES (-2147483648), (2147483647), (2147483646), (2147483645)) t(x))
+TO '{TEST_DIR}/dbp_wrap_int32.parquet' (PARQUET_VERSION v2, COMPRESSION uncompressed);
+
+query II
+SELECT encodings, total_uncompressed_size < 256 FROM parquet_metadata('{TEST_DIR}/dbp_wrap_int32.parquet');
+----
+DELTA_BINARY_PACKED	true
+
+query I
+SELECT list(x) FROM '{TEST_DIR}/dbp_wrap_int32.parquet';
+----
+[-2147483648, 2147483647, 2147483646, 2147483645]
+
+# UINTEGER is stored as INT32: its first value and deltas are encoded like the INTEGER bit pattern
+statement ok
+COPY (SELECT x::UINTEGER x FROM (VALUES (4294967295), (4294967294)) t(x))
+TO '{TEST_DIR}/dbp_wrap_uint32.parquet' (PARQUET_VERSION v2, COMPRESSION uncompressed);
+
+statement ok
+COPY (SELECT x::INTEGER x FROM (VALUES (-1), (-2)) t(x))
+TO '{TEST_DIR}/dbp_wrap_int32_pattern.parquet' (PARQUET_VERSION v2, COMPRESSION uncompressed);
+
+query I
+SELECT (SELECT total_uncompressed_size FROM parquet_metadata('{TEST_DIR}/dbp_wrap_uint32.parquet')) =
+       (SELECT total_uncompressed_size FROM parquet_metadata('{TEST_DIR}/dbp_wrap_int32_pattern.parquet'));
+----
+true
+
+query I
+SELECT list(x) FROM '{TEST_DIR}/dbp_wrap_uint32.parquet';
+----
+[4294967295, 4294967294]
+
+# the reproductions from issue #27454: the wrapped deltas need 31 bits, so one miniblock of 256 values
+# takes at most 1024 bytes of data; 33-bit deltas take 1056 bytes
+statement ok
+COPY (SELECT x::INTEGER x FROM (VALUES (-2147483648), (1881417620), (-297)) t(x))
+TO '{TEST_DIR}/dbp_wrap_27454_int32.parquet' (PARQUET_VERSION v2, COMPRESSION uncompressed, DICTIONARY_SIZE_LIMIT 1);
+
+statement ok
+COPY (SELECT x::UINTEGER x FROM (VALUES (4200000000), (100), (4000000000), (50)) t(x))
+TO '{TEST_DIR}/dbp_wrap_27454_uint32.parquet' (PARQUET_VERSION v2, COMPRESSION uncompressed, DICTIONARY_SIZE_LIMIT 1);
+
+query II
+SELECT encodings, total_uncompressed_size < 1024 + 64 FROM parquet_metadata('{TEST_DIR}/dbp_wrap_27454_int32.parquet');
+----
+DELTA_BINARY_PACKED	true
+
+query II
+SELECT encodings, total_uncompressed_size < 1024 + 64 FROM parquet_metadata('{TEST_DIR}/dbp_wrap_27454_uint32.parquet');
+----
+DELTA_BINARY_PACKED	true
+
+query II
+SELECT (SELECT list(x) FROM '{TEST_DIR}/dbp_wrap_27454_int32.parquet'),
+       (SELECT list(x) FROM '{TEST_DIR}/dbp_wrap_27454_uint32.parquet');
+----
+[-2147483648, 1881417620, -297]	[4200000000, 100, 4000000000, 50]
+
+# 64-bit types keep wrapping modulo 2^64
+statement ok
+COPY (SELECT x::BIGINT b, (x::HUGEINT + 9223372036854775808)::UBIGINT u
+      FROM (VALUES (-9223372036854775808), (9223372036854775807), (0), (-9223372036854775808)) t(x))
+TO '{TEST_DIR}/dbp_wrap_int64.parquet' (PARQUET_VERSION v2);
+
+query II
+SELECT list(b), list(u) FROM '{TEST_DIR}/dbp_wrap_int64.parquet';
+----
+[-9223372036854775808, 9223372036854775807, 0, -9223372036854775808]	[0, 18446744073709551615, 9223372036854775808, 0]
