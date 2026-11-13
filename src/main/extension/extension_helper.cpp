@@ -249,7 +249,8 @@ bool ExtensionHelper::TryAutoLoadAvailableExtension(DatabaseInstance &instance, 
 }
 
 static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, DatabaseInstance &db, FileSystem &fs,
-                                                     const string &full_extension_path, const string &extension_name) {
+                                                     const string &full_extension_path, const string &extension_name,
+                                                     const string &extension_directory) {
 	ExtensionUpdateResult result;
 	result.extension_name = extension_name;
 
@@ -293,7 +294,7 @@ static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, Dat
 		return result;
 	}
 
-	// update the extension from the repository it was installed from, so that it is verified against the same keys
+	// update the extension from the repository it was installed from
 	auto repository_from_info = ExtensionRepository::GetRepositoryByUrl(extension_install_info->repository_url);
 	repository_from_info.type = extension_install_info->repository_type;
 	if (!extension_install_info->repository_name.empty()) {
@@ -301,11 +302,38 @@ static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, Dat
 	}
 	result.repository = repository_from_info.ToReadableString();
 
+	// an extension from a user-provided repository can only be updated while that repository exists and is trusted
+	if (extension_install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
+	    !extension_install_info->repository_name.empty()) {
+		ExtensionRepository user_repository;
+		bool repository_found;
+		try {
+			repository_found = ExtensionRepositoryManager::TryGetRepository(
+			    db, fs, extension_install_info->repository_name, user_repository);
+		} catch (std::exception &) {
+			result.tag = ExtensionUpdateResultTag::REPOSITORY_UNREADABLE;
+			result.installed_version = result.prev_version;
+			return result;
+		}
+		if (!repository_found) {
+			result.tag = ExtensionUpdateResultTag::REPOSITORY_NOT_FOUND;
+			result.installed_version = result.prev_version;
+			return result;
+		}
+		if (!ExtensionRepositoryManager::TrustsRepository(db, user_repository)) {
+			result.tag = ExtensionUpdateResultTag::REPOSITORY_NOT_TRUSTED;
+			result.installed_version = result.prev_version;
+			return result;
+		}
+		repository_from_info = user_repository;
+	}
+
 	// Force install the full url found in this file, enabling etags to ensure efficient updating
 	ExtensionInstallOptions options;
 	options.repository = repository_from_info;
 	options.force_install = true;
 	options.use_etags = true;
+	options.extension_directory = extension_directory;
 
 	unique_ptr<ExtensionInstallInfo> install_result;
 	try {
@@ -337,20 +365,22 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 #ifndef WASM_LOADABLE_EXTENSIONS
 	identifier_set_t seen_extensions;
 
-	// scan the install directory for installed extensions
-	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
-	fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-		if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
-			return;
-		}
+	// scan the install directories for installed extensions, each is updated in the directory it was found in
+	for (auto &ext_directory : ExtensionHelper::GetInstalledExtensionDirectories(db, fs)) {
+		fs.ListFiles(ext_directory.path, [&](const string &path, bool is_directory) {
+			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
+				return;
+			}
 
-		auto extension_file_name = StringUtil::GetFileName(path);
-		auto extension_name = StringUtil::Split(extension_file_name, ".")[0];
+			auto extension_file_name = StringUtil::GetFileName(path);
+			auto extension_name = StringUtil::Split(extension_file_name, ".")[0];
 
-		seen_extensions.insert(Identifier(extension_name));
+			seen_extensions.insert(Identifier(extension_name));
 
-		result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory, path), extension_name));
-	});
+			result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory.path, path),
+			                                         extension_name, ext_directory.extension_directory));
+		});
+	}
 #endif
 
 	return result;
@@ -363,7 +393,7 @@ ExtensionUpdateResult ExtensionHelper::UpdateExtension(ClientContext &context, c
 
 	auto full_extension_path = fs.JoinPath(ext_directory, extension_name + ".duckdb_extension");
 
-	auto update_result = UpdateExtensionInternal(context, db, fs, full_extension_path, extension_name);
+	auto update_result = UpdateExtensionInternal(context, db, fs, full_extension_path, extension_name, ext_directory);
 
 	if (update_result.tag == ExtensionUpdateResultTag::NOT_INSTALLED) {
 		throw InvalidInputException("Failed to update the extension '%s', the extension is not installed!",
