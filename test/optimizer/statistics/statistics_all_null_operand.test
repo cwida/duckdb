@@ -763,6 +763,86 @@ SELECT count(*) FROM shared_upd JOIN u ON shared_upd.n = u.d;
 ----
 0
 
+# a snapshot that still sees the values of a column another connection has updated to NULL in every row
+statement ok
+CREATE TABLE shared_all AS SELECT id, d AS x, d AS y FROM u;
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+statement ok con2
+UPDATE shared_all SET x = NULL;
+
+query I con2
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+query I con1
+SELECT count(*) FROM shared_all a JOIN shared_all b ON a.x = b.y;
+----
+10000
+
+statement ok con1
+COMMIT;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+# the update to a value rolled back in the connection that made it
+statement ok con1
+BEGIN;
+
+statement ok con1
+UPDATE shared_all SET x = y;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+10000
+
+query I con2
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+statement ok con1
+ROLLBACK;
+
+query I con1
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+0
+
+# after a checkpoint the statistics know that the column holds only NULLs
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN SELECT count(*) FROM shared_all WHERE x = y;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+statement ok
+UPDATE shared_all SET x = 5 WHERE id = 5;
+
+query I
+SELECT count(*) FROM shared_all WHERE x = y;
+----
+1
+
 # a prepared statement is planned again after the table changed
 statement ok
 CREATE TABLE prep AS SELECT * FROM t;

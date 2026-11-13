@@ -29,6 +29,11 @@ CREATE TABLE all_null AS SELECT * FROM test;
 statement ok
 UPDATE all_null SET x=(NULL);
 
+# keep the joins below in the plan: when the statistics know that the column holds only NULLs (as they do after a
+# checkpoint) the comparison is folded and the join is not executed
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
 query II
 EXPLAIN
 SELECT * 
