@@ -163,10 +163,13 @@ statement ok
 CALL disable_logging();
 
 query I
-SELECT NOT getvariable('check_activation') OR
-    (count(*) FILTER (WHERE event='Lookup' AND info['backend']='direct')=3
-     AND count(*) FILTER (WHERE event='DictionaryLookup')=2)
-FROM duckdb_logs_parsed('PhysicalOperator')
-WHERE class='PhysicalHashJoin' AND parameters['Conditions']='target = k';
+SELECT NOT getvariable('check_activation') OR count(*)=1
+FROM (
+    SELECT parameters['Conditions']
+    FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='PhysicalHashJoin'
+    GROUP BY ALL
+    HAVING count(*) FILTER (WHERE event='Lookup' AND info['backend']='direct')=3
+       AND count(*) FILTER (WHERE event='DictionaryLookup')=2
+);
 ----
 true
