@@ -1,0 +1,168 @@
+# name: test/sql/extensions/extension_repository_from_host.test
+# description: CREATE EXTENSION REPOSITORY <host> without a prefix: what can be checked without reaching a host
+# group: [extensions]
+
+# The host form reads https://<host>/.well-known/duckdb-extension-repo.json, which needs httpfs and a live host; the
+# resolution itself is therefore not exercised here. Everything that is decided before that fetch is.
+# TODO: exercise the resolution itself once duckdb.org serves a .well-known/duckdb-extension-repo.json, in a test that
+# requires httpfs.
+
+statement ok
+SET extension_repository_directory='{TEST_DIR}/extension_repositories'
+
+# A repository name may be a host, spelled as dotted words or as a string, wherever a repository is named.
+statement ok
+CREATE EXTENSION REPOSITORY pointing.example WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+# Added by prefix, it has no host.
+query III
+SELECT repository_name, prefix, host FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'
+----
+pointing.example	{TEST_DIR}/repo	NULL
+
+# INSTALL and LOAD take the dotted name as well as the string; an extension that is not served fails on the download,
+# not on the name.
+statement error
+INSTALL nonexistent_extension FROM pointing.example
+----
+<REGEX>:IO Error.*
+
+statement error
+INSTALL nonexistent_extension FROM 'pointing.example'
+----
+<REGEX>:IO Error.*
+
+statement error
+LOAD nonexistent_extension FROM pointing.example
+----
+<REGEX>:IO Error.*
+
+statement error
+INSTALL nonexistent_extension FROM unknown.example
+----
+<REGEX>:Binder Error.*not a known repository name.*
+
+# The conflict is decided before any host is contacted: IF NOT EXISTS returns the stored definition and a plain CREATE
+# reports the duplicate, neither reaching for 'https://pointing.example'.
+statement ok
+CREATE EXTENSION REPOSITORY IF NOT EXISTS pointing.example
+
+statement ok
+CREATE EXTENSION REPOSITORY IF NOT EXISTS 'POINTING.example'
+
+statement error
+CREATE EXTENSION REPOSITORY pointing.example
+----
+<REGEX>:Catalog Error.*already exists.*
+
+# OR REPLACE does resolve; here that fails (no httpfs to reach the host, or no such host), and the old definition stays.
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY pointing.example
+----
+<REGEX>:.*
+
+query II
+SELECT prefix, host FROM duckdb_extension_repositories() WHERE repository_name = 'pointing.example'
+----
+{TEST_DIR}/repo	NULL
+
+# An empty prefix is not "no prefix": it is refused, with or without keys, so the host form can never be reached with
+# keys of the caller's choosing.
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX ''
+----
+<REGEX>:Parser Error.*prefix cannot be empty.*
+
+statement error
+CREATE OR REPLACE EXTENSION REPOSITORY pointing.example WITH PREFIX '' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA42wcKQCSwoEFA89qFVyjug5NIRKtExLQ+cCIdb8tbKICvGmiK6aQY5sO1iNiTxaRzfeDcxH4dSVxBIY7RZoNPjPpakd1K06gGv2R31LUg2JZY6P/oqvliHdhxMOcMdMnzsyQPJuSXFrzBXsy4xpAbYfNbdjZfPgH27iORiiUEjG6gmEeXzWe9bis5hEExvWD5GIRV6B+YCaAt41+g+nP4byZ5MPCw9dXHIk5+OMakOsiM/dTj66SxdRfeYJE7HBdmk2zXD2t1st3gHydJQyX3Ov6a1Q/mhnWJq3tni5ZzkmaDKHHcnitI7iQxrCp+XWzVsT5N9wQeFvQLcFLcrR9ZQIDAQAB'
+----
+<REGEX>:Parser Error.*prefix cannot be empty.*
+
+statement ok
+DROP EXTENSION REPOSITORY 'pointing.example'
+
+# A host reached over https needs httpfs: the error when it is not there is checked in
+# extension_repository_from_host_no_httpfs.test, which only runs where httpfs is neither loaded nor autoloadable.
+
+# Without a prefix the name must be a host on the public internet: two or more labels, letters-only last label, not
+# localhost. Anything else is refused before any network is touched; it can still be a repository WITH PREFIX.
+statement error
+CREATE EXTENSION REPOSITORY myrepo
+----
+<REGEX>:Invalid Input Error.*'myrepo' is not a host name.*WITH PREFIX.*
+
+statement error
+CREATE EXTENSION REPOSITORY '10.0.0.5'
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY localhost
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY repo.localhost
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY under_score.example
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement error
+CREATE EXTENSION REPOSITORY 'bad-.example'
+----
+<REGEX>:Invalid Input Error.*is not a host name.*
+
+statement ok
+CREATE EXTENSION REPOSITORY myrepo WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+DROP EXTENSION REPOSITORY myrepo
+
+# The built-in names stay reserved, before anything is fetched.
+statement error
+CREATE EXTENSION REPOSITORY core_nightly
+----
+<REGEX>:Invalid Input Error.*built-in repository name.*
+
+# Names: dots are allowed, but not at the ends or doubled.
+statement error
+CREATE EXTENSION REPOSITORY 'bad..name' WITH PREFIX '{TEST_DIR}/repo'
+----
+<REGEX>:Invalid Input Error.*Invalid extension repository name.*
+
+statement error
+CREATE EXTENSION REPOSITORY '.hidden' WITH PREFIX '{TEST_DIR}/repo'
+----
+<REGEX>:Invalid Input Error.*Invalid extension repository name.*
+
+# 'hosts_only': only repositories resolved from their host can be added, and only those are trusted. The runner starts
+# in 'allowed'; the setting can only be tightened.
+statement ok
+CREATE EXTENSION REPOSITORY byprefix WITH PREFIX '{TEST_DIR}/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+SET allow_extension_repositories='hosts_only'
+
+statement error
+CREATE EXTENSION REPOSITORY other WITH PREFIX '{TEST_DIR}/repo'
+----
+<REGEX>:Permission Error.*by prefix is not permitted.*hosts_only.*
+
+# the repository added by prefix is distrusted: installing from it is refused before anything is fetched
+statement error
+INSTALL nonexistent_extension FROM byprefix
+----
+<REGEX>:Permission Error.*'byprefix' is not permitted while allow_extension_repositories='hosts_only'.*
+
+# the ratchet only tightens
+statement error
+SET allow_extension_repositories='allowed'
+----
+<REGEX>:Invalid Input Error.*can only be tightened.*
+
+statement ok
+DROP EXTENSION REPOSITORY byprefix

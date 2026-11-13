@@ -117,8 +117,8 @@ LogicalPlanSQLExportResult ExportDeleteFor(ClientContext &context, MultiRowIdTab
 	auto del = make_uniq<LogicalDelete>(table, TableIndex(101));
 	for (idx_t i = 0; i < layout.row_ids.size(); i++) {
 		auto column = column_for(layout.row_ids[i]);
-		auto ref = make_uniq<BoundColumnRefExpression>(column.type, ColumnBinding(proj_index, ProjectionIndex(i)));
-		ref->SetAlias(column.name);
+		auto ref = make_uniq<BoundColumnRefExpression>(column.name, column.type,
+		                                               ColumnBinding(proj_index, ProjectionIndex(i)));
 		del->expressions.push_back(std::move(ref));
 	}
 	del->AddChild(std::move(projection));

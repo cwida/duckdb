@@ -31,6 +31,13 @@ void HTTPParams::SetTransportReuseDomain(idx_t transport_reuse_domain_p) {
 	transport_reuse_domain = transport_reuse_domain_p;
 }
 
+void HTTPParams::RequireServerCertificateVerification() {
+	override_verify_ssl = true;
+	verify_ssl = true;
+	// the domain captured at initialization described the unforced parameters; a provider recaptures a cleared one
+	transport_reuse_domain = 0;
+}
+
 HTTPHeaders::HTTPHeaders(DatabaseInstance &db) {
 	headers.insert({"User-Agent", StringUtil::Format("%s %s", db.config.UserAgent(), DuckDB::SourceID())});
 }

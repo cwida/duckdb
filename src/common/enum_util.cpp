@@ -233,6 +233,7 @@
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/logical_plan_verification_result.hpp"
+#include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
@@ -2557,21 +2558,22 @@ ExtensionLoadResult EnumUtil::FromString<ExtensionLoadResult>(const char *value)
 
 const StringUtil::EnumStringLiteral *GetExtensionRepositoryAccessValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(ExtensionRepositoryAccess::UNDECIDED), "UNDECIDED" },
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::HOSTS), "HOSTS" },
 		{ static_cast<uint32_t>(ExtensionRepositoryAccess::ALLOWED), "ALLOWED" },
-		{ static_cast<uint32_t>(ExtensionRepositoryAccess::FORBIDDEN), "FORBIDDEN" }
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::FORBIDDEN), "FORBIDDEN" },
+		{ static_cast<uint32_t>(ExtensionRepositoryAccess::HOSTS_ONLY), "HOSTS_ONLY" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExtensionRepositoryAccess>(ExtensionRepositoryAccess value) {
-	return StringUtil::EnumToString(GetExtensionRepositoryAccessValues(), 3, "ExtensionRepositoryAccess", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExtensionRepositoryAccessValues(), 4, "ExtensionRepositoryAccess", static_cast<uint32_t>(value));
 }
 
 template<>
 ExtensionRepositoryAccess EnumUtil::FromString<ExtensionRepositoryAccess>(const char *value) {
-	return static_cast<ExtensionRepositoryAccess>(StringUtil::StringToEnum(GetExtensionRepositoryAccessValues(), 3, "ExtensionRepositoryAccess", value));
+	return static_cast<ExtensionRepositoryAccess>(StringUtil::StringToEnum(GetExtensionRepositoryAccessValues(), 4, "ExtensionRepositoryAccess", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExtensionRepositoryTypeValues() {
@@ -5296,6 +5298,24 @@ const char* EnumUtil::ToChars<PipelineScheduleStageType>(PipelineScheduleStageTy
 template<>
 PipelineScheduleStageType EnumUtil::FromString<PipelineScheduleStageType>(const char *value) {
 	return static_cast<PipelineScheduleStageType>(StringUtil::StringToEnum(GetPipelineScheduleStageTypeValues(), 5, "PipelineScheduleStageType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetPlanningModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PlanningMode::FULL), "FULL" },
+		{ static_cast<uint32_t>(PlanningMode::BIND_ONLY), "BIND_ONLY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PlanningMode>(PlanningMode value) {
+	return StringUtil::EnumToString(GetPlanningModeValues(), 2, "PlanningMode", static_cast<uint32_t>(value));
+}
+
+template<>
+PlanningMode EnumUtil::FromString<PlanningMode>(const char *value) {
+	return static_cast<PlanningMode>(StringUtil::StringToEnum(GetPlanningModeValues(), 2, "PlanningMode", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPragmaTypeValues() {

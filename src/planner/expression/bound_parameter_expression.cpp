@@ -5,10 +5,11 @@
 
 namespace duckdb {
 
-BoundParameterExpression::BoundParameterExpression(const duckdb::Identifier &identifier)
+BoundParameterExpression::BoundParameterExpression(const duckdb::Identifier &identifier, duckdb::Identifier alias_p)
     : Expression(ExpressionType::VALUE_PARAMETER, ExpressionClass::BOUND_PARAMETER,
                  LogicalType(LogicalTypeId::UNKNOWN)),
       identifier(identifier) {
+	alias = std::move(alias_p);
 }
 
 BoundParameterExpression::BoundParameterExpression(bound_parameter_map_t &global_parameter_set,

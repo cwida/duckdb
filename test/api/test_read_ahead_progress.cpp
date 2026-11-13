@@ -2,6 +2,7 @@
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/parallel/scan_read_ahead.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
@@ -151,5 +152,52 @@ TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[a
 	REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::EXHAUSTED);
 	REQUIRE_FALSE(job);
 	REQUIRE(produced == job_count);
+}
+
+TEST_CASE("An exhausted read-ahead scan returns its memory reservation", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=8"));
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET read_ahead_depth=-1"));
+	REQUIRE_NO_FAIL(con.Query("SET memory_limit='1GB'"));
+	// without a temporary directory every reservation is granted in full
+	REQUIRE_NO_FAIL(con.Query("SET temp_directory='" + TestCreatePath("read_ahead_release_tmp") + "'"));
+
+	// another operator's reservation: it fits beside the scan's request, but not beside what the scan holds
+	auto &context = con.context->GetContext();
+	auto observer = TemporaryMemoryManager::Get(context).Register(context);
+	observer->SetRemainingSizeAndUpdateReservation(context, 770ULL * 1000 * 1000);
+	const auto full_reservation = observer->GetReservation();
+
+	auto read_ahead = ScanReadAhead::Create(*con.context);
+	REQUIRE(read_ahead);
+	struct JobState {};
+	const idx_t job_count = 8;
+	idx_t produced = 0;
+	auto produce = [&](duckdb::vector<duckdb::unique_ptr<AsyncTask>> &) -> duckdb::unique_ptr<ScanReadAheadJob> {
+		if (produced == job_count) {
+			return nullptr;
+		}
+		auto job = make_uniq<ScanReadAheadJobWrapper<JobState>>();
+		job->batch_index = produced++;
+		return std::move(job);
+	};
+	TableFunctionInput input(nullptr, nullptr, nullptr);
+	duckdb::unique_ptr<ScanReadAheadJob> job;
+	for (idx_t consumed = 0; consumed < job_count; consumed++) {
+		REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
+		job.reset();
+		if (consumed == 0) {
+			// the scan reserved memory for its backlog
+			observer->UpdateReservation(context);
+			REQUIRE(observer->GetReservation() < full_reservation);
+		}
+	}
+	REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::EXHAUSTED);
+
+	// the scan still exists but no longer holds memory
+	observer->UpdateReservation(context);
+	REQUIRE(observer->GetReservation() == full_reservation);
 }
 #endif

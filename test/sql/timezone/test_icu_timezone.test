@@ -197,6 +197,22 @@ NULL	NULL	NULL
 NULL	NULL	NULL
 
 #
+# Date implementation
+#
+query I
+SELECT DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai';
+----
+2026-10-31 09:00:00-07
+
+query I
+SELECT typeof(DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai');
+----
+TIMESTAMP WITH TIME ZONE
+
+statement ok
+SELECT DATE '2026-11-01' AT TIME ZONE 'Asia/Shanghai' AT TIME ZONE 'UTC' <= now();
+
+#
 # NS implementations
 #
 query I

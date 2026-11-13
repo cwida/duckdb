@@ -38,6 +38,12 @@ hash_t BoundReferenceExpression::Hash() const {
 	return CombineHash(Expression::Hash(), duckdb::Hash<idx_t>(index));
 }
 
+unique_ptr<Expression> BoundReferenceExpression::WithIndex(idx_t new_index) const {
+	auto result = make_uniq<BoundReferenceExpression>(alias, return_type, new_index);
+	result->query_location = query_location;
+	return std::move(result);
+}
+
 unique_ptr<Expression> BoundReferenceExpression::Copy() const {
 	return make_uniq<BoundReferenceExpression>(alias, return_type, index);
 }

@@ -427,11 +427,12 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	string install_path = local_path;
 	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
 		// the opt-in gates adding a repository, i.e. trusting a new signing key. An existing repository stays trusted
-		// while 'undecided' or 'allowed', as it does for LOAD
-		if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+		// while 'hosts' or 'allowed', as it does for LOAD
+		if (!ExtensionRepositoryManager::TrustsRepository(db, *options.repository)) {
 			throw PermissionException(
-			    "Installing extensions from a user-provided repository is not permitted while "
+			    "Installing extensions from the user-provided repository '%s' is not permitted while "
 			    "allow_extension_repositories='%s'",
+			    options.repository->name,
 			    ExtensionRepositoryManager::AccessToString(ExtensionRepositoryManager::GetAccess(db)));
 		}
 		install_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), options.repository->name);

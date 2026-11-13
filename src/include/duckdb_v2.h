@@ -11820,10 +11820,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_iterator_next(duckdb_v2_stateme
  *
  * Binding is read-only and does not disturb a live result: it begins no query, claims no cursor, reuses an active
  * transaction read-only, and runs alongside a paused stream. It is single-consumer like the stepping functions, so bind
- * concurrently only on a second connection. Prepare-time errors — binder, catalog, preprocessing — surface here. A
- * statement that expands into a group (a dynamic PIVOT, or statement-expanding DDL such as ALTER ADD COLUMN with a
- * non-constant DEFAULT) has a schema known only at execution, and is reported with ERROR_INPUT_METADATA_DEFERRED;
- * execute it instead.
+ * concurrently only on a second connection. Errors of the bind itself (catalog lookups, type resolution, preprocessing)
+ * surface here; errors of the planning after the bind (the plan depth limit, a correlated subquery or trigger body that
+ * decorrelation refuses) may surface only when the statement is executed. A statement that expands into a group (a
+ * dynamic PIVOT, or statement-expanding DDL such as ALTER ADD COLUMN with a non-constant DEFAULT) has a schema known
+ * only at execution, and is reported with ERROR_INPUT_METADATA_DEFERRED; execute it instead.
  *
  * *out_schema and *out_parameters are set to NULL on failure.
  *

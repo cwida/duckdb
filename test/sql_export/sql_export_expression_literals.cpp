@@ -26,9 +26,7 @@ static const Value &GetIssueFact(const LogicalPlanVerificationIssue &issue, cons
 
 TEST_CASE("Bound constant SQL export discards display metadata", "[sql_export][bound_expression_sql_export]") {
 	BoundExpressionSQLExportContext context;
-	BoundConstantExpression metadata_expression(Value::INTEGER(1));
-	metadata_expression.SetAlias(Identifier("display_only"));
-	metadata_expression.SetQueryLocation(optional_idx(17));
+	BoundConstantExpression metadata_expression(Value::INTEGER(1), Identifier("display_only"), optional_idx(17));
 	auto metadata_result = BoundExpressionSQLExporter::Export(metadata_expression, context);
 	REQUIRE(metadata_result.IsSuccess());
 	REQUIRE_FALSE(metadata_result.GetValue()->HasAlias());

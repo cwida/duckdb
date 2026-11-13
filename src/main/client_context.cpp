@@ -248,7 +248,7 @@ void ClientContext::ApplyInvalidationPolicy(const ErrorData &error) {
 		invalidates_transaction = false;
 	} else if (Exception::InvalidatesDatabase(error.Type())) {
 		auto &db_instance = DatabaseInstance::GetDatabase(*this);
-		ValidChecker::Invalidate(db_instance, error.RawMessage());
+		ValidChecker::Invalidate(db_instance, error);
 	}
 	// a statement issued while CONNECT-ed that did not run locally is not part of the local transaction
 	const bool outside_local_transaction = active_query ? active_query->outside_local_transaction : is_connected;
@@ -636,7 +636,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 			    }
 			    auto bound = std::move(expanded.statements[0]);
 			    auto named_param_map = bound->named_param_map;
-			    Planner planner(*this);
+			    Planner planner(*this, PlanningMode::BIND_ONLY);
 			    planner.CreatePlan(std::move(bound));
 			    signature.names = planner.names;
 			    signature.types = planner.types;
@@ -828,9 +828,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (Exception::InvalidatesDatabase(error.Type())) {
-			// fatal exceptions invalidate the entire database
+			// fatal exceptions invalidate the database instance, unless scoped to an attached database
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
-			ValidChecker::Invalidate(db_instance, error.RawMessage());
+			ValidChecker::Invalidate(db_instance, error);
 		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}
@@ -861,9 +861,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			// standard exceptions do not invalidate the current transaction
 			invalidate_query = false;
 		} else if (Exception::InvalidatesDatabase(error.Type())) {
-			// fatal exceptions invalidate the entire database
+			// fatal exceptions invalidate the database instance, unless scoped to an attached database
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
-			ValidChecker::Invalidate(db_instance, error.RawMessage());
+			ValidChecker::Invalidate(db_instance, error);
 		}
 		// other types of exceptions do invalidate the current transaction
 		result = ErrorResult<QueryResult>(std::move(error), query);
@@ -1342,7 +1342,7 @@ void ClientContext::RunFunctionInTransactionInternal(ClientContextLock &lock, co
 			invalidates_transaction = false;
 		} else if (Exception::InvalidatesDatabase(error.Type())) {
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
-			ValidChecker::Invalidate(db_instance, error.RawMessage());
+			ValidChecker::Invalidate(db_instance, error);
 		}
 		if (require_new_transaction) {
 			transaction.Rollback(error);

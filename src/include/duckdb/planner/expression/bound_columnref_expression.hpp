@@ -22,7 +22,8 @@ public:
 
 public:
 	BoundColumnRefExpression(LogicalType type, ColumnBinding binding, idx_t depth = 0);
-	BoundColumnRefExpression(Identifier alias, LogicalType type, ColumnBinding binding, idx_t depth = 0);
+	BoundColumnRefExpression(Identifier alias, LogicalType type, ColumnBinding binding, idx_t depth = 0,
+	                         QueryLocation location = QueryLocation());
 
 public:
 	bool IsScalar() const override {

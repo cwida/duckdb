@@ -58,7 +58,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 			} else {
 				return_type = constant.GetValue().type();
 			}
-			parameter_data = BoundParameterData(constant.TakeValue(), std::move(return_type));
+			parameter_data = BoundParameterData(constant.GetValue(), std::move(return_type));
 		} else {
 			auto value = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
 			auto value_type = value.type();
