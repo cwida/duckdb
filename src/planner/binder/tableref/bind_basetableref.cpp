@@ -317,7 +317,7 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 			GetStatementProperties().RegisterDBRead(view_catalog_entry.ParentCatalog(), context);
 		}
 		// expanding nested views can take a long time, allow the query to be interrupted
-		context.FastInterruptCheck();
+		context.InterruptCheck();
 		// We need to use a new binder for the view that doesn't reference any CTEs
 		// defined for this binder so there are no collisions between the CTEs defined
 		// for the view and for the current query
