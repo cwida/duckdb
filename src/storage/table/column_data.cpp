@@ -316,9 +316,20 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 	state.internal_index = segment_internal_index;
 }
 
-void ColumnData::FilterVectorPartial(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
-                                     idx_t &sel_count, TableFilterState &filter_state) {
+void ColumnData::FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
+                              idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
 	BeginScanVectorInternal(state);
+	auto &segment = state.current->GetNode();
+	if (sel_count == target_count || !segment.GetCompressionFunction().filter_partial) {
+		if (state.current->GetRowStart() + segment.count - state.offset_in_column < target_count) {
+			throw InternalException("ColumnData::Filter should be able to fetch everything from one segment");
+		}
+		segment.Filter(state, target_count, result, sel, sel_count, filter, filter_state);
+		state.offset_in_column += target_count;
+		state.internal_index = state.offset_in_column;
+		return;
+	}
+
 	SelectionVector segment_input(sel_count);
 	SelectionVector result_sel(sel_count);
 	idx_t sel_offset = 0;
@@ -357,18 +368,6 @@ void ColumnData::FilterVectorPartial(ColumnScanState &state, Vector &result, idx
 	sel.Initialize(result_sel);
 	sel_count = result_count;
 	FlatVector::SetSize(result, count_t(scanned_count));
-}
-
-void ColumnData::FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
-                              idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state) {
-	BeginScanVectorInternal(state);
-	auto &current = state.current->GetNode();
-	if (state.current->GetRowStart() + current.count - state.offset_in_column < target_count) {
-		throw InternalException("ColumnData::Filter should be able to fetch everything from one segment");
-	}
-	current.Filter(state, target_count, result, sel, sel_count, filter, filter_state);
-	state.offset_in_column += target_count;
-	state.internal_index = state.offset_in_column;
 }
 
 unique_ptr<BaseStatistics> ColumnData::GetUpdateStatistics() {

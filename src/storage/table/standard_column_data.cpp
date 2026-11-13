@@ -90,31 +90,24 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	if (count < target_count && compression && compression->filter_partial && !verify_fetch_row && !HasUpdates() &&
-	    !validity->HasUpdates()) {
-		// Partial filters preserve the loaded validity and evaluate only selected rows.
-		if (!filter_includes_validity) {
-			validity->ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
-			                     ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
-		} else {
-			validity->Skip(state.child_states[0], target_count);
-		}
-		FilterVectorPartial(state, result, target_count, sel, count, filter_state);
-		return;
-	}
-	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
-		// we are not scanning an entire vector - this can have several causes (updates, etc)
-		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
-		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
-		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
+	bool partial_filter = count < target_count && compression && compression->filter_partial;
+	// Encoded filters may evaluate unselected dictionary values or runs, so exclude throwing predicates.
+	bool can_filter = partial_filter
+	                      ? !HasUpdates() && !validity->HasUpdates()
+	                      : has_filter && validity_has_filter && scan_entire_vector && !filter_state.can_throw;
+	if (!can_filter || verify_fetch_row) {
 		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
 		return;
 	}
+	if (partial_filter && !filter_includes_validity) {
+		validity->ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
+		                     ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
+	}
 	FilterVector(state, result, target_count, sel, count, filter, filter_state);
-	if (!filter_includes_validity) {
-		validity->FilterVector(state.child_states[0], result, target_count, sel, count, filter, filter_state);
-	} else {
+	if (filter_includes_validity) {
 		validity->Skip(state.child_states[0], target_count);
+	} else if (!partial_filter) {
+		validity->FilterVector(state.child_states[0], result, target_count, sel, count, filter, filter_state);
 	}
 }
 
