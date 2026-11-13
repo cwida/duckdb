@@ -476,6 +476,110 @@ WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM
 5	7
 6	1
 
+# keys of a type in which values that compare equal can differ (0.0 and -0.0, NaN, INTERVAL, collated strings): the
+# join hands every left row the value of its group, so the plan is kept and the results are those of the join
+
+statement ok
+CREATE TABLE z(id INTEGER, a DOUBLE);
+
+statement ok
+INSERT INTO z VALUES (1, '0'), (2, '-0');
+
+# 31: a filter below the DISTINCT that tells 0.0 from -0.0, which the join does not
+query IT
+WITH d AS (SELECT * FROM z) SELECT d.id, signbit(x.a) FROM d JOIN (SELECT DISTINCT a FROM d WHERE signbit(a)) x ON d.a = x.a ORDER BY d.id
+----
+1	true
+2	true
+
+# 32: DOUBLE keys without a zero
+statement ok
+CREATE TABLE dz(id INTEGER, a DOUBLE, b DOUBLE);
+
+statement ok
+INSERT INTO dz VALUES (1, 1.5, 2.5), (2, 1.5, 2.5), (3, 'nan', 4), (4, NULL, 5), (5, 'nan', 4);
+
+query IR
+SELECT id, u.v FROM dz, UNNEST([a, b]) AS u(v) ORDER BY ALL
+----
+1	1.5
+1	2.5
+2	1.5
+2	2.5
+3	4.0
+3	nan
+4	5.0
+4	NULL
+5	4.0
+5	nan
+
+# 33: a case-insensitive key: both rows get the list of their group
+statement ok
+CREATE TABLE cz(id INTEGER, s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO cz VALUES (1, 'a'), (2, 'A'), (3, 'b');
+
+query II
+SELECT id, count(*) FROM cz, UNNEST([s, s || 'x']) AS u(v) GROUP BY id ORDER BY id
+----
+1	2
+2	2
+3	2
+
+query II
+WITH d AS (SELECT * FROM cz) SELECT d.id, count(*) FROM d JOIN (SELECT DISTINCT s FROM d) x ON d.s = x.s GROUP BY d.id ORDER BY d.id
+----
+1	1
+2	1
+3	1
+
+# 34: INTERVAL keys
+query IT
+SELECT id, u.v FROM (SELECT id, to_days(a) AS i FROM t WHERE id < 3) q, UNNEST([i, i + INTERVAL 1 DAY]) AS u(v) ORDER BY ALL
+----
+1	10 days
+1	11 days
+2	10 days
+2	11 days
+
+# 35: an arbitrary function of an integer key below the DISTINCT: equal keys are identical, the filter moves to the rows
+query II
+WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE a % 2 = 0 AND hash(a) IS NOT NULL) x ON d.a = x.a ORDER BY ALL
+----
+1	10
+2	10
+
+# 36: the CTE is defined outside a recursive CTE and joined with its distinct keys inside the recursive member: the
+# definition is computed once
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE seed AS SELECT 1 AS x;
+
+query II
+WITH RECURSIVE d AS (SELECT nextval('seq') AS k FROM seed), r(i, k) AS (SELECT 0, 0::BIGINT UNION ALL SELECT r.i + 1, d.k FROM r, d JOIN (SELECT DISTINCT k FROM d) x ON d.k = x.k WHERE r.i < 3) SELECT i, k FROM r ORDER BY i
+----
+0	0
+1	1
+2	1
+3	1
+
+query II
+WITH RECURSIVE d AS (SELECT a FROM t WHERE id = 6), r(i, k) AS (SELECT 0, 0 UNION ALL SELECT r.i + 1, d.a FROM r, d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a WHERE r.i < 3) SELECT i, k FROM r ORDER BY i
+----
+0	0
+1	1
+2	1
+3	1
+
+# 37: a volatile CTE definition: both references see the same values
+query I
+WITH d AS (SELECT id, a + (random() * 1000)::INTEGER AS a FROM t) SELECT count(*) FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a
+----
+4
+
 # Plans: the decorrelated form is a CTE with an INNER join back; the rewritten one has neither
 
 statement ok
@@ -586,6 +690,54 @@ logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
 # 30 a filter on a non-key column below the DISTINCT: left alone
 query II
 EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE id > 1) x ON d.a IS NOT DISTINCT FROM x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 31 a DOUBLE key: left alone
+query II
+EXPLAIN WITH d AS (SELECT * FROM z) SELECT d.id, signbit(x.a) FROM d JOIN (SELECT DISTINCT a FROM d WHERE signbit(a)) x ON d.a = x.a;
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 32 a list of DOUBLE columns: left alone
+query II
+EXPLAIN SELECT id, u.v FROM dz, UNNEST([a, b]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 32 a list column next to a DOUBLE column is joined on the row number: rewritten
+query II
+EXPLAIN SELECT id, u.v FROM (SELECT id, a, [b] AS l FROM dz) q, UNNEST(l || [a]) AS u(v);
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 33 a case-insensitive key: left alone
+query II
+EXPLAIN SELECT id, u.v FROM cz, UNNEST([s, s || 'x']) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 34 INTERVAL keys: left alone
+query II
+EXPLAIN SELECT id, u.v FROM (SELECT id, to_days(a) AS i FROM t WHERE id < 3) q, UNNEST([i, i + INTERVAL 1 DAY]) AS u(v);
+----
+logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
+
+# 35 a function of an integer key below the DISTINCT: rewritten
+query II
+EXPLAIN WITH d AS (SELECT * FROM t) SELECT d.id, x.a FROM d JOIN (SELECT DISTINCT a FROM d WHERE a % 2 = 0 AND hash(a) IS NOT NULL) x ON d.a = x.a;
+----
+logical_opt	<!REGEX>:(?s).*(CTE Name|Join Type).*
+
+# 36 the join is inside a recursive CTE: left alone
+query II
+EXPLAIN WITH RECURSIVE d AS (SELECT a FROM t WHERE id = 6), r(i, k) AS (SELECT 0, 0 UNION ALL SELECT r.i + 1, d.a FROM r, d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a WHERE r.i < 3) SELECT i, k FROM r;
+----
+logical_opt	<REGEX>:(?s).*CTE Name: d.*Join Type: INNER.*
+
+# 37 a volatile CTE definition: left alone
+query II
+EXPLAIN WITH d AS (SELECT id, a + (random() * 1000)::INTEGER AS a FROM t) SELECT count(*) FROM d JOIN (SELECT DISTINCT a FROM d) x ON d.a = x.a;
 ----
 logical_opt	<REGEX>:(?s).*CTE Name.*Join Type: INNER.*
 

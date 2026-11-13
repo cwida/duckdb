@@ -78,6 +78,78 @@ static idx_t CountCTERefs(const LogicalOperator &op, TableIndex cte_index) {
 	return result;
 }
 
+//! Whether the subtree has an expression or operator whose evaluation is observable: a volatile expression or DML
+static bool HasVolatileOperator(LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_INSERT:
+	case LogicalOperatorType::LOGICAL_UPDATE:
+	case LogicalOperatorType::LOGICAL_DELETE:
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		return true;
+	default:
+		break;
+	}
+	bool is_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    op, [&](unique_ptr<Expression> *expr) { is_volatile = is_volatile || (*expr)->IsVolatile(); });
+	if (is_volatile) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (HasVolatileOperator(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Whether two values of the type that compare equal are identical. The domain keeps one value per group of equal
+//! keys and the join hands it to every left row of the group, so a key of a type in which distinguishable values
+//! compare equal (0.0 and -0.0, INTERVAL 1 MONTH and INTERVAL 30 DAY, collated strings) cannot be replaced by the
+//! value of the left row.
+static bool EqualValuesAreIdentical(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::UHUGEINT:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::ENUM:
+		return true;
+	case LogicalTypeId::VARCHAR:
+		return StringType::GetCollation(type).empty();
+	case LogicalTypeId::LIST:
+		return EqualValuesAreIdentical(ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return EqualValuesAreIdentical(ArrayType::GetChildType(type));
+	case LogicalTypeId::STRUCT:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (!EqualValuesAreIdentical(child.second)) {
+				return false;
+			}
+		}
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool HasVolatileExpression(LogicalOperator &op) {
 	bool is_volatile = false;
 	LogicalOperatorVisitor::EnumerateExpressions(
@@ -307,9 +379,13 @@ static bool IsRowNumberColumn(LogicalOperator &producer, idx_t column) {
 	}
 }
 
-//! The INNER join below the operator one of whose children is a reference to the CTE
+//! The INNER join below the operator one of whose children is a reference to the CTE. The search does not enter a
+//! recursive CTE: the definition is computed once, a join inside the recursion would compute it in every iteration.
 static optional_ptr<unique_ptr<LogicalOperator>> FindRowsJoin(unique_ptr<LogicalOperator> &op, TableIndex cte_index,
                                                               idx_t &rows_side) {
+	if (op->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+		return nullptr;
+	}
 	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op->children.size() == 2 &&
 	    op->Cast<LogicalComparisonJoin>().join_type == JoinType::INNER) {
 		for (idx_t side = 0; side < 2; side++) {
@@ -338,6 +414,10 @@ bool LateralRowFunction::FindCandidate(unique_ptr<LogicalOperator> &cte_op, Cand
 	}
 	auto cte_index = cte.table_index;
 	if (CountCTERefs(*cte_op->children[1], cte_index) != 2 || CountCTERefs(*cte_op->children[0], cte_index) != 0) {
+		return false;
+	}
+	// the definition moves to the place of the join: it must not matter where and when it is computed
+	if (HasVolatileOperator(*cte_op->children[0])) {
 		return false;
 	}
 	candidate.join = FindRowsJoin(cte_op->children[1], cte_index, candidate.rows_side);
@@ -417,15 +497,20 @@ bool LateralRowFunction::FindCandidate(unique_ptr<LogicalOperator> &cte_op, Cand
 			}
 		}
 	}
-	// every group is joined, or a joined group identifies the left row by itself
-	bool identified = true;
-	for (auto is_covered : covered) {
-		identified = identified && is_covered;
+	// a joined row_number() identifies the left row by itself: every group is one left row
+	for (idx_t group = 0; group < covered.size(); group++) {
+		if (covered[group] && IsRowNumberColumn(*cte_op->children[0], domain.group_columns[group])) {
+			return true;
+		}
 	}
-	for (idx_t group = 0; !identified && group < covered.size(); group++) {
-		identified = covered[group] && IsRowNumberColumn(*cte_op->children[0], domain.group_columns[group]);
+	// otherwise every group is joined, and the chain and the operators above read the key of the left row where they
+	// read the key of its group: the two must be identical, not only equal
+	for (idx_t group = 0; group < covered.size(); group++) {
+		if (!covered[group] || !EqualValuesAreIdentical(aggregate.groups[group]->GetReturnType())) {
+			return false;
+		}
 	}
-	return identified;
+	return true;
 }
 
 void LateralRowFunction::Rewrite(unique_ptr<LogicalOperator> &cte_op, Candidate &candidate) {
