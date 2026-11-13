@@ -146,6 +146,18 @@ WITH m AS MATERIALIZED (SELECT * FROM big WHERE v < 5) SELECT count(*), sum(s.k)
 ----
 333	83167
 
+# two anti joins against the same materialized CTE: the filters of both consumers are combined
+query II
+WITH m AS MATERIALIZED (SELECT * FROM big WHERE v < 5) SELECT (SELECT count(*) FROM small s ANTI JOIN m ON s.k = m.k WHERE s.k < 500), (SELECT count(*) FROM other o ANTI JOIN m ON o.k = m.k WHERE o.k < 1000);
+----
+333	133
+
+# a consumer without a filter still sees every row of the CTE
+query II
+WITH m AS MATERIALIZED (SELECT * FROM big WHERE v < 5) SELECT (SELECT count(*) FROM small s ANTI JOIN m ON s.k = m.k WHERE s.k < 500), (SELECT count(*) FROM m);
+----
+333	909092
+
 # EXCEPT is planned as an anti join
 query II
 SELECT count(*), sum(k) FROM (SELECT k FROM small WHERE k < 500 EXCEPT SELECT k FROM big);
