@@ -222,7 +222,7 @@ static void CSVListCopyOptions(ClientContext &context, CopyOptionsInput &input) 
 	copy_options["null"] = CopyOption(LogicalType::ANY, CopyOptionMode::READ_WRITE);
 	copy_options["compression"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_WRITE);
 	copy_options["strict_mode"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_WRITE);
-	copy_options["escape_mode"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
+	copy_options["dialect"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 }
 
 //===--------------------------------------------------------------------===//

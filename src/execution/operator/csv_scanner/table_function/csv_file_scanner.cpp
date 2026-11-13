@@ -47,8 +47,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
 	if (options.dialect_options.state_machine_options.new_line == NewLineIdentifier::NOT_SET) {
 		options.dialect_options.state_machine_options.new_line = CSVSniffer::DetectNewLineDelimiter(*buffer_manager);
 	}
-	state_machine = make_shared_ptr<CSVStateMachine>(
-	    state_machine_cache.Get(options.dialect_options.state_machine_options), options);
+	state_machine =
+	    make_shared_ptr<CSVStateMachine>(state_machine_cache.Get(options.GetStateMachineOptionsForScan()), options);
 }
 
 CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, const CSVReaderOptions &options_p,
@@ -76,8 +76,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, con
 		options.dialect_options.num_cols = options.sql_type_list.size();
 	}
 	// Initialize State Machine
-	state_machine = make_shared_ptr<CSVStateMachine>(
-	    state_machine_cache.Get(options.dialect_options.state_machine_options), options);
+	state_machine =
+	    make_shared_ptr<CSVStateMachine>(state_machine_cache.Get(options.GetStateMachineOptionsForScan()), options);
 	SetStart();
 }
 

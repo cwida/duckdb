@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/execution/operator/csv_scanner/csv_buffer_manager.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_opencsv_record.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_state_machine.hpp"
 #include "duckdb/execution/operator/csv_scanner/scanner_boundary.hpp"
 #include "duckdb/execution/operator/csv_scanner/base_scanner.hpp"
@@ -231,6 +232,11 @@ public:
 
 	unsafe_unique_array<ParseTypeInfo> parse_types;
 	vector<string> names;
+
+	//! Set under dialect 'opencsv': splits each record (one line) into its fields as OpenCSVSerde does
+	unique_ptr<OpenCSVRecordParser> opencsv_parser;
+	//! Whether AddValueToVector is adding the parser's fields, which must not be split again
+	bool splitting_opencsv_record = false;
 
 	shared_ptr<CSVFileScan> csv_file_scan;
 	idx_t &lines_read;

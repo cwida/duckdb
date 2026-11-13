@@ -1,0 +1,142 @@
+# name: test/sql/copy/csv/csv_dialect_opencsv.test
+# description: Test dialect='opencsv': read a file as Hive/Athena's OpenCSVSerde (opencsv 2.3) reads it
+# group: [csv]
+
+# a file whose second line ends in an escape character
+statement ok
+COPY (SELECT * FROM (VALUES ('1,\'), ('2,b'), ('3,c')) t(line)) TO '{TEST_DIR}/opencsv_rows.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# the default dialect with escape '\' applies the escape to the line break: the second row is joined to the first
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/opencsv_rows.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, delim=',', quote='"', escape='\', strict_mode=false, null_padding=true, header=false, auto_detect=false);
+----
+2
+
+# opencsv reads line by line: no row is lost, and an empty field is an empty string (not NULL)
+query IT
+SELECT id, concat('<', val, '>') FROM read_csv('{TEST_DIR}/opencsv_rows.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, dialect='opencsv', header=false) ORDER BY id;
+----
+1	<>
+2	<b>
+3	<c>
+
+# the escape rules of opencsv's parseLine
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('1,a\,7'),
+    ('2,a\x,8'),
+    ('3,a\\b,9'),
+    ('4,"a\"b",10'),
+    ('5,c\'),
+    ('6,\\x,12'),
+    ('7,a""b,13'),
+    ('8,  "x",14')
+) t(line)) TO '{TEST_DIR}/opencsv_fields.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# - the escape never escapes the separator (1) and is dropped before ordinary characters (2)
+# - an escaped escape or quote is kept (3, 4)
+# - a trailing escape is dropped and missing fields are NULL (5)
+# - the escape is inert at the start of a field, so '\\x' is 'x' (6)
+# - a doubled quote is one quote in an unquoted field too (7)
+# - whitespace leading up to a quote is discarded (8)
+query ITI
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_fields.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR', 'n': 'INTEGER'}, dialect='opencsv', header=false) ORDER BY id;
+----
+1	a	7
+2	ax	8
+3	a\b	9
+4	a"b	10
+5	c	NULL
+6	x	12
+7	a"b	13
+8	x	14
+
+# opencsv's embedded quote rule: a quote in the middle of a field is kept as a literal character but still toggles the
+# quote state, so the separator after it does not split and the unterminated field is dropped (read as NULL)
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('9,a"b,c'),
+    ('10,"abc'),
+    ('11,ok,15')
+) t(line)) TO '{TEST_DIR}/opencsv_quotes.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query ITI
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_quotes.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR', 'n': 'INTEGER'}, dialect='opencsv', header=false) ORDER BY id;
+----
+9	NULL	NULL
+10	NULL	NULL
+11	ok	15
+
+# a line break inside quotes ends the record, as Hive's line reader cuts the line first
+statement ok
+COPY (SELECT * FROM (VALUES ('12,"a'), ('b",15'), ('13,ok,16')) t(line)) TO '{TEST_DIR}/opencsv_newline.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query ITI
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_newline.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR', 'n': 'INTEGER'}, dialect='opencsv', header=false) ORDER BY id NULLS FIRST;
+----
+NULL	NULL	NULL
+12	NULL	NULL
+13	ok	16
+
+# a separator of more than one byte is split on as any other
+statement ok
+COPY (SELECT 'a\¦b' AS line) TO '{TEST_DIR}/opencsv_multibyte.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query TT
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_multibyte.csv', columns={'c1': 'VARCHAR', 'c2': 'VARCHAR'}, delim='¦', dialect='opencsv', header=false);
+----
+a	b
+
+# '\r\n' line breaks
+statement ok
+COPY (SELECT '1,\' || chr(13) || chr(10) || '2,b' AS line) TO '{TEST_DIR}/opencsv_crlf.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query IT
+SELECT id, concat('<', val, '>') FROM read_csv('{TEST_DIR}/opencsv_crlf.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, dialect='opencsv', new_line='\r\n', header=false) ORDER BY id;
+----
+1	<>
+2	<b>
+
+# COPY FROM accepts the dialect
+statement ok
+CREATE TABLE opencsv_rows (id INTEGER, val VARCHAR);
+
+statement ok
+COPY opencsv_rows FROM '{TEST_DIR}/opencsv_rows.csv' (DELIM ',', QUOTE '"', DIALECT 'opencsv', HEADER false);
+
+query IT
+SELECT id, concat('<', val, '>') FROM opencsv_rows ORDER BY id;
+----
+1	<>
+2	<b>
+3	<c>
+
+# an invalid dialect is refused with the accepted values
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_rows.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, dialect='banana', header=false);
+----
+'banana' is not accepted as a dialect
+
+# opencsv reading is not strict
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_rows.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, dialect='opencsv', strict_mode=true, header=false);
+----
+DIALECT 'opencsv' is not supported when STRICT_MODE is manually set to true
+
+# the columns must be set
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_rows.csv', dialect='opencsv', header=false);
+----
+DIALECT 'opencsv' requires the columns to be set
+
+# the delimiter, quote and escape characters must differ, as opencsv requires
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_rows.csv', columns={'id': 'INTEGER', 'val': 'VARCHAR'}, dialect='opencsv', escape='"', header=false);
+----
+DIALECT 'opencsv' requires the delimiter, quote and escape characters to differ
+
+# dialect is a read option: the CSV writer does not accept it
+statement error
+COPY opencsv_rows TO '{TEST_DIR}/opencsv_write.csv' (FORMAT csv, DIALECT 'opencsv');
+----
+<REGEX>:.*dialect.*

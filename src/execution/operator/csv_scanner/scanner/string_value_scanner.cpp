@@ -40,6 +40,12 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
       current_errors(scan_id, state_machine.options.IgnoreErrors()), sniffing(sniffing_p), path(path_p) {
 	// Vector information
 	D_ASSERT(number_of_columns > 0);
+	if (state_machine.options.dialect.GetValue() == CSVDialect::OPENCSV) {
+		// the state machine reads whole lines: each record is split into its fields by the OpenCSV record parser
+		auto &serde_options = state_machine.options.dialect_options.state_machine_options;
+		opencsv_parser = make_uniq<OpenCSVRecordParser>(
+		    serde_options.delimiter.GetValue(), serde_options.quote.GetValue(), serde_options.escape.GetValue());
+	}
 	if (!buffer_handle) {
 		// It Was Over Before It Even Began
 		D_ASSERT(iterator.done);
@@ -238,6 +244,18 @@ void FullLinePosition::SanitizeError(string &value) {
 }
 
 void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool allocate) {
+	if (opencsv_parser && !splitting_opencsv_record) {
+		// dialect 'opencsv': the value is a whole record (one line) - split it into its fields; the fields the record
+		// does not hold, including one an unterminated quote drops, are null-padded when the row is added
+		splitting_opencsv_record = true;
+		const auto field_count = opencsv_parser->Parse(value_ptr, size, number_of_columns);
+		for (idx_t field_idx = 0; field_idx < field_count; field_idx++) {
+			auto &field = opencsv_parser->GetField(field_idx);
+			AddValueToVector(field.c_str(), field.size(), true);
+		}
+		splitting_opencsv_record = false;
+		return;
+	}
 	if (HandleTooManyColumnsError(value_ptr, size)) {
 		return;
 	}
@@ -1094,7 +1112,7 @@ StringValueScanner::StringValueScanner(const shared_ptr<CSVBufferManager> &buffe
 
 unique_ptr<StringValueScanner> StringValueScanner::GetCSVScanner(ClientContext &context, CSVReaderOptions &options,
                                                                  const MultiFileOptions &file_options) {
-	auto state_machine = make_shared_ptr<CSVStateMachine>(options, options.dialect_options.state_machine_options,
+	auto state_machine = make_shared_ptr<CSVStateMachine>(options, options.GetStateMachineOptionsForScan(),
 	                                                      CSVStateMachineCache::Get(context));
 
 	state_machine->dialect_options.num_cols = options.dialect_options.num_cols;

@@ -1238,6 +1238,41 @@
         "property": "options.dialect_options.state_machine_options.escape_mode",
         "type": "CSVOption<CSVEscapeMode>",
         "default": "CSVOption<CSVEscapeMode>(CSVEscapeMode::ALL)"
+      },
+      {
+        "id": 146,
+        "name": "dialect",
+        "property": "options.dialect",
+        "type": "CSVOption<CSVDialect>",
+        "default": "CSVOption<CSVDialect>(CSVDialect::DEFAULT)"
+      },
+      {
+        "id": 147,
+        "name": "quoted_newlines",
+        "property": "options.dialect_options.state_machine_options.quoted_newlines",
+        "type": "CSVOption<bool>",
+        "default": "CSVOption<bool>(true)"
+      },
+      {
+        "id": 148,
+        "name": "unterminated_quote",
+        "property": "options.dialect_options.state_machine_options.unterminated_quote",
+        "type": "CSVOption<CSVUnterminatedQuote>",
+        "default": "CSVOption<CSVUnterminatedQuote>(CSVUnterminatedQuote::DEFAULT)"
+      },
+      {
+        "id": 149,
+        "name": "doubled_quote_in_field",
+        "property": "options.dialect_options.state_machine_options.doubled_quote_in_field",
+        "type": "CSVOption<bool>",
+        "default": "CSVOption<bool>(false)"
+      },
+      {
+        "id": 150,
+        "name": "embedded_quote",
+        "property": "options.dialect_options.state_machine_options.embedded_quote",
+        "type": "CSVOption<CSVEmbeddedQuote>",
+        "default": "CSVOption<CSVEmbeddedQuote>(CSVEmbeddedQuote::DATA)"
       }
     ],
     "constructor": [

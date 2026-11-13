@@ -26,7 +26,34 @@ enum class CSVEscapeMode : uint8_t {
 	ALL = 0,
 	//! The escape character only escapes the quote and escape characters: before any other character it is dropped,
 	//! so a delimiter still separates values and a newline still ends the record
-	QUOTE = 1
+	QUOTE = 1,
+	//! As QUOTE, and the escape is inert before the first content of a field, as in opencsv
+	OPENCSV = 2
+};
+
+//! What a quote that is never closed yields at the end of a record
+enum class CSVUnterminatedQuote : uint8_t {
+	//! Derived from strict_mode: an error when strict, the accumulated text otherwise
+	DEFAULT = 0,
+	//! The field in progress is dropped and read as NULL, as opencsv drops its pending field
+	NULL_FIELD = 1
+};
+
+//! What a quote character in the middle of a field means
+enum class CSVEmbeddedQuote : uint8_t {
+	//! A plain data byte
+	DATA = 0,
+	//! opencsv's rule: kept as a literal when not adjacent to the separator and more than two characters into the
+	//! record, while still toggling the quote state; a whitespace-only field is cleared instead
+	OPENCSV = 1
+};
+
+//! A named CSV dialect: a preset over the parsing options, read as its reference implementation reads a file
+enum class CSVDialect : uint8_t {
+	//! DuckDB's own CSV reading, governed by the individual options
+	DEFAULT = 0,
+	//! Hive/Athena's OpenCSVSerde: records are single lines split as opencsv 2.3's CSVParser::parseLine splits them
+	OPENCSV = 1
 };
 
 class Serializer;
@@ -166,8 +193,21 @@ private:
 			return "all";
 		case CSVEscapeMode::QUOTE:
 			return "quote";
+		case CSVEscapeMode::OPENCSV:
+			return "opencsv";
 		default:
 			throw InternalException("Invalid CSV Escape Mode Detected.");
+		}
+	}
+
+	std::string FormatValueInternal(const CSVDialect &val) const {
+		switch (val) {
+		case CSVDialect::DEFAULT:
+			return "default";
+		case CSVDialect::OPENCSV:
+			return "opencsv";
+		default:
+			throw InternalException("Invalid CSV Dialect Detected.");
 		}
 	}
 

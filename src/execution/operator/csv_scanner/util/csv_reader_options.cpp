@@ -222,24 +222,32 @@ void CSVReaderOptions::SetRFC4180(bool input) {
 	this->dialect_options.state_machine_options.strict_mode.Set(input);
 }
 
-string CSVReaderOptions::GetEscapeMode() const {
-	return dialect_options.state_machine_options.escape_mode.FormatValue();
+string CSVReaderOptions::GetDialect() const {
+	return dialect.FormatValue();
 }
 
-void CSVReaderOptions::SetEscapeMode(const string &input) {
-	auto escape_mode = StringUtil::Lower(input);
-	if (escape_mode == "all") {
-		dialect_options.state_machine_options.escape_mode.Set(CSVEscapeMode::ALL);
-	} else if (escape_mode == "quote") {
-		dialect_options.state_machine_options.escape_mode.Set(CSVEscapeMode::QUOTE);
+void CSVReaderOptions::SetDialect(const string &input) {
+	auto dialect_name = StringUtil::Lower(input);
+	if (dialect_name == "default") {
+		dialect.Set(CSVDialect::DEFAULT);
+	} else if (dialect_name == "opencsv") {
+		dialect.Set(CSVDialect::OPENCSV);
 	} else {
-		throw BinderException("'%s' is not accepted as an escape_mode. The escape_mode option must be one of:\n* 'all' "
-		                      "(default): the escape character escapes the character that follows it, including the "
-		                      "delimiter and a newline\n* 'quote': the escape character only escapes the quote and "
-		                      "escape characters, so a delimiter still separates values and a newline still ends the "
-		                      "record",
+		throw BinderException("'%s' is not accepted as a dialect. The dialect option must be one of:\n* 'default': "
+		                      "DuckDB's own CSV reading, governed by the individual options\n* 'opencsv': read the "
+		                      "file as Hive/Athena's OpenCSVSerde does - each line is a record, split with opencsv's "
+		                      "parser, where the escape character only escapes the quote and escape characters",
 		                      input);
 	}
+}
+
+CSVStateMachineOptions CSVReaderOptions::GetStateMachineOptionsForScan() const {
+	auto &state_machine_options = dialect_options.state_machine_options;
+	if (dialect.GetValue() == CSVDialect::OPENCSV) {
+		// a line machine: no quote or escape, and a delimiter ('\r') a line can never hold
+		return CSVStateMachineOptions("\r", '\0', '\0', '\0', state_machine_options.new_line.GetValue(), false);
+	}
+	return state_machine_options;
 }
 
 bool CSVReaderOptions::IgnoreErrors() const {
@@ -391,8 +399,8 @@ void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption
 		rejects_line_size_limit = NumericCast<idx_t>(limit);
 	} else if (loption == "encoding") {
 		encoding = ParseString(value, loption);
-	} else if (loption == "escape_mode") {
-		SetEscapeMode(ParseString(value, loption));
+	} else if (loption == "dialect") {
+		SetDialect(ParseString(value, loption));
 	} else if (loption == "thousands") {
 		if (!value.IsNull()) {
 			auto thousands_separator_string = ParseString(value, loption);
@@ -554,10 +562,9 @@ string CSVReaderOptions::ToString(const String &current_file_path) const {
 	error += FormatOptionLine("comment", comment);
 	// strict_mode
 	error += FormatOptionLine("strict_mode", strict_mode);
-	// escape_mode (only ever set by the user, never sniffed)
-	auto &escape_mode = dialect_options.state_machine_options.escape_mode;
-	if (escape_mode.IsSetByUser()) {
-		error += FormatOptionLine("escape_mode", escape_mode);
+	// dialect (only ever set by the user, never sniffed)
+	if (dialect.IsSetByUser()) {
+		error += FormatOptionLine("dialect", dialect);
 	}
 	// date format
 	error += FormatOptionLine("date_format", dialect_options.date_format.at(LogicalType::DATE));
@@ -645,13 +652,48 @@ void CSVReaderOptions::Verify(MultiFileOptions &file_options) {
 		throw BinderException("REJECTS_LIMIT option is only supported when REJECTS_TABLE is set to a table name");
 	}
 	auto &state_machine_options = dialect_options.state_machine_options;
-	if (state_machine_options.escape_mode.GetValue() == CSVEscapeMode::QUOTE) {
+	if (dialect.GetValue() == CSVDialect::OPENCSV) {
 		if (state_machine_options.strict_mode.GetValue() && state_machine_options.strict_mode.IsSetByUser()) {
-			throw BinderException("ESCAPE_MODE 'quote' is not supported when STRICT_MODE is manually set to true: the "
-			                      "escape character can only appear outside quotes when strict_mode = false");
+			throw BinderException("DIALECT 'opencsv' is not supported when STRICT_MODE is manually set to true: "
+			                      "OpenCSVSerde reading is not strict");
 		}
-		// The quote escape mode governs the escape character outside quotes, which only non-strict parsing accepts
+		if (sql_type_list.empty()) {
+			throw BinderException("DIALECT 'opencsv' requires the columns to be set (e.g. columns = {'a': "
+			                      "'INTEGER'}): detecting them automatically is not supported for this dialect");
+		}
+		if (file_options.union_by_name) {
+			throw BinderException("DIALECT 'opencsv' is not supported together with UNION_BY_NAME");
+		}
+		// OpenCSVSerde reads with a '\' escape when none is given
+		state_machine_options.escape.Set('\\', false);
+		const auto &delimiter = state_machine_options.delimiter.GetValue();
+		const auto quote = state_machine_options.quote.GetValue();
+		const auto escape = state_machine_options.escape.GetValue();
+		if (delimiter.empty() || quote == '\0' || escape == '\0') {
+			throw BinderException(
+			    "DIALECT 'opencsv' requires a delimiter, a quote character and an escape character, as opencsv does");
+		}
+		if (quote == escape || delimiter.find(quote) != string::npos || delimiter.find(escape) != string::npos) {
+			throw BinderException("DIALECT 'opencsv' requires the delimiter, quote and escape characters to differ, "
+			                      "as opencsv requires");
+		}
 		state_machine_options.strict_mode.Set(false, false);
+		// the columns are given, so nothing is sniffed
+		auto_detect = false;
+		// OpenCSVSerde pads missing fields with NULL and reads an empty field as an empty string
+		if (user_defined_parameters.count(Identifier("null_padding")) == 0) {
+			null_padding = true;
+		}
+		if (user_defined_parameters.count(Identifier("nullstr")) == 0 &&
+		    user_defined_parameters.count(Identifier("null")) == 0) {
+			null_str.clear();
+		}
+		// the internal parsing options the dialect is made of
+		state_machine_options.escape_mode.Set(CSVEscapeMode::OPENCSV, false);
+		state_machine_options.quoted_newlines.Set(false, false);
+		state_machine_options.unterminated_quote.Set(CSVUnterminatedQuote::NULL_FIELD, false);
+		state_machine_options.doubled_quote_in_field.Set(true, false);
+		state_machine_options.embedded_quote.Set(CSVEmbeddedQuote::OPENCSV, false);
 	}
 	// Validate CSV Buffer and max_line_size do not conflict.
 	if (buffer_size_option.IsSetByUser() && maximum_line_size.IsSetByUser()) {
@@ -918,8 +960,8 @@ void CSVReaderOptions::ToNamedParameters(named_parameter_map_t &named_params) co
 	if (strict_mode.IsSetByUser()) {
 		named_params["strict_mode"] = Value(GetRFC4180());
 	}
-	if (dialect_options.state_machine_options.escape_mode.IsSetByUser()) {
-		named_params["escape_mode"] = Value(GetEscapeMode());
+	if (dialect.IsSetByUser()) {
+		named_params["dialect"] = Value(GetDialect());
 	}
 	named_params["max_line_size"] = Value::BIGINT(NumericCast<int64_t>(maximum_line_size.GetValue()));
 	if (dialect_options.skip_rows.IsSetByUser()) {

@@ -33,13 +33,23 @@ struct CSVStateMachineOptions {
 	CSVOption<NewLineIdentifier> new_line = NewLineIdentifier::NOT_SET;
 	//! How Strict the parser should be
 	CSVOption<bool> strict_mode = true;
-	//! Which characters the escape character can escape
+	//! Which characters the escape character can escape (internal: only set through the dialect option for now)
 	CSVOption<CSVEscapeMode> escape_mode = CSVEscapeMode::ALL;
+	//! Whether a record can continue across a line break inside quotes (internal, see escape_mode)
+	CSVOption<bool> quoted_newlines = true;
+	//! What a quote that is never closed yields at the end of a record (internal, see escape_mode)
+	CSVOption<CSVUnterminatedQuote> unterminated_quote = CSVUnterminatedQuote::DEFAULT;
+	//! Whether a doubled quote collapses to one quote in an unquoted field (internal, see escape_mode)
+	CSVOption<bool> doubled_quote_in_field = false;
+	//! What a quote character in the middle of a field means (internal, see escape_mode)
+	CSVOption<CSVEmbeddedQuote> embedded_quote = CSVEmbeddedQuote::DATA;
 
 	bool operator==(const CSVStateMachineOptions &other) const {
 		return delimiter == other.delimiter && quote == other.quote && escape == other.escape &&
 		       new_line == other.new_line && comment == other.comment && strict_mode == other.strict_mode &&
-		       escape_mode == other.escape_mode;
+		       escape_mode == other.escape_mode && quoted_newlines == other.quoted_newlines &&
+		       unterminated_quote == other.unterminated_quote &&
+		       doubled_quote_in_field == other.doubled_quote_in_field && embedded_quote == other.embedded_quote;
 	}
 };
 } // namespace duckdb
