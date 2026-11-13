@@ -363,3 +363,44 @@ query II
 explain select distinct pg from (select p.g as pg from p left join (select distinct a from k) s on p.id = s.a order by pg desc limit 3) order by pg;
 ----
 physical_plan	<!REGEX>:.*JOIN.*
+
+# a positional join pairs rows by position, so a distinct group above it does not hold inside its children:
+# the join fans ab out to two rows and pc.v = 20 is paired with the second one (issue #27653)
+statement ok
+create table pa(k int);
+
+statement ok
+insert into pa values (1);
+
+statement ok
+create table pb(k int);
+
+statement ok
+insert into pb values (1), (1);
+
+statement ok
+create table pc(v int);
+
+statement ok
+insert into pc values (10), (20);
+
+query I
+select distinct ab.k from (select pa.k from pa left join pb on pa.k = pb.k) ab positional join pc where ab.k = 1 and pc.v = 20;
+----
+1
+
+query II
+explain select distinct ab.k from (select pa.k from pa left join pb on pa.k = pb.k) ab positional join pc where ab.k = 1 and pc.v = 20;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*
+
+# a left join whose inner side is unique is still eliminated under a positional join
+query I
+select distinct ab.k from (select pa.k from pa left join (select distinct k from pb) s on pa.k = s.k) ab positional join pc where ab.k = 1 and pc.v = 10;
+----
+1
+
+query II
+explain select distinct ab.k from (select pa.k from pa left join (select distinct k from pb) s on pa.k = s.k) ab positional join pc where ab.k = 1 and pc.v = 10;
+----
+physical_plan	<!REGEX>:.*HASH_JOIN.*
