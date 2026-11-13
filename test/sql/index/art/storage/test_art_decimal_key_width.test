@@ -205,6 +205,29 @@ CREATE INDEX sx2 ON d.s ((struct_extract(CAST(s AS STRUCT(n DECIMAL(18,0), amoun
 ----
 <REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
 
+# a cast between nested types of different kinds pairs the children as the cast does: the fields of a ROW cast to a
+# STRUCT by position, every field of a STRUCT cast to a MAP with the value type
+statement error
+CREATE INDEX nx3 ON d.n ((coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DECIMAL(18,0))), 'v'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE INDEX sx3 ON d.s ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n VARCHAR, amount DECIMAL(19,0))), 'amount')))
+
+statement error
+CREATE INDEX sx4 ON d.s ((struct_extract(try_cast(row(s.n, s.amount) AS STRUCT(n DECIMAL(18,0), amount DECIMAL(19,0))), 'amount')))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+CREATE INDEX sx5 ON d.s ((map_values(try_cast(s AS MAP(VARCHAR, VARCHAR)))[1]))
+
+statement error
+CREATE INDEX sx6 ON d.s ((map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1]))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
 statement ok
 CREATE TABLE d.l (v BIGNUM[])
 

@@ -131,8 +131,15 @@ bool IsBignumDecimalCast(const LogicalType &source, const LogicalType &target) {
 	return IsBignumDecimalPair(source, target) || IsBignumDecimalPair(target, source);
 }
 
-//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or corresponding fields of nested types
-//! (struct fields by name, else by position); the engines before wide decimals have no such cast
+//! A STRUCT or a TUPLE (an unnamed struct): the cast between them pairs the fields
+bool IsStructOrTuple(const LogicalType &type) {
+	return type.id() == LogicalTypeId::STRUCT || type.id() == LogicalTypeId::TUPLE;
+}
+
+//! Whether a cast converts between BIGNUM and DECIMAL, the types themselves or the children the cast pairs: the
+//! elements of lists and arrays, the keys and values of maps, struct fields (by name, else by position), every field of
+//! a STRUCT cast to a MAP with the value type, and union members by name; the engines before wide decimals have no such
+//! cast
 bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &target) {
 	if (IsBignumDecimalCast(source, target)) {
 		return true;
@@ -144,9 +151,29 @@ bool CastsBetweenBignumAndDecimal(const LogicalType &source, const LogicalType &
 		return CastsBetweenBignumAndDecimal(MapType::KeyType(source), MapType::KeyType(target)) ||
 		       CastsBetweenBignumAndDecimal(MapType::ValueType(source), MapType::ValueType(target));
 	}
-	const bool structs = source.id() == LogicalTypeId::STRUCT || source.id() == LogicalTypeId::TUPLE ||
-	                     source.id() == LogicalTypeId::UNION;
-	if (!structs || source.id() != target.id()) {
+	if (source.id() == LogicalTypeId::STRUCT && target.id() == LogicalTypeId::MAP) {
+		auto &value_type = MapType::ValueType(target);
+		for (auto &field : StructType::GetChildTypes(source)) {
+			if (CastsBetweenBignumAndDecimal(field.second, value_type)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (source.id() == LogicalTypeId::UNION && target.id() == LogicalTypeId::UNION) {
+		for (idx_t i = 0; i < UnionType::GetMemberCount(source); i++) {
+			auto &name = UnionType::GetMemberName(source, i);
+			for (idx_t j = 0; j < UnionType::GetMemberCount(target); j++) {
+				if (UnionType::GetMemberName(target, j) == name &&
+				    CastsBetweenBignumAndDecimal(UnionType::GetMemberType(source, i),
+				                                 UnionType::GetMemberType(target, j))) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	if (!IsStructOrTuple(source) || !IsStructOrTuple(target)) {
 		return false;
 	}
 	auto &source_children = StructType::GetChildTypes(source);

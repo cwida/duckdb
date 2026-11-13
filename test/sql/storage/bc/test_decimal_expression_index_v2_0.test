@@ -447,6 +447,83 @@ INSERT INTO old.t VALUES (2)
 statement ok
 DETACH old
 
+# data/storage/decimal_bignum_nested_cast_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
+#   CREATE TABLE t (a BIGNUM);
+#   CREATE UNIQUE INDEX ix ON t ((coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DECIMAL(18,0))), 'v'), 0::DECIMAL(18,0))));
+#   INSERT INTO t VALUES ('1'::BIGNUM);
+#   CREATE TABLE m (s STRUCT(v BIGNUM));
+#   CREATE UNIQUE INDEX mx ON m ((coalesce(map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1], 0::DECIMAL(18,0))));
+#   INSERT INTO m VALUES ({'v': '1'::BIGNUM});
+# The casts pair a BIGNUM child with a DECIMAL child across nested types of different kinds (a ROW cast to a STRUCT, a
+# STRUCT cast to a MAP): that engine's TRY_CAST gave NULL for the child, so both stored keys are 0. The casts are not
+# bound as that engine bound them, so both indexes are refused by writes and skipped by reads until created again
+unzip data/storage/decimal_bignum_nested_cast_index_v2_0_0.db.gz {TEST_DIR}/decimal_bignum_nested_cast_index.db
+
+statement ok
+ATTACH '{TEST_DIR}/decimal_bignum_nested_cast_index.db' AS old
+
+# a query of this engine casts the children, the stored keys are still 0
+query I
+SELECT coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DECIMAL(18,0))), 'v'), 0::DECIMAL(18,0)) FROM old.t
+----
+1
+
+query I
+SELECT coalesce(map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1], 0::DECIMAL(18,0)) FROM old.m
+----
+1
+
+query I
+SELECT count(*) FROM old.t WHERE a = '1'::BIGNUM
+----
+1
+
+statement error
+INSERT INTO old.t VALUES ('1'::BIGNUM)
+----
+<REGEX>:.*Cannot bind index "ix" on table "t": the index was stored at storage version v2\.0\.0, whose engines compute other keys for its expression \(.*casts TUPLE\(BIGNUM\) to STRUCT\(v DECIMAL\(18,0\)\), a cast those engines do not have \(a TRY_CAST gives NULL there\)\).*DROP INDEX "ix" and CREATE it again.*
+
+statement error
+INSERT INTO old.m VALUES ({'v': '1'::BIGNUM})
+----
+<REGEX>:.*Cannot bind index "mx" on table "m".*casts STRUCT\(v BIGNUM\) to MAP\(VARCHAR, DECIMAL\(18,0\)\), a cast those engines do not have.*DROP INDEX "mx" and CREATE it again.*
+
+query II
+SELECT (SELECT count(*) FROM old.t), (SELECT count(*) FROM old.m)
+----
+1	1
+
+statement ok
+DROP INDEX old.ix
+
+statement ok
+DROP INDEX old.mx
+
+# the keys cannot be created again at this storage version, since the engines of that version compute them otherwise
+statement error
+CREATE UNIQUE INDEX ix ON old.t ((coalesce(struct_extract(try_cast(row(a) AS STRUCT(v DECIMAL(18,0))), 'v'), 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement error
+CREATE UNIQUE INDEX mx ON old.m ((coalesce(map_values(try_cast(s AS MAP(VARCHAR, DECIMAL(18,0))))[1], 0::DECIMAL(18,0))))
+----
+<REGEX>:.*Index key expressions with a cast between BIGNUM and DECIMAL are not supported in storage versions prior to v2\.1\.0.*
+
+statement ok
+INSERT INTO old.t VALUES ('1'::BIGNUM)
+
+statement ok
+INSERT INTO old.m VALUES ({'v': '1'::BIGNUM})
+
+query II
+SELECT (SELECT count(*) FROM old.t), (SELECT count(*) FROM old.m)
+----
+2	2
+
+statement ok
+DETACH old
+
 # data/storage/decimal_wide_literal_index_v2_0_0.db.gz was written by DuckDB 2.0.0 at storage version v2.0.0 with:
 #   CREATE TABLE t (k INTEGER);
 #   CREATE INDEX ix ON t ((k + 1234567890123456789012345678901234567890.5));
