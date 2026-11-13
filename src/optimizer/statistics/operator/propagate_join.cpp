@@ -366,6 +366,10 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin
 		node_stats = std::move(left_stats);
 		break;
 	}
+	if (join.join_type == JoinType::MARK && join.children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT) {
+		ReplaceWithEmptyResult(node_ptr);
+		return make_uniq<NodeStatistics>(0U, 0U);
+	}
 
 	auto join_type = join.join_type;
 	// depending on the join type, we might need to alter the statistics

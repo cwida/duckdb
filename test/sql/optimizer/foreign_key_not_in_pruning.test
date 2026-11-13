@@ -1,0 +1,116 @@
+# name: test/sql/optimizer/foreign_key_not_in_pruning.test
+# description: Use foreign keys to prune NOT IN probe rows
+# group: [optimizer]
+
+statement ok
+ATTACH '{TEST_DIR}/foreign_key_not_in.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+CREATE TABLE parent(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE child(pid INTEGER REFERENCES parent(id));
+
+statement ok
+INSERT INTO parent SELECT range::INTEGER FROM range(6144);
+
+statement ok
+INSERT INTO child SELECT range::INTEGER FROM range(6144);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM child WHERE pid NOT IN (SELECT id FROM parent);
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM child WHERE pid NOT IN (SELECT id FROM parent);
+----
+analyzed_plan	<REGEX>:.*Empty Result.*
+
+# A filtered or transformed referenced side does not preserve the foreign key guarantee
+query I
+SELECT count(*) FROM child WHERE pid NOT IN (SELECT id FROM parent WHERE id < 10);
+----
+6134
+
+query I
+SELECT count(*) FROM child WHERE pid NOT IN (SELECT id + 1 FROM parent);
+----
+1
+
+# A NULL foreign key passes NOT IN when the referenced table is empty
+statement ok
+CREATE TABLE empty_parent(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE nullable_child(pid INTEGER REFERENCES empty_parent(id));
+
+statement ok
+INSERT INTO nullable_child VALUES (NULL), (NULL);
+
+query I
+SELECT count(*) FROM nullable_child WHERE pid NOT IN (SELECT id FROM empty_parent);
+----
+2
+
+statement ok
+INSERT INTO empty_parent VALUES (1);
+
+query I
+SELECT count(*) FROM nullable_child WHERE pid NOT IN (SELECT id FROM empty_parent);
+----
+0
+
+# Without a foreign key, non-matching values must remain visible
+statement ok
+CREATE TABLE unrelated_parent(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE unrelated_child(pid INTEGER);
+
+statement ok
+INSERT INTO unrelated_parent VALUES (1);
+
+statement ok
+INSERT INTO unrelated_child VALUES (2);
+
+query I
+SELECT count(*) FROM unrelated_child WHERE pid NOT IN (SELECT id FROM unrelated_parent);
+----
+1
+
+# Composite foreign keys derive a disjunction of NULL checks
+statement ok
+CREATE TABLE composite_parent(a INTEGER, b INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+CREATE TABLE composite_child(x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES composite_parent(a, b));
+
+statement ok
+INSERT INTO composite_parent SELECT range::INTEGER, range::INTEGER FROM range(6144);
+
+statement ok
+INSERT INTO composite_child SELECT range::INTEGER, range::INTEGER FROM range(6144);
+
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM composite_child
+WHERE (x, y) NOT IN (SELECT a, b FROM composite_parent);
+----
+analyzed_plan	<REGEX>:.*Empty Result.*
+
+statement ok
+INSERT INTO composite_child VALUES (NULL, -1);
+
+query I
+SELECT count(*) FROM composite_child WHERE (x, y) NOT IN (SELECT a, b FROM composite_parent);
+----
+1
