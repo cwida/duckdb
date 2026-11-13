@@ -1,0 +1,51 @@
+# name: test/sql/storage/compression/alp/alp_sampling_ratio.test
+# description: ALP size extrapolation retains fractional sampling ratios
+# group: [alp]
+
+require exact_vector_size 2048
+
+load {TEST_DIR}/alp_sampling_ratio.db
+
+# Ensure the first analyzed vector contains at least 1024 values for both types.
+statement ok
+SET initial_column_segment_size=262144
+
+# Isolate ALP's estimate against uncompressed storage.
+statement ok
+SET disabled_compression_methods='chimp,patas,alprd,rle'
+
+# An exact sampling ratio and a fractional ratio with a partial vector.
+foreach count 3072 3000
+
+statement ok
+CREATE OR REPLACE TABLE incompressible AS
+SELECT (hash(i)::DOUBLE / 18446744073709551616.0)::FLOAT AS f,
+       hash(i)::DOUBLE / 18446744073709551616.0 AS d
+FROM range({count}) t(i)
+
+statement ok
+CHECKPOINT
+
+query TT rowsort
+SELECT DISTINCT segment_type, compression FROM pragma_storage_info('incompressible')
+WHERE segment_type IN ('FLOAT', 'DOUBLE') AND compression <> 'Constant'
+----
+DOUBLE	Uncompressed
+FLOAT	Uncompressed
+
+endloop
+
+# Compressible data must still select ALP with a fractional sampling ratio.
+statement ok
+CREATE TABLE compressible AS
+SELECT i::FLOAT AS f, i::DOUBLE AS d FROM range(3000) t(i)
+
+statement ok
+CHECKPOINT
+
+query TT rowsort
+SELECT segment_type, compression FROM pragma_storage_info('compressible')
+WHERE segment_type IN ('FLOAT', 'DOUBLE')
+----
+DOUBLE	ALP
+FLOAT	ALP
