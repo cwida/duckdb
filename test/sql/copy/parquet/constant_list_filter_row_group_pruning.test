@@ -1,0 +1,84 @@
+# name: test/sql/copy/parquet/constant_list_filter_row_group_pruning.test
+# description: Row group pruning for filters with a constant list argument
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET threads = 4;
+
+# Ids with a gap at [50000, 60000): only the row group spanning the gap has the gap inside its min/max
+statement ok
+COPY (SELECT i AS id FROM range(100000) t(i) WHERE i NOT BETWEEN 50000 AND 59999)
+TO '{TEST_DIR}/constant_list_filter.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+# A constant list argument that is not rewritten into an IN filter
+query II
+EXPLAIN ANALYZE SELECT id FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_position(list_transform(range(5000), lambda x: 50001 + 2 * x), id) IS NOT NULL;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 44.*
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_position(list_transform(range(5000), lambda x: 50001 + 2 * x), id) IS NOT NULL;
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT id FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_position([10, 20, 30], id) IS NOT NULL;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 44.*
+
+query I
+SELECT id FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_position([10, 20, 30, 50000, 99990, 99999], id) IS NOT NULL ORDER BY id;
+----
+10
+20
+30
+99990
+99999
+
+# The same constant used by several filters
+query I
+SELECT count(*) FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_position([1, 2, 3, 70000], id) IS NOT NULL AND list_position([1, 2, 3, 70000], id + 0) IS NOT NULL;
+----
+4
+
+# Constant lists rewritten into IN filters
+query I
+SELECT id FROM '{TEST_DIR}/constant_list_filter.parquet'
+WHERE list_contains([10, 50000, 55555, 99999], id) ORDER BY id;
+----
+10
+99999
+
+# NULL and empty constant lists
+query I
+SELECT count(*) FROM '{TEST_DIR}/constant_list_filter.parquet' WHERE list_position([]::BIGINT[], id) IS NOT NULL;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/constant_list_filter.parquet' WHERE list_position(NULL::BIGINT[], id) IS NOT NULL;
+----
+0
+
+# A function evaluated at constant inputs: the column has a single value in each row group
+statement ok
+COPY (SELECT i // 2048 AS g FROM range(8192) t(i))
+TO '{TEST_DIR}/constant_list_filter_groups.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+query II
+EXPLAIN ANALYZE SELECT g FROM '{TEST_DIR}/constant_list_filter_groups.parquet'
+WHERE list_position([2, 7, 9], g) IS NOT NULL;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/constant_list_filter_groups.parquet' WHERE list_position([2, 7, 9], g) IS NOT NULL;
+----
+2048

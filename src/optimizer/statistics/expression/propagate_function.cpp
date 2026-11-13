@@ -96,20 +96,21 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientC
 	if (func.Function().HasBindLambdaCallback()) {
 		return nullptr;
 	}
-	vector<Value> values;
-	values.reserve(func.GetChildren().size());
+	vector<Value> values(func.GetChildren().size());
+	// check the non-foldable children first: evaluating a foldable child can be expensive
 	for (idx_t idx = 0; idx < func.GetChildren().size(); ++idx) {
 		auto &child = *func.GetChildren()[idx];
-		auto &stats = child_stats[idx];
-		Value value;
-		if (child.IsFoldable()) {
-			if (!ExpressionExecutor::TryEvaluateScalar(context, child, value)) {
-				return nullptr;
-			}
-		} else if (!TryInferConstantBounds(stats, value)) {
+		if (!child.IsFoldable() && !TryInferConstantBounds(child_stats[idx], values[idx])) {
 			return nullptr;
 		}
-		values.emplace_back(std::move(value));
+	}
+	for (idx_t idx = 0; idx < func.GetChildren().size(); ++idx) {
+		auto &child = *func.GetChildren()[idx];
+		if (child.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			values[idx] = child.Cast<BoundConstantExpression>().GetValue();
+		} else if (child.IsFoldable() && !ExpressionExecutor::TryEvaluateScalar(context, child, values[idx])) {
+			return nullptr;
+		}
 	}
 	Value result;
 	if (!TryEvaluateAtConstants(context, func, values, result)) {

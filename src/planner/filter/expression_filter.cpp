@@ -236,11 +236,8 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 		}
 		return &input_stats[index];
 	}
-	case ExpressionClass::BOUND_CONSTANT: {
-		auto &constant = expr.Cast<BoundConstantExpression>().GetValue();
-		owned_stats.push_back(BaseStatistics::FromConstant(constant).ToUnique());
-		return owned_stats.back().get();
-	}
+	case ExpressionClass::BOUND_CONSTANT:
+		return &expr.Cast<BoundConstantExpression>().GetStatistics();
 	case ExpressionClass::BOUND_FUNCTION: {
 		auto &func = expr.Cast<BoundFunctionExpression>();
 
