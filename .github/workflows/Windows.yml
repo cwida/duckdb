@@ -427,15 +427,21 @@ jobs:
          run: python build/release/test/run.py
 
 
-       - name: Deploy static libraries
+       - name: Deploy CLI and static libraries
          shell: bash
          env:
            AWS_ENDPOINT_URL: ${{ secrets.S3_DUCKDB_STAGING_ENDPOINT }}
            AWS_ACCESS_KEY_ID: ${{ secrets.S3_DUCKDB_STAGING_ID }}
            AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
          run: |
+           make cli-release-artifact ARTIFACT_SUFFIX=windows-mingw CLI_BINARY=build/release/duckdb.exe
            make static-libs-release-artifact ARTIFACT_SUFFIX=windows-mingw STATIC_LIBRARIES="build/release/src/libduckdb_static.a build/release/src/libduckdb_shell.a build/release/src/main/http/libduckdb_httplib.a build/release/src/main/extension/libduckdb_loadable_extensions.a build/release/extension/*/lib*_extension.a"
-           ./scripts/upload-assets-to-staging.sh github_release duckdb-static-libs-windows-mingw.tar.gz
+           ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-mingw.tar.gz duckdb-static-libs-windows-mingw.tar.gz
+
+       - uses: actions/upload-artifact@v7
+         with:
+           path: duckdb-cli-windows-mingw.tar.gz
+           archive: false
 
        - uses: actions/upload-artifact@v7
          with:

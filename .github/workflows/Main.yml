@@ -431,7 +431,7 @@ jobs:
       needs.linux-release-musl.result == 'success' &&
       needs.windows.result == 'success' &&
       (needs.osx.result == 'success' || needs.osx.result == 'skipped')
-    uses: duckdb/extension-ci-tools/.github/workflows/build.yml@main
+    uses: smvv/extension-ci-tools/.github/workflows/build.yml@test-extension-runner
     needs:
       - prepare
       - linux-relassert
@@ -474,8 +474,8 @@ jobs:
           toolchain: rust
       extension_repository: duckdb/extension-template
       extension_ref: main
-      ci_tools_repository: duckdb/extension-ci-tools
-      ci_tools_version: main
+      ci_tools_repository: smvv/extension-ci-tools
+      ci_tools_version: test-extension-runner
       exclude_archs: ${{ needs.prepare.outputs.extensions_extra_exclude_archs }}
       allow_failure_archs: ${{ needs.prepare.outputs.extension_allow_failure_archs }}
       vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
