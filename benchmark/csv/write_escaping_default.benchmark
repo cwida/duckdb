@@ -1,0 +1,13 @@
+# name: benchmark/csv/write_escaping_default.benchmark
+# description: CSV writer with the default quote and escape character
+# group: [csv]
+
+name CSV Write Escaping Default
+group csv
+argument output_path /dev/null
+
+init
+SET threads=1;
+
+run
+COPY (SELECT repeat('abc' || chr(34), 16) AS v FROM range(10000000)) TO '${output_path}' (HEADER false);

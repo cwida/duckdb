@@ -258,29 +258,6 @@ void CSVWriter::WriteQuoteOrEscape(WriteStream &writer, char quote_or_escape) {
 	}
 }
 
-string CSVWriter::AddEscapes(char to_be_escaped, char escape, const string &val) {
-	if (escape == '\0') {
-		return val;
-	}
-	idx_t i = 0;
-	string new_val = "";
-	idx_t found = val.find(to_be_escaped);
-
-	while (found != string::npos) {
-		while (i < found) {
-			new_val += val[i];
-			i++;
-		}
-		new_val += escape;
-		found = val.find(to_be_escaped, found + 1);
-	}
-	while (i < val.length()) {
-		new_val += val[i];
-		i++;
-	}
-	return new_val;
-}
-
 bool CSVWriter::RequiresQuotes(const char *str, idx_t len, const string &null_str,
                                const vector<bool> &requires_quotes) {
 	// check if the string is equal to the null string
@@ -326,7 +303,7 @@ void CSVWriter::WriteQuotedString(WriteStream &writer, const char *str, idx_t le
 			}
 		}
 
-		if (!requires_escape) {
+		if (!requires_escape || escape == '\0') {
 			// fast path: no need to escape anything
 			WriteQuoteOrEscape(writer, quote);
 			writer.WriteData(const_data_ptr_cast(str), len);
@@ -335,12 +312,16 @@ void CSVWriter::WriteQuotedString(WriteStream &writer, const char *str, idx_t le
 		}
 
 		// slow path: need to add escapes
-		string new_val(str, len);
-		new_val = AddEscapes(escape, escape, new_val);
-		if (escape != quote) {
-			// need to escape quotes separately
-			new_val = AddEscapes(quote, escape, new_val);
+		string new_val;
+		new_val.reserve(len);
+
+		for (idx_t i = 0; i < len; i++) {
+			if (str[i] == escape || str[i] == quote) {
+				new_val += escape;
+			}
+			new_val += str[i];
 		}
+
 		WriteQuoteOrEscape(writer, quote);
 		writer.WriteData(const_data_ptr_cast(new_val.c_str()), new_val.size());
 		WriteQuoteOrEscape(writer, quote);

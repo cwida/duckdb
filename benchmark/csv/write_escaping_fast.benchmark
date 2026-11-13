@@ -1,0 +1,13 @@
+# name: benchmark/csv/write_escaping_fast.benchmark
+# description: CSV writer with a quoted field that needs no escaping
+# group: [csv]
+
+name CSV Write Escaping Fast Path
+group csv
+argument output_path /dev/null
+
+init
+SET threads=1;
+
+run
+COPY (SELECT repeat('abc,', 16) AS v FROM range(10000000)) TO '${output_path}' (HEADER false);

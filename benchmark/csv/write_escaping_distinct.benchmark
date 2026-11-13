@@ -1,0 +1,13 @@
+# name: benchmark/csv/write_escaping_distinct.benchmark
+# description: CSV writer with distinct quote and escape characters
+# group: [csv]
+
+name CSV Write Escaping Distinct
+group csv
+argument output_path /dev/null
+
+init
+SET threads=1;
+
+run
+COPY (SELECT repeat(chr(92) || chr(34) || 'ab', 16) AS v FROM range(10000000)) TO '${output_path}' (HEADER false, ESCAPE '\');

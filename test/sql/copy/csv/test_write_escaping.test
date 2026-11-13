@@ -1,0 +1,21 @@
+# name: test/sql/copy/csv/test_write_escaping.test
+# description: Check CSV writer output with empty and distinct escape characters
+# group: [csv]
+
+statement ok
+COPY (SELECT chr(34) AS v) TO '{TEST_DIR}/write_empty_escape.csv'
+    (FORMAT CSV, HEADER false, ESCAPE '');
+
+query T
+SELECT hex(content) FROM read_text('{TEST_DIR}/write_empty_escape.csv');
+----
+2222220A
+
+statement ok
+COPY (SELECT chr(92) || chr(34) AS v) TO '{TEST_DIR}/write_distinct_escape.csv'
+    (FORMAT CSV, HEADER false, ESCAPE '\');
+
+query T
+SELECT hex(content) FROM read_text('{TEST_DIR}/write_distinct_escape.csv');
+----
+225C5C5C22220A
