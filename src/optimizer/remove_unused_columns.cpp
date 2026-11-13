@@ -799,10 +799,12 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	case LogicalOperatorType::LOGICAL_INSERT:
 	case LogicalOperatorType::LOGICAL_UPDATE:
 	case LogicalOperatorType::LOGICAL_DELETE:
-	case LogicalOperatorType::LOGICAL_MERGE_INTO: {
-		//! When RETURNING is used, a PROJECTION is the top level operator for INSERTS, UPDATES, and DELETES
-		//! We still need to project all values from these operators so the projection
-		//! on top of them can select from only the table values being inserted.
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+	case LogicalOperatorType::LOGICAL_CREATE_INDEX: {
+		//! Side-effecting operators own the shape of their input. CREATE INDEX, for example,
+		//! always needs its indexed columns and row ID even if a parent ignores its count.
+		//! When RETURNING is used, DML operators likewise need all table values so the
+		//! projection above them can select the requested values.
 		//! TODO: Push down the projections from the returning statement
 		//! TODO: Be careful because you might be adding expressions when a user returns *
 		RemoveUnusedColumns remove(*this, true);

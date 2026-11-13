@@ -5,7 +5,6 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
-#include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 
@@ -151,17 +150,6 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 		//	Restore bindings for the caller
 		bindings = op.GetColumnBindings();
 		types = op.types;
-		return;
-	}
-	case LogicalOperatorType::LOGICAL_CREATE_INDEX: {
-		// CREATE INDEX statement, add the columns of the table with table index 0 to the binding set
-		// afterwards bind the expressions of the CREATE INDEX statement
-		auto &create_index = op.Cast<LogicalCreateIndex>();
-		bindings = LogicalOperator::GenerateColumnBindings(TableIndex(0),
-		                                                   create_index.table.GetColumns().LogicalColumnCount());
-		// TODO: fill types in too (clearing skips type checks)
-		types.clear();
-		VisitOperatorExpressions(op);
 		return;
 	}
 	case LogicalOperatorType::LOGICAL_GET: {

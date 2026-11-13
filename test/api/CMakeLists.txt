@@ -89,6 +89,7 @@ set(TEST_API_OBJECTS
     test_windows_header_compatibility.cpp
     test_windows_unicode_path.cpp
     test_object_cache.cpp
+    test_nested_create_index.cpp
     test_partial_executor.cpp
     test_scheduler_fairness.cpp
     test_worker_exception.cpp
