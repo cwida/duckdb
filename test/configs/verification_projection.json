@@ -47,6 +47,12 @@
         "test/sql/sql_export/composition_q1_plan.test",
         "test/sql/sql_export/dml_statements.test"
       ]
+    },
+    {
+      "reason": "Checks that a filter directly above a MARK join is merged into the join; synthetic verification projections separate the two.",
+      "paths": [
+        "test/optimizer/mark_join_to_semi.test"
+      ]
     }
   ]
 }

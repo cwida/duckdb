@@ -7,7 +7,7 @@ namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
-static void SimplifyNullSafeSemiJoinConditions(ClientContext &context, LogicalComparisonJoin &join) {
+void FilterPushdown::SimplifyNullSafeSemiJoinConditions(ClientContext &context, LogicalComparisonJoin &join) {
 	D_ASSERT(join.join_type == JoinType::SEMI);
 	NotNullExpressionAnalyzer analyzer(context);
 	for (auto &cond : join.conditions) {

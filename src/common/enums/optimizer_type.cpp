@@ -65,6 +65,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"redundant_order", OptimizerType::REDUNDANT_ORDER},
     {"self_join_aggregate", OptimizerType::SELF_JOIN_AGGREGATE},
     {"scalar_aggregate_merge", OptimizerType::SCALAR_AGGREGATE_MERGE},
+    {"mark_join_to_semi", OptimizerType::MARK_JOIN_TO_SEMI},
     {nullptr, OptimizerType::INVALID}};
 
 string OptimizerTypeToString(OptimizerType type) {

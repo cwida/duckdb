@@ -1,0 +1,424 @@
+# name: test/optimizer/mark_join_to_semi.test
+# description: A MARK join whose mark is only consumed by the filter above it becomes a SEMI / ANTI join
+# group: [optimizer]
+
+# l: duplicate and NULL keys; r: duplicate rows and NULL keys; e: empty; ls / rs: VARCHAR keys with NULLs
+statement ok
+CREATE TABLE l(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1, 10), (1, 11), (2, 20), (3, 30), (NULL, 40), (NULL, 41), (4, 40), (5, 1);
+
+statement ok
+CREATE TABLE r(k INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO r VALUES (1, 1), (1, 1), (1, 2), (2, 5), (NULL, 7), (NULL, 7), (5, 9), (5, 1);
+
+statement ok
+CREATE TABLE e(k INTEGER, c INTEGER);
+
+statement ok
+CREATE TABLE ls(s VARCHAR, v INTEGER);
+
+statement ok
+INSERT INTO ls VALUES ('a', 1), ('A', 2), ('b', 3), (NULL, 4), ('c', 5), ('a', 9);
+
+statement ok
+CREATE TABLE rs(s VARCHAR, c INTEGER);
+
+statement ok
+INSERT INTO rs VALUES ('a', 5), ('a', 0), ('B', 9), (NULL, 9), ('c', 1);
+
+query I
+SELECT name FROM duckdb_optimizers() WHERE name = 'mark_join_to_semi';
+----
+mark_join_to_semi
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# a correlated EXISTS with a non-equality predicate: the MARK join and the filter on its mark become a SEMI join
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<!REGEX>:(?s).*(MARK|─ Filter ─).*
+
+# the null-safe conditions of the converted SEMI join are simplified to regular equalities
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<!REGEX>:(?s).*IS NOT DISTINCT FROM.*
+
+# NOT EXISTS: all conditions are null-safe, so the mark is never NULL and NOT(mark) is an ANTI join
+query II
+EXPLAIN SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<REGEX>:(?s).*Join Type: ANTI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<!REGEX>:(?s).*(MARK|─ Filter ─).*
+
+# another conjunct next to the mark is not affected
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND v + k > 5;
+----
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND v + k > 5;
+----
+logical_opt	<!REGEX>:(?s).*MARK.*
+
+# two marks: each MARK join sits below its own filter and both are converted
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v);
+----
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*Join Type: SEMI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v);
+----
+logical_opt	<!REGEX>:(?s).*MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) AND NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<REGEX>:(?s).*Join Type: ANTI.*Join Type: SEMI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) AND NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<!REGEX>:(?s).*MARK.*
+
+# both branches of a UNION ALL
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) UNION ALL SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v);
+----
+logical_opt	<!REGEX>:(?s).*MARK.*
+
+# the optimizer can be disabled: the MARK join and its filter stay
+statement ok
+SET disabled_optimizers = 'mark_join_to_semi';
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<!REGEX>:(?s).*SEMI.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10);
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+statement ok
+RESET disabled_optimizers;
+
+# not converted: the mark is consumed by the filter and also returned by the projection above it
+query II
+EXPLAIN SELECT * FROM (SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AS m FROM l) WHERE m;
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AS m FROM l) WHERE m;
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+query II
+EXPLAIN SELECT * FROM (SELECT k, v, k IN (SELECT k FROM r) AS m FROM l) WHERE m;
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT k, v, k IN (SELECT k FROM r) AS m FROM l) WHERE m;
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+# not converted: there is no filter on the mark
+query II
+EXPLAIN SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) FROM l;
+----
+logical_opt	<REGEX>:(?s).*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) FROM l;
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+# not converted: NOT(mark) over a condition that is not null-safe (NOT IN: the mark is NULL for a NULL key)
+query II
+EXPLAIN SELECT * FROM l WHERE k NOT IN (SELECT k FROM r WHERE k IS NOT NULL);
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE k NOT IN (SELECT k FROM r WHERE k IS NOT NULL);
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+# not converted: the filter reads the mark inside another expression
+query II
+EXPLAIN SELECT * FROM l WHERE (k IN (SELECT k FROM r)) IS NULL;
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE (k IN (SELECT k FROM r)) IS NULL;
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) = (v > 10);
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) = (v > 10);
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) OR v > 30;
+----
+logical_opt	<REGEX>:(?s).*─ Filter ─.*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) OR v > 30;
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+query II
+EXPLAIN SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) OR EXISTS (SELECT 1 FROM r WHERE r.c = l.v);
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+# not converted: the MARK join of an IN list, the list is pushed into the scan as a filter already
+query II
+EXPLAIN SELECT * FROM l WHERE (k * 2) IN (2, 4, 6, 8, 10, 14);
+----
+logical_opt	<REGEX>:(?s).*Join Type: MARK.*
+
+query II
+EXPLAIN SELECT * FROM l WHERE (k * 2) IN (2, 4, 6, 8, 10, 14);
+----
+logical_opt	<!REGEX>:(?s).*(SEMI|ANTI).*
+
+# results
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+1	10
+1	11
+5	1
+
+# NOT EXISTS keeps the rows with a NULL key
+query II
+SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+2	20
+3	30
+4	40
+NULL	40
+NULL	41
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND v + k > 5 ORDER BY ALL;
+----
+1	10
+1	11
+5	1
+
+query II
+SELECT k, count(*) FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) GROUP BY k ORDER BY ALL;
+----
+1	2
+5	1
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AND EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) ORDER BY ALL;
+----
+1	10
+1	11
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) AND NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+2	20
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) UNION ALL SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) ORDER BY ALL;
+----
+1	10
+1	10
+1	11
+1	11
+2	20
+5	1
+
+# a null-safe correlation: the rows with a NULL key find the NULL rows of r
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k IS NOT DISTINCT FROM l.k AND r.c > l.v - 40) ORDER BY ALL;
+----
+1	10
+1	11
+2	20
+5	1
+NULL	40
+NULL	41
+
+query II
+SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k IS NOT DISTINCT FROM l.k AND r.c > l.v - 40) ORDER BY ALL;
+----
+3	30
+4	40
+
+# the mark is filtered and returned
+query III
+SELECT * FROM (SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) AS m FROM l) WHERE m ORDER BY ALL;
+----
+1	10	true
+1	11	true
+5	1	true
+
+query III
+SELECT * FROM (SELECT k, v, k IN (SELECT k FROM r) AS m FROM l) WHERE m ORDER BY ALL;
+----
+1	10	true
+1	11	true
+2	20	true
+5	1	true
+
+query III
+SELECT k, v, EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) FROM l ORDER BY ALL;
+----
+1	10	true
+1	11	true
+2	20	false
+3	30	false
+4	40	false
+5	1	true
+NULL	40	false
+NULL	41	false
+
+# NOT IN drops the rows with a NULL key (an ANTI join would keep them), and everything if the subquery has a NULL
+query II
+SELECT * FROM l WHERE k NOT IN (SELECT k FROM r WHERE k IS NOT NULL) ORDER BY ALL;
+----
+3	30
+4	40
+
+query II
+SELECT * FROM l WHERE k NOT IN (SELECT k FROM r) ORDER BY ALL;
+----
+
+query II
+SELECT * FROM l WHERE (k IN (SELECT k FROM r)) IS NULL ORDER BY ALL;
+----
+3	30
+4	40
+NULL	40
+NULL	41
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) = (v > 10) ORDER BY ALL;
+----
+1	11
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) OR v > 30 ORDER BY ALL;
+----
+1	10
+1	11
+4	40
+5	1
+NULL	40
+NULL	41
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) OR EXISTS (SELECT 1 FROM r WHERE r.c = l.v) ORDER BY ALL;
+----
+1	10
+1	11
+5	1
+
+query II
+SELECT * FROM l WHERE (k * 2) IN (2, 4, 6, 8, 10, 14) ORDER BY ALL;
+----
+1	10
+1	11
+2	20
+3	30
+4	40
+5	1
+
+query II
+SELECT * FROM l WHERE (k * 2) NOT IN (2, 4, 6, 8, 10, 14) ORDER BY ALL;
+----
+
+# empty right side: EXISTS keeps nothing, NOT EXISTS everything; empty left side
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM e WHERE e.k = l.k AND e.c > l.v - 10) ORDER BY ALL;
+----
+
+query I
+SELECT count(*) FROM l WHERE NOT EXISTS (SELECT 1 FROM e WHERE e.k = l.k AND e.c > l.v - 10);
+----
+8
+
+query II
+SELECT (SELECT count(*) FROM e WHERE EXISTS (SELECT 1 FROM r WHERE r.k = e.k AND r.c > e.c - 10)), (SELECT count(*) FROM e WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = e.k AND r.c > e.c - 10));
+----
+0	0
+
+# VARCHAR keys
+query TI
+SELECT * FROM ls WHERE EXISTS (SELECT 1 FROM rs WHERE rs.s = ls.s AND rs.c > ls.v) ORDER BY ALL;
+----
+a	1
+
+query TI
+SELECT * FROM ls WHERE NOT EXISTS (SELECT 1 FROM rs WHERE rs.s = ls.s AND rs.c > ls.v) ORDER BY ALL;
+----
+A	2
+a	9
+b	3
+c	5
+NULL	4
+
+# the results are the same with the optimizer disabled
+statement ok
+SET disabled_optimizers = 'mark_join_to_semi';
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+1	10
+1	11
+5	1
+
+query II
+SELECT * FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+2	20
+3	30
+4	40
+NULL	40
+NULL	41
+
+query II
+SELECT * FROM l WHERE EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c < l.v) AND NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k AND r.c > l.v - 10) ORDER BY ALL;
+----
+2	20

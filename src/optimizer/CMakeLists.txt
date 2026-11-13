@@ -44,6 +44,7 @@ add_library_unity(
   join_filter_pushdown_optimizer.cpp
   runtime_filter_cast.cpp
   late_materialization.cpp
+  mark_join_to_semi.cpp
   late_materialization_helper.cpp
   optimizer.cpp
   outer_join_simplification.cpp
