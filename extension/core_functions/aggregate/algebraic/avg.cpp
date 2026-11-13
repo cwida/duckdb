@@ -102,9 +102,12 @@ struct IntegerAverageOperation : public BaseSumOperation<AverageSetOperation, Re
 	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
-		} else {
+		} else if (finalize_data.input.bind_data) {
+			// a DECIMAL: the divident carries the scale
 			double divident = GetAverageDivident<double>(state.count, finalize_data.input.bind_data);
 			target = double(state.value) / divident;
+		} else {
+			target = Hugeint::DivideToDouble(hugeint_t(state.value), state.count);
 		}
 	}
 };
@@ -119,9 +122,12 @@ struct IntegerAverageOperationHugeint : public BaseSumOperation<AverageSetOperat
 	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
-		} else {
+		} else if (finalize_data.input.bind_data) {
+			// a DECIMAL: the divident carries the scale
 			long double divident = GetAverageDivident<long double>(state.count, finalize_data.input.bind_data);
 			target = Hugeint::Cast<long double>(state.value) / divident;
+		} else {
+			target = Hugeint::DivideToDouble(state.value, state.count);
 		}
 	}
 };
@@ -389,9 +395,12 @@ struct HugeintAverageOperation : public BaseSumOperation<AverageSetOperation, Hu
 	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
-		} else {
+		} else if (finalize_data.input.bind_data) {
+			// a DECIMAL: the divident carries the scale
 			long double divident = GetAverageDivident<long double>(state.count, finalize_data.input.bind_data);
 			target = Hugeint::Cast<long double>(state.value) / divident;
+		} else {
+			target = Hugeint::DivideToDouble(state.value, state.count);
 		}
 	}
 };

@@ -2,6 +2,7 @@
 #include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -122,6 +123,81 @@ hugeint_t Hugeint::DivModPositive(hugeint_t lhs, uint64_t rhs, uint64_t &remaind
 		}
 	}
 	return div_result;
+}
+
+//===--------------------------------------------------------------------===//
+// Divide To Double
+//===--------------------------------------------------------------------===//
+static uhugeint_t HugeintMagnitude(hugeint_t value, bool &negative) {
+	negative = value.upper < 0;
+	uhugeint_t result(static_cast<uint64_t>(value.upper), value.lower);
+	if (negative) {
+		// two's complement, which also holds the magnitude of the minimum
+		result = ~result + uhugeint_t(1);
+	}
+	return result;
+}
+
+static idx_t UhugeintBitLength(uhugeint_t value) {
+	if (value.upper != 0) {
+		return 128 - CountZeros<uint64_t>::Leading(value.upper);
+	}
+	if (value.lower != 0) {
+		return 64 - CountZeros<uint64_t>::Leading(value.lower);
+	}
+	return 0;
+}
+
+double Hugeint::DivideToDouble(hugeint_t lhs, uint64_t rhs) {
+	D_ASSERT(rhs != 0);
+	bool negative;
+	auto numerator = HugeintMagnitude(lhs, negative);
+	constexpr uint64_t EXACT_IN_DOUBLE = uint64_t(1) << 53;
+	if (numerator.upper == 0 && numerator.lower <= EXACT_IN_DOUBLE && rhs <= EXACT_IN_DOUBLE) {
+		// both are exact in a double, so the division rounds once
+		const auto result = static_cast<double>(numerator.lower) / static_cast<double>(rhs);
+		return negative ? -result : result;
+	}
+	if (numerator == uhugeint_t(0)) {
+		return 0.0;
+	}
+	const uhugeint_t denominator(rhs);
+	// Scale the numerator so that the integer quotient has at least 55 bits: the first 53 are the mantissa, the rest
+	// and the remainder decide the rounding. With N and D bits in the numerator and the denominator, the quotient is
+	// above 2^(N - D - 1), so N + shift = D + 55 gives a quotient of 55 or 56 bits, and the scaled numerator has at
+	// most D + 55 <= 119 bits.
+	const idx_t numerator_bits = UhugeintBitLength(numerator);
+	const idx_t denominator_bits = UhugeintBitLength(denominator);
+	idx_t shift = 0;
+	if (numerator_bits < denominator_bits + 55) {
+		shift = denominator_bits + 55 - numerator_bits;
+		numerator = numerator << uhugeint_t(shift);
+	}
+	uhugeint_t remainder;
+	const auto quotient = Uhugeint::DivMod(numerator, denominator, remainder);
+	const bool inexact = remainder != uhugeint_t(0);
+
+	// round the quotient to 53 bits, ties to even
+	const idx_t dropped_bits = UhugeintBitLength(quotient) - 53;
+	D_ASSERT(dropped_bits >= 2);
+	const uhugeint_t half = uhugeint_t(1) << uhugeint_t(dropped_bits - 1);
+	const uhugeint_t dropped = quotient & ((half << uhugeint_t(1)) - uhugeint_t(1));
+	uint64_t mantissa = (quotient >> uhugeint_t(dropped_bits)).lower;
+	if (dropped > half || (dropped == half && (inexact || (mantissa & 1)))) {
+		// a carry into 2^53 is still exact
+		mantissa++;
+	}
+	const auto result =
+	    std::ldexp(static_cast<double>(mantissa), static_cast<int>(dropped_bits) - static_cast<int>(shift));
+	return negative ? -result : result;
+}
+
+double Hugeint::DivideToDouble(hugeint_t lhs, int64_t rhs) {
+	if (rhs < 0) {
+		// the magnitude of the minimum is 2^63
+		return -DivideToDouble(lhs, ~static_cast<uint64_t>(rhs) + 1);
+	}
+	return DivideToDouble(lhs, static_cast<uint64_t>(rhs));
 }
 
 string Hugeint::ToString(hugeint_t input) {

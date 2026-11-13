@@ -183,7 +183,7 @@ sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
 query TT
 EXPLAIN (SQL) SELECT avg(i) FROM (VALUES (1),(2),(NULL)) t(i);
 ----
-sql	<REGEX>:.*"?system"?[.]main[.]"?/"?[(].*
+sql	<REGEX>:.*"?system"?[.]main[.]"?__internal_divide_to_double"?[(].*
 
 foreach disable_optimizer true false
 
@@ -266,7 +266,7 @@ sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
 query TT
 EXPLAIN (SQL) SELECT sum(i), avg(i), count(DISTINCT i) FROM (VALUES (1),(2),(2),(NULL)) t(i);
 ----
-sql	<REGEX>:.*"?system"?[.]main[.]"?/"?[(].*
+sql	<REGEX>:.*"?system"?[.]main[.]"?__internal_divide_to_double"?[(].*
 
 foreach disable_optimizer true false
 

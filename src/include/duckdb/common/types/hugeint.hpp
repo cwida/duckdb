@@ -125,6 +125,10 @@ public:
 	static hugeint_t DivMod(hugeint_t lhs, hugeint_t rhs, hugeint_t &remainder);
 	// DivMod but lhs MUST be positive, and rhs is a uint64_t
 	static hugeint_t DivModPositive(hugeint_t lhs, uint64_t rhs, uint64_t &remainder);
+	//! lhs / rhs rounded to the nearest double (ties to even), the same on every platform: it does not go through
+	//! long double, which is a double on some of them. rhs must not be zero.
+	DUCKDB_API static double DivideToDouble(hugeint_t lhs, uint64_t rhs);
+	DUCKDB_API static double DivideToDouble(hugeint_t lhs, int64_t rhs);
 
 	static int Sign(hugeint_t n);
 	static hugeint_t Abs(hugeint_t n);

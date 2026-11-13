@@ -6,6 +6,7 @@
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/optimizer/aggregate_rewrite.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/scalar/operator_functions.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -161,8 +162,16 @@ public:
 
 	unique_ptr<Expression> CreateProjectionExpression(const LogicalType &, unique_ptr<Expression> aggr_ref,
 	                                                  vector<unique_ptr<Expression>> additional_expressions) override {
-		// SUM(x) / COUNT(x): additional_expressions[0] is the COUNT(x) ref
-		return optimizer.BindScalarFunction("/", std::move(aggr_ref), std::move(additional_expressions[0]));
+		// additional_expressions[0] is the COUNT(x) ref
+		auto count_ref = std::move(additional_expressions[0]);
+		if (aggr_ref->GetReturnType().IsIntegral()) {
+			// An integer SUM(x) beyond 2^53 is rounded by the cast to DOUBLE before "/" divides it, so divide the
+			// integers and round once, as the aggregate does
+			return optimizer.BindScalarFunction(InternalDivideToDoubleFun::Name, std::move(aggr_ref),
+			                                    std::move(count_ref));
+		}
+		// SUM(x) / COUNT(x)
+		return optimizer.BindScalarFunction("/", std::move(aggr_ref), std::move(count_ref));
 	}
 
 private:

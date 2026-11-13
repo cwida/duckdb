@@ -74,5 +74,12 @@
         "example": "decimal_division(10.00::DECIMAL(10,2), 3.00::DECIMAL(10,2))",
         "type": "scalar_function_set",
         "struct": "DecimalDivisionFun"
+    },
+    {
+        "name": "__internal_divide_to_double",
+        "parameters": "numerator,denominator",
+        "description": "Divides numerator by denominator and rounds the quotient to the nearest DOUBLE. The optimizer computes AVG from SUM and COUNT with it.",
+        "example": "__internal_divide_to_double(9007199254740993::HUGEINT, 3)",
+        "type": "scalar_function"
     }
 ]

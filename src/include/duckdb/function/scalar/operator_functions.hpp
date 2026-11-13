@@ -135,4 +135,14 @@ struct DecimalDivisionFun {
 	static ScalarFunctionSet GetFunctions();
 };
 
+struct InternalDivideToDoubleFun {
+	static constexpr const char *Name = "__internal_divide_to_double";
+	static constexpr const char *Parameters = "numerator,denominator";
+	static constexpr const char *Description = "Divides numerator by denominator and rounds the quotient to the nearest DOUBLE. The optimizer computes AVG from SUM and COUNT with it.";
+	static constexpr const char *Example = "__internal_divide_to_double(9007199254740993::HUGEINT, 3)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 } // namespace duckdb
