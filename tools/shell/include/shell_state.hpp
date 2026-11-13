@@ -482,6 +482,8 @@ public:
 #endif
 	optional_ptr<const CommandLineOption> FindCommandLineOption(const string &option, string &error_msg) const;
 	optional_ptr<const MetadataCommand> FindMetadataCommand(const string &option, string &error_msg) const;
+	//! Dispatch .cmd to catalog function shell_dot_command_cmd. Returns -1 if none exists.
+	int TryCatalogDotCommand(const vector<string> &args);
 	static vector<string> GetMetadataCompletions(const char *zLine, idx_t nLine);
 
 	//! Execute a SQL query

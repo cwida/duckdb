@@ -2843,11 +2843,28 @@ int ShellState::DoMetaCommand(const string &zLine) {
 	ClearTempFile();
 
 	string error_msg;
-	auto metadata_command = FindMetadataCommand(args[0], error_msg);
+	optional_ptr<const MetadataCommand> metadata_command;
+	try {
+		metadata_command = FindMetadataCommand(args[0], error_msg);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		PrintDatabaseError(error.Message());
+		return 1;
+	}
 	if (!metadata_command) {
-		// command not found
-		PrintDatabaseError(error_msg);
-		rc = 1;
+		try {
+			int catalog_rc = TryCatalogDotCommand(args);
+			if (catalog_rc >= 0) {
+				rc = catalog_rc;
+			} else {
+				PrintDatabaseError(error_msg);
+				rc = 1;
+			}
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			PrintDatabaseError(error.Message());
+			rc = 1;
+		}
 	} else {
 		auto &command = *metadata_command;
 		SkipSpaces(zLine, pos);

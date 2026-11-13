@@ -10,6 +10,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "shell_state.hpp"
 #include "duckdb/parser/tableref/column_data_ref.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "shell_renderer.hpp"
 #ifdef HAVE_LINENOISE
 #include "history.hpp"
@@ -116,6 +117,59 @@ static void ShellHistoryFunction(ClientContext &context, TableFunctionInput &dat
 	data.offset += chunk_count;
 }
 
+#define CTIMEOPT_VAL_(opt) #opt
+#define CTIMEOPT_VAL(opt)  CTIMEOPT_VAL_(opt)
+
+static string GetShellCompilerVersion() {
+#if defined(__clang__) && defined(__clang_major__)
+	return "clang-" CTIMEOPT_VAL(__clang_major__) "." CTIMEOPT_VAL(__clang_minor__) "." CTIMEOPT_VAL(
+	    __clang_patchlevel__);
+#elif defined(_MSC_VER)
+	return "msvc-" CTIMEOPT_VAL(_MSC_VER);
+#elif defined(__GNUC__) && defined(__VERSION__)
+	return string("gcc-") + __VERSION__;
+#else
+	return string();
+#endif
+}
+
+struct ShellDotCommandVersionData : public GlobalTableFunctionState {
+	idx_t offset = 0;
+	vector<string> lines;
+};
+
+static unique_ptr<FunctionData> ShellDotCommandVersionBind(ClientContext &context, TableFunctionBindInput &input,
+                                                           vector<LogicalType> &return_types,
+                                                           vector<Identifier> &names) {
+	names.emplace_back("command");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("input");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return nullptr;
+}
+
+static unique_ptr<GlobalTableFunctionState> ShellDotCommandVersionInit(ClientContext &context,
+                                                                       TableFunctionInitInput &input) {
+	auto result = make_uniq<ShellDotCommandVersionData>();
+	result->lines.push_back(StringUtil::Format("DuckDB %s (%s) %s", DuckDB::LibraryVersion(), DuckDB::ReleaseCodename(),
+	                                           DuckDB::SourceID()));
+	auto compiler = GetShellCompilerVersion();
+	if (!compiler.empty()) {
+		result->lines.push_back(std::move(compiler));
+	}
+	return std::move(result);
+}
+
+static void ShellDotCommandVersionFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = data_p.global_state->Cast<ShellDotCommandVersionData>();
+	idx_t chunk_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, data.lines.size() - data.offset);
+	for (idx_t i = 0; i < chunk_count; i++) {
+		output.data[0].Append(Value("print"));
+		output.data[1].Append(Value(data.lines[data.offset + i]));
+	}
+	data.offset += chunk_count;
+}
+
 void ShellExtension::Load(ExtensionLoader &loader) {
 	loader.SetDescription("Adds CLI-specific support and functionalities");
 	ScalarFunction getenv_fun("getenv", {}, LogicalType::VARCHAR, GetEnvFunction, GetEnvBind);
@@ -124,6 +178,17 @@ void ShellExtension::Load(ExtensionLoader &loader) {
 
 	TableFunction shell_history("shell_history", {}, ShellHistoryFunction, ShellHistoryBind, ShellHistoryInit);
 	loader.RegisterFunction(shell_history);
+
+	TableFunction shell_dot_command_version("shell_dot_command_version", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                        ShellDotCommandVersionFunction, ShellDotCommandVersionBind,
+	                                        ShellDotCommandVersionInit);
+	CreateTableFunctionInfo version_info(std::move(shell_dot_command_version));
+	FunctionDescription version_description;
+	version_description.description = "Show the version";
+	version_description.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+	version_description.parameter_names = {"user_input", "extra_info"};
+	version_info.descriptions.push_back(std::move(version_description));
+	loader.RegisterFunction(std::move(version_info));
 
 	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.SetOptionByName("duckdb_api", DUCKDB_API_CLI);

@@ -3,6 +3,11 @@
 #include "shell_prompt.hpp"
 #include "shell_progress_bar.hpp"
 #include "shell_renderer.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/function_entry.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #if !defined(_WIN32) && !defined(WIN32)
 #include <sys/wait.h>
@@ -581,22 +586,6 @@ MetadataResult SetStartupText(ShellState &state, const vector<string> &args) {
 	return MetadataResult::SUCCESS;
 }
 
-MetadataResult ShowVersion(ShellState &state, const vector<string> &args) {
-	state.PrintF("DuckDB %s (%s) %s\n" /*extra-version-info*/, duckdb::DuckDB::LibraryVersion(),
-	             duckdb::DuckDB::ReleaseCodename(), duckdb::DuckDB::SourceID());
-#define CTIMEOPT_VAL_(opt) #opt
-#define CTIMEOPT_VAL(opt)  CTIMEOPT_VAL_(opt)
-#if defined(__clang__) && defined(__clang_major__)
-	state.PrintF("clang-" CTIMEOPT_VAL(__clang_major__) "." CTIMEOPT_VAL(__clang_minor__) "." CTIMEOPT_VAL(
-	    __clang_patchlevel__) "\n");
-#elif defined(_MSC_VER)
-	state.PrintF("msvc-" CTIMEOPT_VAL(_MSC_VER) "\n");
-#elif defined(__GNUC__) && defined(__VERSION__)
-	state.PrintF("gcc-" __VERSION__ "\n");
-#endif
-	return MetadataResult::SUCCESS;
-}
-
 MetadataResult SetWidths(ShellState &state, const vector<string> &args) {
 	state.colWidth.clear();
 	for (idx_t j = 1; j < args.size(); j++) {
@@ -1086,7 +1075,6 @@ static const MetadataCommand metadata_commands[] = {
     {"timer", 0, ShellState::ToggleTimer, "on|off [DIGITS]",
      "Turn SQL timer on or off, DIGITS decimals for the real time (default 3)", 0, ""},
     {"ui_command", 0, SetUICommand, "[command]", "Set the UI command", 0, ""},
-    {"version", 1, ShowVersion, "", "Show the version", 0, ""},
     {"web", 1, OpenProfileWeb, "", "Open the last query profile (EXPLAIN ANALYZE) in a web browser", 0, ""},
     {"width", 0, SetWidths, "NUM1 NUM2 ...", "Set minimum column widths for columnar output", 0,
      "Negative values right-justify"},
@@ -1095,6 +1083,191 @@ static const MetadataCommand metadata_commands[] = {
      "Deprecated. This option is accepted for compatibility but has no effect.", 0, ""},
 #endif
     {nullptr, 0, nullptr, 0, nullptr}};
+
+static constexpr const char *SHELL_DOT_COMMAND_PREFIX = "shell_dot_command_";
+
+struct CatalogDotCommandInfo {
+	string command;
+	string function_name;
+	string description;
+};
+
+static bool IsStaticMetadataCommand(const string &command) {
+	for (idx_t i = 0; metadata_commands[i].command; i++) {
+		if (StringUtil::CIEquals(metadata_commands[i].command, command)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static vector<CatalogDotCommandInfo> ListCatalogDotCommands(const ShellState &state) {
+	vector<CatalogDotCommandInfo> result;
+	if (!state.conn || !state.conn->context) {
+		return result;
+	}
+	auto &context = *state.conn->context;
+	duckdb::case_insensitive_set_t seen;
+	auto collect = [&](duckdb::CatalogType type) {
+		auto schemas = duckdb::Catalog::GetAllSchemas(context);
+		for (auto &schema : schemas) {
+			schema.get().Scan(context, type, [&](duckdb::CatalogEntry &entry) {
+				if (!entry.name.StartsWith(SHELL_DOT_COMMAND_PREFIX)) {
+					return;
+				}
+				string full_name = entry.name.GetIdentifierName();
+				string suffix = full_name.substr(strlen(SHELL_DOT_COMMAND_PREFIX));
+				if (suffix.empty() || seen.find(suffix) != seen.end()) {
+					return;
+				}
+				seen.insert(suffix);
+				CatalogDotCommandInfo info;
+				info.command = suffix;
+				info.function_name = std::move(full_name);
+				auto &function_entry = entry.Cast<duckdb::FunctionEntry>();
+				if (!function_entry.descriptions.empty()) {
+					info.description = function_entry.descriptions[0].description;
+				}
+				result.push_back(std::move(info));
+			});
+		}
+	};
+	try {
+		context.RunFunctionInTransaction([&]() {
+			collect(duckdb::CatalogType::TABLE_FUNCTION_ENTRY);
+			collect(duckdb::CatalogType::TABLE_MACRO_ENTRY);
+		});
+	} catch (std::exception &) {
+		// Listing must not abort the CLI (e.g. an invalidated transaction).
+		return {};
+	}
+	return result;
+}
+
+static bool ResolveCatalogDotCommand(const ShellState &state, const string &option, string &function_name,
+                                     string &error_msg) {
+	auto commands = ListCatalogDotCommands(state);
+	for (auto &command : commands) {
+		if (StringUtil::CIEquals(command.command, option)) {
+			function_name = command.function_name;
+			return true;
+		}
+	}
+	vector<const CatalogDotCommandInfo *> matches;
+	idx_t n = option.size();
+	for (auto &command : commands) {
+		if (n <= command.command.size() && strncmp(option.c_str(), command.command.c_str(), n) == 0) {
+			matches.push_back(&command);
+		}
+	}
+	if (matches.size() == 1) {
+		function_name = matches[0]->function_name;
+		return true;
+	}
+	if (matches.size() > 1) {
+		vector<string> names;
+		for (auto *match : matches) {
+			names.push_back(string(".") + match->command);
+		}
+		error_msg = StringUtil::Format("Ambiguous Command Error: '.%s' matches multiple catalog commands\n", option);
+		error_msg += StringUtil::CandidatesErrorMessage(names, option, "Did you mean");
+		error_msg += "\n";
+		return false;
+	}
+	return false;
+}
+
+enum class CatalogDotExecuteResult : uint8_t { SUCCESS = 0, FAIL = 1, NOT_FOUND = 2 };
+
+static bool CatalogFunctionMissingError(const string &error, const string &function_name) {
+	return StringUtil::Contains(error, function_name) &&
+	       (StringUtil::Contains(error, "is not in the catalog") || StringUtil::Contains(error, "does not exist"));
+}
+
+static CatalogDotExecuteResult ExecuteCatalogDotCommand(ShellState &state, const string &function_name,
+                                                        const vector<string> &args) {
+	string user_input;
+	for (idx_t i = 1; i < args.size(); i++) {
+		if (i > 1) {
+			user_input += " ";
+		}
+		user_input += args[i];
+	}
+	// Later slices can stream this result instead of materializing.
+	auto sql =
+	    StringUtil::Format("CALL %s(%s, %s)", SQLIdentifier(function_name), SQLString(user_input), SQLString(""));
+	auto result = state.conn->Query(sql);
+	if (result->HasError()) {
+		if (CatalogFunctionMissingError(result->GetError(), function_name)) {
+			return CatalogDotExecuteResult::NOT_FOUND;
+		}
+		state.PrintDatabaseError(result->GetError());
+		return CatalogDotExecuteResult::FAIL;
+	}
+	if (result->ColumnCount() < 2) {
+		state.PrintDatabaseError("Catalog dot-command must return columns \"command\" and \"input\"");
+		return CatalogDotExecuteResult::FAIL;
+	}
+	try {
+		for (auto &row : *result) {
+			if (row.IsNull(0)) {
+				state.PrintDatabaseError("Catalog dot-command returned a NULL command");
+				return CatalogDotExecuteResult::FAIL;
+			}
+			auto command = row.GetValue<string>(0);
+			string input;
+			if (!row.IsNull(1)) {
+				input = row.GetValue<string>(1);
+			}
+			if (StringUtil::CIEquals(command, "print")) {
+				state.Print(input);
+				state.Print("\n");
+			} else {
+				state.PrintDatabaseError(StringUtil::Format("Unsupported catalog dot-command \"%s\"", command));
+				return CatalogDotExecuteResult::FAIL;
+			}
+		}
+	} catch (std::exception &ex) {
+		duckdb::ErrorData error(ex);
+		state.PrintDatabaseError(error.Message());
+		return CatalogDotExecuteResult::FAIL;
+	}
+	return CatalogDotExecuteResult::SUCCESS;
+}
+
+int ShellState::TryCatalogDotCommand(const vector<string> &args) {
+	if (!conn || !conn->context) {
+		return -1;
+	}
+	try {
+		string function_name;
+		string resolve_error;
+		if (ResolveCatalogDotCommand(*this, args[0], function_name, resolve_error)) {
+			auto executed = ExecuteCatalogDotCommand(*this, function_name, args);
+			if (executed == CatalogDotExecuteResult::NOT_FOUND) {
+				return -1;
+			}
+			return int(executed);
+		}
+		if (!resolve_error.empty()) {
+			PrintDatabaseError(resolve_error);
+			return int(MetadataResult::FAIL);
+		}
+		// Listing can fail (invalidated transaction) or miss prefixes. Still try the exact name
+		// so .version reports a query error instead of looking unrecognized, and so the CLI
+		// does not unwind to "Exited due to error".
+		function_name = string(SHELL_DOT_COMMAND_PREFIX) + args[0];
+		auto executed = ExecuteCatalogDotCommand(*this, function_name, args);
+		if (executed == CatalogDotExecuteResult::NOT_FOUND) {
+			return -1;
+		}
+		return int(executed);
+	} catch (std::exception &ex) {
+		duckdb::ErrorData error(ex);
+		PrintDatabaseError(error.Message());
+		return int(MetadataResult::FAIL);
+	}
+}
 
 bool ShouldPrintCommand(const MetadataCommand &command, const string &glob_pattern) {
 	if (!command.extra_description) {
@@ -1199,6 +1372,21 @@ idx_t ShellState::PrintHelp(const char *pattern) {
 			}
 		}
 	}
+	auto catalog_commands = ListCatalogDotCommands(*this);
+	for (auto &catalog_command : catalog_commands) {
+		if (IsStaticMetadataCommand(catalog_command.command)) {
+			continue;
+		}
+		if (!glob_pattern.empty() && !StringGlob(glob_pattern.c_str(), catalog_command.command.c_str())) {
+			continue;
+		}
+		PrintCommandInfo print_info;
+		print_info.command_name = StringUtil::Format(".%s", catalog_command.command);
+		print_info.first_part = " ";
+		print_info.second_part = catalog_command.description;
+		print_info.first_part_highlight = HighlightElementType::STRING_CONSTANT;
+		print_info_list.push_back(std::move(print_info));
+	}
 	// figure out alignment based on the total first part print size
 	idx_t max_lhs_size = 0;
 	for (auto &print_info : print_info_list) {
@@ -1258,6 +1446,29 @@ vector<string> ShellState::GetMetadataCompletions(const char *zLine, idx_t nLine
 			result.push_back(zBuf);
 		}
 	}
+	auto &state = ShellState::Get();
+	auto catalog_commands = ListCatalogDotCommands(state);
+	for (auto &catalog_command : catalog_commands) {
+		if (IsStaticMetadataCommand(catalog_command.command)) {
+			continue;
+		}
+		auto &line = catalog_command.command;
+		bool found_match = true;
+		idx_t line_pos;
+		zBuf[0] = '.';
+		for (line_pos = 0; line_pos < line.size() && !IsSpace(line[line_pos]) && line_pos + 2 < sizeof(zBuf);
+		     line_pos++) {
+			zBuf[line_pos + 1] = line[line_pos];
+			if (line_pos + 1 < nLine && line[line_pos] != zLine[line_pos + 1]) {
+				found_match = false;
+				break;
+			}
+		}
+		zBuf[line_pos + 1] = '\0';
+		if (found_match && line_pos + 1 >= nLine) {
+			result.push_back(zBuf);
+		}
+	}
 	return result;
 }
 
@@ -1278,6 +1489,12 @@ optional_ptr<const MetadataCommand> ShellState::FindMetadataCommand(const string
 	for (idx_t command_idx = 0; metadata_commands[command_idx].command; command_idx++) {
 		auto &command = metadata_commands[command_idx];
 		command_names.push_back(string(".") + command.command);
+	}
+	for (auto &catalog_command : ListCatalogDotCommands(*this)) {
+		if (IsStaticMetadataCommand(catalog_command.command)) {
+			continue;
+		}
+		command_names.push_back(string(".") + catalog_command.command);
 	}
 	auto candidates_msg = StringUtil::CandidatesErrorMessage(command_names, option, "Did you mean");
 	error_msg += candidates_msg + "\n";
