@@ -93,7 +93,7 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
 		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
 		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
-		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
+		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state, *validity);
 		return;
 	}
 	FilterVector(state, result, target_count, sel, count, filter, filter_state);
