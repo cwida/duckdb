@@ -73,12 +73,24 @@ struct TryParseTimeStamp {
 	}
 };
 
+//! The JSON keys that a (nested) auto-detected type is read from. Struct field names may have been renamed to
+//! resolve case-insensitive duplicates, so the original keys are needed to read the values. It mirrors the type it
+//! describes: one key per struct field, and the key tree of each nested child (struct fields, list/array element).
+struct JSONKeyTree {
+	//! For STRUCT: the JSON key of each child, in field order
+	vector<string> keys;
+	//! The key tree of each nested child that can contain further structs, nullptr for leaf types
+	vector<shared_ptr<const JSONKeyTree>> children;
+};
+
 struct JSONTransform {
 	static bool Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
-	                      JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index);
+	                      JSONTransformOptions &options, optional_ptr<const ColumnIndex> column_index,
+	                      optional_ptr<const JSONKeyTree> key_tree = nullptr);
 	static bool TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count, const vector<string> &names,
 	                            const vector<Vector *> &result_vectors, JSONTransformOptions &options,
-	                            optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key);
+	                            optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key,
+	                            const vector<shared_ptr<const JSONKeyTree>> *key_trees = nullptr);
 	static bool GetStringVector(yyjson_val *vals[], const idx_t count, const LogicalType &target, Vector &string_vector,
 	                            JSONTransformOptions &options);
 };

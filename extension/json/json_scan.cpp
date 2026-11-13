@@ -509,14 +509,16 @@ void ReadJSONFunction(ClientContext &context, JSONReader &json_reader, JSONScanG
 		if (gstate.json_data.options.record_type == JSONRecordType::RECORDS) {
 			success = JSONTransform::TransformObject(values, scan_state.allocator.GetYYAlc(), count, gstate.names,
 			                                         result_vectors, lstate.transform_options, gstate.column_indices,
-			                                         lstate.transform_options.error_unknown_key);
+			                                         lstate.transform_options.error_unknown_key,
+			                                         gstate.key_trees.empty() ? nullptr : &gstate.key_trees);
 		} else if (gstate.json_data.options.record_type == JSONRecordType::FEATURES) {
 			success = TransformGeoJSONFeatures(values, scan_state.allocator.GetYYAlc(), count, gstate, result_vectors,
 			                                   lstate.transform_options);
 		} else {
 			D_ASSERT(gstate.json_data.options.record_type == JSONRecordType::VALUES);
 			success = JSONTransform::Transform(values, scan_state.allocator.GetYYAlc(), *result_vectors[0], count,
-			                                   lstate.transform_options, gstate.column_indices[0]);
+			                                   lstate.transform_options, gstate.column_indices[0],
+			                                   gstate.key_trees.empty() ? nullptr : gstate.key_trees[0].get());
 		}
 
 		if (!success) {

@@ -9,32 +9,86 @@
 
 namespace duckdb {
 
-static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, const bool ignore_errors) {
+//! Deduplicate a name against the ones we already have: drop it if "ignore_errors", otherwise rename it with an
+//! incrementing suffix until it no longer collides. Returns whether the name should be kept.
+static bool ResolveDuplicateName(identifier_map_t<idx_t> &name_collision_count, Identifier &name,
+                                 const bool ignore_errors, const bool rename_duplicates = true) {
+	if (name_collision_count.find(name) == name_collision_count.end()) {
+		name_collision_count[name] = 0;
+		return true;
+	}
+	if (ignore_errors) {
+		return false;
+	}
+	if (!rename_duplicates) {
+		throw NotImplementedException("Duplicate name %s in struct auto-detected in JSON, try ignore_errors=true",
+		                              name);
+	}
+	while (name_collision_count.find(name) != name_collision_count.end()) {
+		name_collision_count[name] += 1;
+		name = Identifier(name.GetIdentifierName() + "_" + to_string(name_collision_count[name]));
+	}
+	name_collision_count[name] = 0;
+	return true;
+}
+
+static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, const bool ignore_errors,
+                                                    const bool rename_duplicates = true) {
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT: {
-		case_insensitive_set_t child_names;
+		identifier_map_t<idx_t> name_collision_count;
 		child_list_t<LogicalType> child_types;
 		for (auto &child_type : StructType::GetChildTypes(type)) {
-			auto insert_success = child_names.insert(child_type.first.GetIdentifierName()).second;
-			if (!insert_success) {
-				if (ignore_errors) {
-					continue;
-				}
-				throw NotImplementedException(
-				    "Duplicate name %s in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
-			} else {
-				child_types.emplace_back(child_type.first, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
+			auto child_name = child_type.first;
+			if (!ResolveDuplicateName(name_collision_count, child_name, ignore_errors, rename_duplicates)) {
+				continue;
 			}
+			child_types.emplace_back(child_name,
+			                         RemoveDuplicateStructKeys(child_type.second, ignore_errors, rename_duplicates));
 		}
 		return LogicalType::STRUCT(child_types);
 	}
 	case LogicalTypeId::MAP:
-		return LogicalType::MAP(RemoveDuplicateStructKeys(MapType::KeyType(type), ignore_errors),
-		                        RemoveDuplicateStructKeys(MapType::ValueType(type), ignore_errors));
+		return LogicalType::MAP(RemoveDuplicateStructKeys(MapType::KeyType(type), ignore_errors, false),
+		                        RemoveDuplicateStructKeys(MapType::ValueType(type), ignore_errors, false));
 	case LogicalTypeId::LIST:
-		return LogicalType::LIST(RemoveDuplicateStructKeys(ListType::GetChildType(type), ignore_errors));
+		return LogicalType::LIST(
+		    RemoveDuplicateStructKeys(ListType::GetChildType(type), ignore_errors, rename_duplicates));
 	default:
 		return type;
+	}
+}
+
+//! Build the JSON keys that a (nested) type is read from, mirroring RemoveDuplicateStructKeys so the tree lines up
+//! with the renamed struct fields. Dropped duplicates (ignore_errors) are dropped here as well.
+static shared_ptr<const JSONKeyTree> BuildKeyTree(const JSONStructureNode &node, const bool ignore_errors) {
+	if (node.descriptions.size() != 1) {
+		return nullptr;
+	}
+	auto &desc = node.descriptions[0];
+	switch (desc.type) {
+	case LogicalTypeId::STRUCT: {
+		auto result = make_shared_ptr<JSONKeyTree>();
+		identifier_map_t<idx_t> name_collision_count;
+		for (auto &child : desc.children) {
+			auto child_name = Identifier(*child.key);
+			if (!ResolveDuplicateName(name_collision_count, child_name, ignore_errors)) {
+				continue;
+			}
+			result->keys.push_back(*child.key);
+			result->children.push_back(BuildKeyTree(child, ignore_errors));
+		}
+		return result;
+	}
+	case LogicalTypeId::LIST: {
+		auto result = make_shared_ptr<JSONKeyTree>();
+		if (!desc.children.empty()) {
+			result->children.push_back(BuildKeyTree(desc.children[0], ignore_errors));
+		}
+		return result;
+	}
+	default:
+		return nullptr;
 	}
 }
 
@@ -289,7 +343,7 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 
 void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
                                   vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-                                  vector<Identifier> &names) {
+                                  vector<Identifier> &names, vector<shared_ptr<const JSONKeyTree>> &key_trees) {
 	// Convert structure to logical type
 	auto type = JSONStructure::StructureToType(context, node, options.max_depth, options.field_appearance_threshold,
 	                                           options.map_inference_threshold);
@@ -324,11 +378,16 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 	if (options.record_type == JSONRecordType::RECORDS) {
 		if (type.id() == LogicalTypeId::STRUCT) {
 			const auto &child_types = StructType::GetChildTypes(type);
+			D_ASSERT(node.descriptions.size() == 1 && node.descriptions[0].children.size() == child_types.size());
+			const auto &child_nodes = node.descriptions[0].children;
 			return_types.reserve(child_types.size());
 			names.reserve(child_types.size());
-			for (auto &child_type : child_types) {
+			key_trees.reserve(child_types.size());
+			for (idx_t i = 0; i < child_types.size(); i++) {
+				auto &child_type = child_types[i];
 				return_types.emplace_back(RemoveDuplicateStructKeys(child_type.second, options.ignore_errors));
 				names.emplace_back(child_type.first);
+				key_trees.emplace_back(BuildKeyTree(child_nodes[i], options.ignore_errors));
 			}
 		} else {
 			throw BinderException("json_read expected records, but got non-record JSON instead."
@@ -339,6 +398,7 @@ void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &opt
 		return_types.emplace_back(RemoveDuplicateStructKeys(type, options.ignore_errors));
 		// Newline-delimited bare geometries produce a single GEOMETRY column, which "json" would be a poor name for
 		names.emplace_back(type.id() == LogicalTypeId::GEOMETRY ? "geometry" : "json");
+		key_trees.emplace_back(BuildKeyTree(node, options.ignore_errors));
 	}
 }
 
@@ -347,7 +407,8 @@ void JSONScan::AutoDetect(ClientContext &context, JSONScanData &json_data, const
                           vector<Identifier> &names) {
 	json_data.record_type_auto_detected = json_data.options.record_type == JSONRecordType::AUTO_DETECT;
 	auto node = DetectStructure(context, json_data, files, sampled_readers);
-	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names);
+	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names,
+	                   json_data.key_trees);
 	if (json_data.keep_structure) {
 		// keep the structure around so it can be combined with the structures of other files later on
 		json_data.structure = std::move(node);

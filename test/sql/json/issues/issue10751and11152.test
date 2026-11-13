@@ -4,14 +4,17 @@
 
 require json
 
-# issue 10751
-statement error
+# issue 10751 - the case-insensitive duplicate "Platform"/"platform" is renamed, not an error
+statement ok
 create or replace table json_test as select * from read_json_auto('{DATA_DIR}/json/10751.json', format = 'newline_delimited');
+
+query II
+SELECT properties."Platform", properties."platform_1" FROM json_test LIMIT 1
 ----
-Not implemented Error: Duplicate name
+google	google
 
 statement ok
-create table json_test as select * from read_json_auto('{DATA_DIR}/json/10751.json', format = 'newline_delimited', ignore_errors=true);
+create table json_test_ignore as select * from read_json_auto('{DATA_DIR}/json/10751.json', format = 'newline_delimited', ignore_errors=true);
 
 statement ok
 select * from json_test;

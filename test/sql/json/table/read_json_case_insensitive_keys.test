@@ -113,11 +113,13 @@ userid	BIGINT
 Url	VARCHAR
 user	STRUCT(userId BIGINT)
 
-# by default every spelling is a key of its own, and user / USER are two structs with differently spelled fields
-statement error
+# by default every spelling is a key of its own: duplicate column names and nested struct fields are renamed
+query IIIIII
 SELECT * FROM read_json('{TEST_DIR}/case_keys.json');
 ----
-Duplicate name
+1	a	NULL	NULL	NULL	NULL
+NULL	NULL	2	b	{'userId': 20, 'USERID_1': NULL}	NULL
+NULL	NULL	NULL	NULL	{'userId': NULL, 'USERID_1': 30}	3
 
 # a key whose spellings have different types gets the type of a key with values of both types
 statement ok

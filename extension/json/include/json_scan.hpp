@@ -46,6 +46,9 @@ public:
 
 	//! The set of keys to extract (case sensitive)
 	vector<string> key_names;
+	//! The JSON keys of each (nested) struct, parallel to key_names - struct field names may have been renamed
+	//! to resolve case-insensitive duplicates, so the original keys are kept to read the values
+	vector<shared_ptr<const JSONKeyTree>> key_trees;
 	//! For JSONRecordType::FEATURES: where each column reads its value from, in bind order
 	vector<JSONFeatureColumn> feature_columns;
 
@@ -91,6 +94,8 @@ public:
 
 	//! Column names that we're actually reading (after projection pushdown)
 	vector<string> names;
+	//! Parallel to names: the JSON key tree of each column, see JSONScanData::key_trees
+	vector<shared_ptr<const JSONKeyTree>> key_trees;
 	vector<column_t> column_ids;
 	vector<ColumnIndex> column_indices;
 	//! For JSONRecordType::FEATURES: parallel to names, where each of them reads its value from
@@ -183,7 +188,7 @@ public:
 	//! Derive the columns that are read from a detected JSON structure
 	static void StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
 	                               vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-	                               vector<Identifier> &names);
+	                               vector<Identifier> &names, vector<shared_ptr<const JSONKeyTree>> &key_trees);
 
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
 	                      const BoundTableFunction &function);
