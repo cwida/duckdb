@@ -1,5 +1,6 @@
 #include "duckdb/main/client_context.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
@@ -41,10 +42,13 @@
 #include "duckdb/parser/statement/relation_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/constraints/bound_foreign_key_constraint.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/statement_preprocessor.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/local_storage.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/transaction/transaction_context.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
@@ -469,6 +473,35 @@ bool ClientContext::ErrorInvalidatesTransaction(ExceptionType type) {
 		return true;
 	default:
 		return Exception::InvalidatesTransaction(type);
+	}
+}
+
+void ClientContext::VerifyDeferredForeignKeys() {
+	auto query_number = transaction.GetActiveQuery();
+	auto &meta_transaction = MetaTransaction::Get(*this);
+	for (auto &database : meta_transaction.OpenedTransactions()) {
+		// only DuckDB databases have transaction-local storage
+		auto db_transaction = meta_transaction.TryGetTransaction(database.get());
+		if (!db_transaction || !db_transaction->IsDuckTransaction()) {
+			continue;
+		}
+		auto &local_storage = db_transaction->Cast<DuckTransaction>().GetLocalStorage();
+		auto appended_rows = local_storage.GetAppendedRows(query_number);
+		for (auto &entry : appended_rows) {
+			bool has_foreign_key = false;
+			for (auto &constraint : entry.table_entry.GetConstraints()) {
+				if (constraint->type == ConstraintType::FOREIGN_KEY) {
+					has_foreign_key = true;
+					break;
+				}
+			}
+			if (!has_foreign_key) {
+				continue;
+			}
+			auto binder = Binder::CreateBinder(*this);
+			auto bound_constraints = binder->BindConstraints(entry.table_entry);
+			entry.table_entry.GetStorage().VerifyAppendedForeignKeys(*this, entry.start, entry.end, bound_constraints);
+		}
 	}
 }
 

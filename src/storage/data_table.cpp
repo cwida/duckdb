@@ -796,6 +796,69 @@ void DataTable::VerifyAppendForeignKeyConstraint(optional_ptr<LocalTableStorage>
 	VerifyForeignKeyConstraint(storage, bound_foreign_key, context, chunk, VerifyExistenceType::APPEND_FK);
 }
 
+void DataTable::VerifyAppendedForeignKeys(ClientContext &context, idx_t start, idx_t end,
+                                          const vector<unique_ptr<BoundConstraint>> &bound_constraints) {
+	if (start >= end) {
+		return;
+	}
+	vector<reference<BoundForeignKeyConstraint>> append_constraints;
+	for (auto &constraint : bound_constraints) {
+		if (constraint->type != ConstraintType::FOREIGN_KEY) {
+			continue;
+		}
+		auto &bound_foreign_key = constraint->Cast<BoundForeignKeyConstraint>();
+		if (bound_foreign_key.info.IsAppendConstraint()) {
+			append_constraints.push_back(bound_foreign_key);
+		}
+	}
+	if (append_constraints.empty()) {
+		return;
+	}
+	auto &transaction = DuckTransaction::Get(context, db);
+	auto &local_storage = LocalStorage::Get(context, db);
+	auto local_table_storage = local_storage.GetStorage(*this);
+	if (!local_table_storage) {
+		return;
+	}
+	auto &collection = local_table_storage->GetCollection();
+	auto types = GetTypes();
+	for (auto &bound_foreign_key_ref : append_constraints) {
+		auto &bound_foreign_key = bound_foreign_key_ref.get();
+		auto &fk_keys = bound_foreign_key.info.fk_keys;
+		vector<StorageIndex> column_ids;
+		vector<LogicalType> fk_types;
+		for (auto &fk_key : fk_keys) {
+			column_ids.emplace_back(fk_key.index);
+			fk_types.push_back(types[fk_key.index]);
+		}
+		// Read the key columns with a vectorized range scan instead of a per-row fetch; the scan starts at the
+		// enclosing vector boundary, so a few rows appended by earlier statements may be verified again
+		TableScanState scan_state;
+		scan_state.Initialize(column_ids);
+		auto local_start = NumericCast<idx_t>(MAX_ROW_ID) + start;
+		auto local_end = NumericCast<idx_t>(MAX_ROW_ID) + end;
+		collection.InitializeScanWithOffset(QueryContext(context), scan_state.table_state, column_ids, local_start,
+		                                    local_end);
+		DataChunk fk_chunk;
+		fk_chunk.Initialize(context, fk_types);
+		while (true) {
+			context.InterruptCheck();
+			fk_chunk.Reset();
+			if (!scan_state.table_state.Scan(transaction, fk_chunk)) {
+				break;
+			}
+			// Build a shell chunk holding the key columns at their physical positions
+			DataChunk shell_chunk;
+			shell_chunk.InitializeEmpty(types);
+			for (idx_t i = 0; i < fk_keys.size(); i++) {
+				shell_chunk.data[fk_keys[i].index].Reference(fk_chunk.data[i]);
+			}
+			shell_chunk.SetChildCardinality(fk_chunk.size());
+			VerifyAppendForeignKeyConstraint(nullptr, bound_foreign_key, context, shell_chunk);
+		}
+	}
+}
+
 void DataTable::VerifyDeleteForeignKeyConstraint(optional_ptr<LocalTableStorage> storage,
                                                  const BoundForeignKeyConstraint &bound_foreign_key,
                                                  ClientContext &context, DataChunk &chunk) {
@@ -860,9 +923,15 @@ void DataTable::VerifyAppendConstraints(ConstraintState &constraint_state, Clien
 			break;
 		}
 		case ConstraintType::FOREIGN_KEY: {
-			auto &bound_foreign_key = constraint->Cast<BoundForeignKeyConstraint>();
-			if (bound_foreign_key.info.IsAppendConstraint()) {
-				VerifyAppendForeignKeyConstraint(storage, bound_foreign_key, context, chunk);
+			// Foreign keys are verified after the statement has finished (ClientContext::VerifyDeferredForeignKeys)
+			// so that all rows written by the statement are visible to the check
+			if (!context.transaction.HasActiveTransaction() ||
+			    context.transaction.GetActiveQuery() == MAXIMUM_QUERY_ID) {
+				// appends outside of a statement (e.g. the internal appender) are not verified later
+				auto &bound_foreign_key = constraint->Cast<BoundForeignKeyConstraint>();
+				if (bound_foreign_key.info.IsAppendConstraint()) {
+					VerifyAppendForeignKeyConstraint(storage, bound_foreign_key, context, chunk);
+				}
 			}
 			break;
 		}

@@ -436,6 +436,23 @@ RowGroupCollection &LocalTableStorage::GetCollection() {
 	return *row_groups->collection;
 }
 
+void LocalTableStorage::TrackAppendForQuery(transaction_t query_number) {
+	if (append_query_number == query_number) {
+		return;
+	}
+	append_query_number = query_number;
+	append_query_start = GetCollection().GetNextRowId();
+}
+
+bool LocalTableStorage::GetAppendRange(transaction_t query_number, idx_t &start, idx_t &end) {
+	if (append_query_number != query_number) {
+		return false;
+	}
+	start = append_query_start;
+	end = GetCollection().GetNextRowId();
+	return end > start;
+}
+
 OptimisticWriteCollection &LocalTableStorage::GetPrimaryCollection() {
 	return *row_groups;
 }
@@ -453,12 +470,14 @@ optional_idx LocalStorage::NextParallelScan(ClientContext &context, DataTable &t
 void LocalStorage::InitializeAppend(LocalAppendState &state, DataTable &table, DuckTableEntry &table_entry) {
 	state.storage = &table_manager.GetOrCreateStorage(context, table);
 	state.storage->table_entry = &table_entry;
+	state.context = context;
 	state.storage->GetCollection().InitializeAppend(TransactionData(transaction), state.append_state);
 }
 
 void LocalStorage::InitializeStorage(LocalAppendState &state, DataTable &table, DuckTableEntry &table_entry) {
 	state.storage = &table_manager.GetOrCreateStorage(context, table);
 	state.storage->table_entry = &table_entry;
+	state.context = context;
 }
 
 void LocalTableStorage::AppendToDeleteIndexes(Vector &row_ids, DataChunk &delete_chunk) {
@@ -496,6 +515,8 @@ void LocalTableStorage::AppendToDeleteIndexes(Vector &row_ids, DataChunk &delete
 void LocalStorage::Append(LocalAppendState &state, DuckTableEntry &table_entry, DataChunk &table_chunk) {
 	auto storage = state.storage;
 	storage->table_entry = &table_entry;
+	D_ASSERT(state.context);
+	storage->TrackAppendForQuery(state.context->transaction.GetActiveQuery());
 	auto offset = NumericCast<idx_t>(MAX_ROW_ID) + storage->GetCollection().GetNextRowId();
 	idx_t base_id = offset + state.append_state.total_append_count;
 
@@ -520,9 +541,26 @@ void LocalStorage::FinalizeAppend(LocalAppendState &state) {
 	state.storage->GetCollection().FinalizeAppend(state.append_state.transaction, state.append_state);
 }
 
+vector<LocalStorage::AppendedRows> LocalStorage::GetAppendedRows(transaction_t query_number) {
+	vector<AppendedRows> result;
+	for (auto &storage : table_manager.GetEntries()) {
+		idx_t start;
+		idx_t end;
+		if (!storage->GetAppendRange(query_number, start, end)) {
+			continue;
+		}
+		// The range and the entry are set together on the append path and refer to the same table version
+		D_ASSERT(storage->table_entry);
+		D_ASSERT(&storage->table_entry->GetStorage() == &storage->table_ref.get());
+		result.push_back({*storage->table_entry, start, end});
+	}
+	return result;
+}
+
 void LocalStorage::LocalMerge(DataTable &table, DuckTableEntry &table_entry, OptimisticWriteCollection &collection) {
 	auto &storage = table_manager.GetOrCreateStorage(context, table);
 	storage.table_entry = &table_entry;
+	storage.TrackAppendForQuery(context.transaction.GetActiveQuery());
 	if (!storage.append_indexes.Empty()) {
 		// append data to indexes if required
 		row_t base_id = MAX_ROW_ID + NumericCast<row_t>(storage.GetCollection().GetNextRowId());

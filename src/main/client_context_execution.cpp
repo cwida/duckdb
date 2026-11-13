@@ -431,6 +431,11 @@ QueryResultState ClientContext::ExecuteTaskInternal(ClientContextLock &lock, Bas
 			throw InterruptException();
 		}
 		auto state = active_query->executor->ExecuteTask();
+		if (state == QueryResultState::FINISHED && !active_query->foreign_keys_verified &&
+		    transaction.HasActiveTransaction()) {
+			active_query->foreign_keys_verified = true;
+			VerifyDeferredForeignKeys();
+		}
 		UpdateProgressInternal(state);
 		if (state == QueryResultState::FINISHED && active_query->HasNextStatement()) {
 			return StartNextStatementInternal(lock);

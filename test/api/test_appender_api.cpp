@@ -1,7 +1,11 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
-#include "duckdb/main/appender.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/main/appender.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 
 using namespace duckdb;
 
@@ -285,4 +289,31 @@ TEST_CASE("Test appender during stack unwinding", "[api]") {
 		{ throw std::runtime_error("Hello"); }
 	} catch (...) {
 	}
+}
+
+TEST_CASE("Test internal appender foreign key checks", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE parent(i INTEGER PRIMARY KEY)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE child(j INTEGER REFERENCES parent(i))"));
+	// Begin a transaction: this leaves us with an active transaction but no active statement
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	auto &context = *con.context;
+	auto &table_entry =
+	    Catalog::GetEntry<TableCatalogEntry>(context, QualifiedName(INVALID_CATALOG, DEFAULT_SCHEMA, "child"));
+
+	// Appends outside a statement are still checked eagerly, so the row is rejected when the appender is flushed
+	{
+		InternalAppender appender(context, table_entry);
+		appender.AppendRow(1);
+		REQUIRE_THROWS(appender.Close());
+	}
+	// Rows referencing an existing parent are accepted
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO parent VALUES (1)"));
+	{
+		InternalAppender appender(context, table_entry);
+		appender.AppendRow(1);
+		appender.Close();
+	}
+	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));
 }

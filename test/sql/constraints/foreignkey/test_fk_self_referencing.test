@@ -22,7 +22,7 @@ statement ok
 INSERT INTO employee VALUES (1, NULL, 'Smith'), (2, NULL, 'Jhon'), (3, NULL, 'Romeo');
 
 statement error
-INSERT INTO employee VALUES (4, 4, 'Mark');
+INSERT INTO employee VALUES (4, 99, 'Mark');
 ----
 <REGEX>:Constraint Error.*Violates foreign key constraint.*
 
@@ -101,7 +101,25 @@ UPDATE employee SET id = 5, managerid = 2 WHERE id = 4;
 query IIT
 SELECT * FROM employee WHERE managerid = 2;
 ----
-5	2	Juliet	
+5	2	Juliet
+
+# a row may reference itself: the referenced row is part of the same statement, so it is visible when the
+# foreign key is validated at the end of the statement
+statement ok
+CREATE TABLE employee_self(id INTEGER PRIMARY KEY, managerid INTEGER REFERENCES employee_self(id));
+
+statement ok
+INSERT INTO employee_self VALUES (1, NULL), (2, 2), (3, 1);
+
+query II
+SELECT * FROM employee_self ORDER BY id;
+----
+1	NULL
+2	2
+3	1
+
+statement ok
+DROP TABLE employee_self;
 
 statement error
 ALTER TABLE employee RENAME COLUMN managerid TO managerid_new;

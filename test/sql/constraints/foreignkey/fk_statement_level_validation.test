@@ -1,0 +1,46 @@
+# name: test/sql/constraints/foreignkey/fk_statement_level_validation.test
+# description: Foreign key constraints are validated at the end of the statement: rows may reference other rows inserted by the same statement (#7168)
+# group: [foreignkey]
+
+# issue #7168: inserting a complete tree in a single statement is valid
+statement ok
+CREATE TABLE t(id INT PRIMARY KEY, parent INT REFERENCES t(id));
+
+statement ok
+INSERT INTO t VALUES (1, NULL), (2, 1), (3, 2);
+
+# rows may reference rows that appear later in the statement
+statement ok
+INSERT INTO t VALUES (8, 7), (7, 6), (6, NULL);
+
+query II
+SELECT id, parent FROM t ORDER BY id;
+----
+1	NULL
+2	1
+3	2
+6	NULL
+7	6
+8	7
+
+# rows may reference rows of a previous chunk of the same statement (multi-chunk insert)
+statement ok
+CREATE TABLE t2(id INT PRIMARY KEY, parent INT REFERENCES t2(id));
+
+statement ok
+INSERT INTO t2 SELECT i, CASE WHEN i = 1 THEN NULL ELSE i - 1 END FROM range(1, 5000) t(i);
+
+query I
+SELECT count(*) FROM t2;
+----
+4999
+
+# inserts with RETURNING are validated at statement level as well
+statement ok
+CREATE TABLE t3(id INT PRIMARY KEY, parent INT REFERENCES t3(id));
+
+query II
+INSERT INTO t3 VALUES (1, NULL), (2, 1) RETURNING *;
+----
+1	NULL
+2	1

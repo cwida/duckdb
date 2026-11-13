@@ -1,0 +1,28 @@
+# name: test/sql/constraints/foreignkey/fk_statement_level_validation.test_slow
+# description: Statement-level FK validation on the row-group merge path (batch insert of a self-referencing table)
+# group: [foreignkey]
+
+# larger than a row group: the batch insert merges into the transaction-local storage
+# before the (deferred) foreign key verification runs
+statement ok
+CREATE TABLE t(id INT PRIMARY KEY, parent INT REFERENCES t(id));
+
+statement ok
+INSERT INTO t SELECT i, CASE WHEN i = 1 THEN NULL ELSE i - 1 END FROM range(1, 250000) t(i);
+
+query I
+SELECT count(*) FROM t;
+----
+249999
+
+# FK violations are still detected on the merge path
+statement error
+INSERT INTO t SELECT i + 250000, 123456789 FROM range(1, 2) t(i);
+----
+Constraint Error: Violates foreign key constraint because key "id: 123456789" does not exist in the referenced table
+
+# the failed statement inserted no rows
+query I
+SELECT count(*) FROM t;
+----
+249999

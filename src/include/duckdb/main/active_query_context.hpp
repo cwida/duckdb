@@ -35,6 +35,8 @@ public:
 	unique_ptr<Executor> executor;
 	//! The progress bar of the statement that is running
 	unique_ptr<ProgressBar> progress_bar;
+	//! Whether the foreign keys of the rows appended by this statement have been verified already
+	bool foreign_keys_verified = false;
 	//! Whether a collector built the open result, which has no way to end the query
 	bool collector_built_result = false;
 	//! The format every statement of the query is submitted in; null is the chunk format
