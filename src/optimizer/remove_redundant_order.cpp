@@ -1,6 +1,8 @@
 #include "duckdb/optimizer/remove_redundant_order.hpp"
 
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
@@ -35,6 +37,18 @@ bool AggregateDiscardsOrder(const LogicalAggregate &aggr) {
 //! UNION ALL concatenates its inputs in order; the hash-based set operations do not
 bool SetOperationDiscardsOrder(const LogicalSetOperation &setop) {
 	return setop.type != LogicalOperatorType::LOGICAL_UNION || !setop.setop_all;
+}
+
+bool OperatorExpressionsRequireOrderedExecution(const LogicalOperator &op) {
+	bool requires_ordered_execution = false;
+	for (auto &expr : op.expressions) {
+		ExpressionIterator::VisitExpression<BoundFunctionExpression>(*expr, [&](const auto &function) {
+			if (function.RequiresOrderedExecution()) {
+				requires_ordered_execution = true;
+			}
+		});
+	}
+	return requires_ordered_execution;
 }
 
 } // namespace
@@ -85,8 +99,8 @@ void RemoveRedundantOrder::Optimize(unique_ptr<LogicalOperator> &op, bool order_
 	case LogicalOperatorType::LOGICAL_PROJECTION:
 	case LogicalOperatorType::LOGICAL_FILTER:
 	case LogicalOperatorType::LOGICAL_UNNEST:
-		// row-wise operators neither read nor change the order: the operators above them decide
-		Optimize(op->children[0], order_discarded);
+		// Row-wise operators usually preserve order, but expressions such as nextval() observe that order.
+		Optimize(op->children[0], order_discarded && !OperatorExpressionsRequireOrderedExecution(*op));
 		return;
 	default:
 		// everything else (LIMIT, window functions, samples, CTEs, DML sinks, ...) may read its input in order
