@@ -1,0 +1,76 @@
+# name: test/sql/filter/test_tuple_comparison_pushdown.test
+# description: Test that row constructor comparisons (e.g. (a, b) = (42, 3)) are decomposed into per-column comparisons, enabling zone map pruning
+# group: [filter]
+
+# 500k rows -> 5 row groups (122880 rows each). id increases with the row id, so only the first
+# row group can contain id = 42.
+statement ok
+CREATE TABLE t AS SELECT range::BIGINT AS id, mod(range, 10)::INTEGER AS b FROM range(500000);
+
+# Disable statistics_propagation to prevent IS NOT DISTINCT FROM filters from being rewritten as equality.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (id, b) = (42, 2);
+----
+physical_plan	<REGEX>:(?s).*Table: .*\.t.*Filters:.*id IS NOT DISTINCT FROM 42.*b IS NOT DISTINCT FROM 2.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (id, b) = (42, 2);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 5.*
+
+query I
+SELECT count(*) FROM t WHERE (id, b) = (42, 2);
+----
+1
+
+# a constant that matches no row returns no rows
+query I
+SELECT count(*) FROM t WHERE (id, b) = (42, 3);
+----
+0
+
+# A row comparison that needs an alignment cast is unpacked in the aligned type: the binder compares both
+# rows as TUPLE(BIGINT, DECIMAL(11,1)), so b is compared as 2.0 and the per-field comparison carries the cast
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
+----
+physical_plan	<REGEX>:(?s).*Table: .*\.t.*Filters:.*id IS NOT DISTINCT FROM 42.*CAST\(b AS DECIMAL\(11,1\)\) IS NOT DISTINCT FROM 1\.5.*
+
+# 2 is compared as 2.0 against 1.5, so no row matches - and the aligned id comparison still prunes
+query I
+SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 5.*
+
+# nested rows are unpacked recursively, so the pruneable id inside the nested row is pushed down as well
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (b, (id, b)) = (2, (42, 2));
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 5.*
+
+query I
+SELECT count(*) FROM t WHERE (b, (id, b)) = (2, (42, 2));
+----
+1
+
+# a row comparison written with IS NOT DISTINCT FROM unpacks the same way
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (id, b) IS NOT DISTINCT FROM (42, 2);
+----
+physical_plan	<REGEX>:(?s).*Table: .*\.t.*Filters:.*id IS NOT DISTINCT FROM 42.*b IS NOT DISTINCT FROM 2.*
+
+query I
+SELECT count(*) FROM t WHERE (id, b) IS NOT DISTINCT FROM (42, 2);
+----
+1
+
+statement ok
+SET disabled_optimizers='';

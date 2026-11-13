@@ -21,7 +21,8 @@ public:
 	                             bool is_root) override;
 };
 
-//! Rewrites top-level filter equality between row constructors into scalar equalities.
+//! Rewrites row comparisons (`=` and `IS NOT DISTINCT FROM`), with a row constructor or a folded row constant on
+//! either side, into per-field comparisons using IS NOT DISTINCT FROM - row comparisons are defined that way.
 class RowComparisonSimplificationRule : public Rule {
 public:
 	explicit RowComparisonSimplificationRule(ExpressionRewriter &rewriter);

@@ -34,11 +34,137 @@ SELECT count(*) FROM rows WHERE (a, b) = (c, d);
 ----
 3
 
-# Empty and expression-valued rows retain the original comparison implementation.
+# Row-vs-constant comparisons decompose as well: (a, b) = (1, 2) matches rows with a = 1 AND b = 2
+query I
+SELECT count(*) FROM rows WHERE (a, b) = (1, 2);
+----
+3
+
+# Constants containing NULLs decompose with IS NOT DISTINCT FROM: (a, b) = (1, NULL) matches rows
+# with a = 1 AND b IS NULL, which a decomposition into `=` would drop (b = NULL is NULL)
+query I
+SELECT count(*) FROM rows WHERE (a, b) = (1, NULL);
+----
+1
+
+# the constant may be on either side of the comparison
+query I
+SELECT count(*) FROM rows WHERE (1, NULL) = (a, b);
+----
+1
+
+# IS NOT DISTINCT FROM compares rows with the same per-field semantics
+query I
+SELECT count(*) FROM rows WHERE (a, b) IS NOT DISTINCT FROM (1, 2);
+----
+3
+
+# nested rows compare field-wise as well
+query I
+SELECT count(*) FROM rows WHERE ((a, b), c) = ((1, 2), 1);
+----
+2
+
+# NULLs inside a nested row compare equal, like NULLs in a flat row
+query I
+SELECT count(*) FROM rows WHERE ((a, b), c) = ((NULL, 2), NULL);
+----
+2
+
+query I rowsort
+SELECT ((a, b), c) IS NOT DISTINCT FROM ((NULL, 2), NULL) FROM rows;
+----
+0
+0
+0
+0
+0
+0
+1
+1
+
+# a NULL constant is not a row of NULL fields - both comparisons are never true. Unpacking would wrongly
+# match the two rows where a and c are both NULL.
+query I
+SELECT count(*) FROM rows WHERE (a, c) = NULL;
+----
+0
+
+query I
+SELECT count(*) FROM rows WHERE (a, c) IS NOT DISTINCT FROM NULL;
+----
+0
+
+# Empty rows are always equal, expression-valued rows compare field-wise as well.
 query II
 SELECT row() = row(), row(a + 1, b) = row(c + 1, d) FROM rows WHERE a = 1 AND b = 2 AND d = 2;
 ----
 1	1
+
+# A cast around the row constructor is unpacked as well: rows of different types compare per field in the
+# aligned type, so the INTEGER side is compared through CAST(... AS BIGINT)
+statement ok
+CREATE TABLE cast_left(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO cast_left VALUES (1, 2), (3, 4);
+
+statement ok
+CREATE TABLE cast_right(a BIGINT, b BIGINT);
+
+statement ok
+INSERT INTO cast_right VALUES (1, 2), (3, 5);
+
+query I
+SELECT count(*) FROM cast_left l, cast_right r WHERE (l.a, l.b) = (r.a, r.b);
+----
+1
+
+query II
+EXPLAIN SELECT count(*) FROM cast_left l, cast_right r WHERE (l.a, l.b) = (r.a, r.b);
+----
+physical_plan	<REGEX>:(?s).*Conditions: a = CAST\(a AS BIGINT\).*b = CAST\(b AS BIGINT\).*
+
+# A TRY_CAST around the row is left alone: a failing try_cast yields NULL instead of an error, which the
+# per-field comparisons cannot reproduce. TRY_CAST((2, 200) AS TUPLE(TINYINT, TINYINT)) is (2, NULL).
+statement ok
+CREATE TABLE try_cast_rows(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO try_cast_rows VALUES (2, 200);
+
+query II
+EXPLAIN SELECT count(*) FROM try_cast_rows WHERE TRY_CAST((a, b) AS TUPLE(TINYINT, TINYINT)) = row(1::TINYINT, 1::TINYINT);
+----
+physical_plan	<REGEX>:(?s).*TRY_CAST\("row"\(a, b\) AS TUPLE\(TINYINT, TINYINT\)\).*
+
+query I
+SELECT count(*) FROM try_cast_rows WHERE TRY_CAST((a, b) AS TUPLE(TINYINT, TINYINT)) = row(1::TINYINT, 1::TINYINT);
+----
+0
+
+# A cast that can throw is left alone as well: unpacking evaluates the fields independently, so the failing
+# field could be skipped - the conversion error has to keep coming from the whole-row cast
+statement error
+SELECT count(*) FROM try_cast_rows WHERE CAST((a, b) AS TUPLE(TINYINT, TINYINT)) = row(1::TINYINT, 1::TINYINT);
+----
+<REGEX>:.*out of range for the destination type.*
+
+# Do not change the number of volatile function evaluations: unpacking the comparison would let a conjunction
+# skip the nextval() call for rows that already failed an earlier field
+statement ok
+CREATE SEQUENCE row_cmp_seq;
+
+query I
+SELECT count(*) FROM rows WHERE (a, nextval('row_cmp_seq')) = (99, 1);
+----
+0
+
+# nextval was evaluated once per row (8 rows)
+query I
+SELECT currval('row_cmp_seq');
+----
+8
 
 # Disabling the expression rewriter preserves identical results.
 statement ok

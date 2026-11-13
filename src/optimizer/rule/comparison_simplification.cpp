@@ -2,12 +2,16 @@
 #include "duckdb/optimizer/rule/comparison_simplification.hpp"
 
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/types.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 
 namespace duckdb {
@@ -174,45 +178,123 @@ ComparisonSimplificationRule::ComparisonSimplificationRule(ExpressionRewriter &r
 	root = std::move(op);
 }
 
+//! If the given expression is a row constructor, return it. Wrapping casts are only followed when they cannot
+//! throw - Apply checks that first - and the outermost cast target (or the row's own type) becomes effective_type.
+static optional_ptr<BoundFunctionExpression> UnwrapRowConstructor(Expression &expr, LogicalType &effective_type) {
+	auto *current = &expr;
+	auto has_cast = false;
+	while (current->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION && BoundCastExpression::IsCast(*current)) {
+		auto &cast = current->Cast<BoundFunctionExpression>();
+		if (BoundCastExpression::IsTryCast(cast)) {
+			// a failing try_cast yields NULL instead of an error - we cannot replicate that in the decomposed filters
+			return nullptr;
+		}
+		if (!has_cast) {
+			effective_type = cast.GetReturnType();
+			has_cast = true;
+		}
+		current = BoundCastExpression::ChildMutable(cast).get();
+	}
+	if (current->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return nullptr;
+	}
+	auto &function = current->Cast<BoundFunctionExpression>();
+	if (function.Function().GetName() != "row") {
+		return nullptr;
+	}
+	if (!has_cast) {
+		effective_type = function.GetReturnType();
+	}
+	return &function;
+}
+
+//! Extract one side of a row comparison: a row constructor (possibly wrapped in casts), or a folded
+//! TUPLE/STRUCT constant (the binder folds row(a, b) with constant arguments into a single Value).
+static bool ExtractRowComparisonSide(Expression &expr, LogicalType &type, vector<unique_ptr<Expression>> &children) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+		auto &constant = expr.Cast<BoundConstantExpression>();
+		if (constant.GetValue().IsNull()) {
+			// a NULL constant is not a row of NULL fields: ROW(a, b) = NULL is never true
+			return false;
+		}
+		type = constant.GetValue().type();
+		if (type.id() != LogicalTypeId::TUPLE && type.id() != LogicalTypeId::STRUCT) {
+			return false;
+		}
+		auto &child_values = StructValue::GetChildren(constant.GetValue());
+		children.reserve(child_values.size());
+		for (auto &child_value : child_values) {
+			children.push_back(make_uniq<BoundConstantExpression>(child_value));
+		}
+		return true;
+	}
+	auto row = UnwrapRowConstructor(expr, type);
+	if (!row) {
+		return false;
+	}
+	// only tuple/struct comparisons compare element-wise; other types compare the value as a whole
+	if (type.id() != LogicalTypeId::TUPLE && type.id() != LogicalTypeId::STRUCT) {
+		return false;
+	}
+	// copy the children: Apply may still reject the rewrite, and must leave the plan untouched when it does
+	for (auto &child : row->GetChildrenMutable()) {
+		children.push_back(child->Copy());
+	}
+	return true;
+}
+
 RowComparisonSimplificationRule::RowComparisonSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
+	// both equality and IS NOT DISTINCT FROM compare the fields of a row with IS NOT DISTINCT FROM
+	vector<ExpressionType> types {ExpressionType::COMPARE_EQUAL, ExpressionType::COMPARE_NOT_DISTINCT_FROM};
 	auto comparison = make_uniq<ComparisonExpressionMatcher>();
-	comparison->expr_type = make_uniq<SpecificExpressionTypeMatcher>(ExpressionType::COMPARE_EQUAL);
+	comparison->expr_type = make_uniq<ManyExpressionTypeMatcher>(types);
+	// at least one side is a row constructor (a function), the other is a row constructor or a folded constant
 	comparison->matchers.push_back(make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_FUNCTION));
-	comparison->matchers.push_back(make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_FUNCTION));
+	comparison->matchers.push_back(make_uniq<ExpressionMatcher>());
+	comparison->policy = SetMatcher::Policy::SOME;
 	root = std::move(comparison);
 }
 
 unique_ptr<Expression> RowComparisonSimplificationRule::Apply(LogicalOperator &op,
                                                               vector<reference<Expression>> &bindings,
                                                               bool &changes_made, bool is_root) {
-	if (!is_root || op.type != LogicalOperatorType::LOGICAL_FILTER) {
+	auto &left = bindings[1].get();
+	auto &right = bindings[2].get();
+	// a failing field skips the rest, so volatile or can-throw children must keep their original evaluation
+	if (left.IsVolatile() || right.IsVolatile() || left.CanThrow() || right.CanThrow()) {
 		return nullptr;
 	}
-	auto &left = bindings[1].get().Cast<BoundFunctionExpression>();
-	auto &right = bindings[2].get().Cast<BoundFunctionExpression>();
-	if (left.Function().GetName() != "row" || right.Function().GetName() != "row") {
+	LogicalType left_type;
+	vector<unique_ptr<Expression>> left_children;
+	if (!ExtractRowComparisonSide(left, left_type, left_children)) {
 		return nullptr;
 	}
-	auto &left_children = left.GetChildrenMutable();
-	auto &right_children = right.GetChildrenMutable();
-	if (left_children.empty() || left_children.size() != right_children.size()) {
+	LogicalType right_type;
+	vector<unique_ptr<Expression>> right_children;
+	if (!ExtractRowComparisonSide(right, right_type, right_children)) {
 		return nullptr;
 	}
-	for (idx_t child_idx = 0; child_idx < left_children.size(); child_idx++) {
-		auto &left_child = *left_children[child_idx];
-		auto &right_child = *right_children[child_idx];
-		if (left_child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-		    right_child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
-		    left_child.GetReturnType().IsNested() || left_child.GetReturnType() != right_child.GetReturnType()) {
-			return nullptr;
-		}
+	if (left_type != right_type || left_children.size() != right_children.size()) {
+		return nullptr;
 	}
-
+	auto &child_types = StructType::GetChildTypes(left_type);
+	if (child_types.size() != left_children.size()) {
+		return nullptr;
+	}
+	if (left_children.empty()) {
+		// ROW() = ROW() always holds
+		return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
+	}
+	// row comparisons compare fields with IS NOT DISTINCT FROM, which is equivalent in any context
 	auto result = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
 	for (idx_t child_idx = 0; child_idx < left_children.size(); child_idx++) {
+		// the unwrapped children carry their original types - compare them in the aligned field type
+		auto left_child = BoundCastExpression::AddCastToType(GetContext(), std::move(left_children[child_idx]),
+		                                                     child_types[child_idx].second);
+		auto right_child = BoundCastExpression::AddCastToType(GetContext(), std::move(right_children[child_idx]),
+		                                                      child_types[child_idx].second);
 		result->GetChildrenMutable().push_back(BoundComparisonExpression::Create(
-		    ExpressionType::COMPARE_NOT_DISTINCT_FROM, std::move(left_children[child_idx]),
-		    std::move(right_children[child_idx])));
+		    ExpressionType::COMPARE_NOT_DISTINCT_FROM, std::move(left_child), std::move(right_child)));
 	}
 	return std::move(result);
 }
