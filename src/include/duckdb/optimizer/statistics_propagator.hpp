@@ -30,6 +30,23 @@ struct FunctionStatisticsInput;
 
 enum class StatisticsPropagationMode : uint8_t { FILTER_SIMPLIFICATION, FULL };
 
+//! Suspends attaching verification statistics to propagated expressions for the lifetime of the guard
+struct VerificationStatsGuard {
+	explicit VerificationStatsGuard(bool &attach_p) : attach(attach_p), previous(attach_p) {
+		attach = false;
+	}
+	~VerificationStatsGuard() {
+		Release();
+	}
+	//! Restores attaching before the guard goes out of scope
+	void Release() {
+		attach = previous;
+	}
+
+	bool &attach;
+	bool previous;
+};
+
 class StatisticsPropagator {
 public:
 	StatisticsPropagator(Optimizer &optimizer, unique_ptr<LogicalOperator> &root,
