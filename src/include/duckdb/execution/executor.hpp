@@ -153,6 +153,8 @@ private:
 	//! Whether this query's store can park a producer for the consumer at all. A store settled on
 	//! retained never parks, so the retained hot path skips the readiness checks
 	bool ResultStoreCanPark();
+	//! The chunks a task slice run by ExecuteTask processes before control returns to the caller
+	idx_t PartialChunkCount();
 	void InitializeInternal(PhysicalOperator &physical_plan);
 
 	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
