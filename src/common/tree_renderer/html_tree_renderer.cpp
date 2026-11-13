@@ -160,6 +160,19 @@ static JSONMutableValue BuildNodeJSON(JSONWriter &writer, RenderTree &tree, idx_
 	for (auto &child_pos : node.child_positions) {
 		children.Append(BuildNodeJSON(writer, tree, child_pos.x, child_pos.y, total_time, has_timing));
 	}
+	for (auto &sub_plan : node.sub_plans) {
+		if (!sub_plan.tree) {
+			continue;
+		}
+		auto sub_plan_node = writer.CreateObject();
+		sub_plan_node.AddString("name", "SUB-PLAN: " + sub_plan.label);
+		sub_plan_node.AddString("kind", "generic");
+		sub_plan_node.Add("details", writer.CreateArray());
+		auto sub_plan_children = writer.CreateArray();
+		sub_plan_children.Append(BuildNodeJSON(writer, *sub_plan.tree, 0, 0, total_time, has_timing));
+		sub_plan_node.Add("children", sub_plan_children);
+		children.Append(sub_plan_node);
+	}
 	obj.Add("children", children);
 	return obj;
 }

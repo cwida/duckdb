@@ -19,7 +19,15 @@ class LogicalOperator;
 class PhysicalOperator;
 class Pipeline;
 class ProfilingNode;
+struct RenderTree;
 struct PipelineRenderNode;
+
+struct ExplainSubPlan {
+	//! Caption shown above the sub-plan.
+	string label;
+	//! A render tree owned independently of the enclosing operator tree.
+	unique_ptr<RenderTree> tree;
+};
 
 struct RenderTreeNode {
 public:
@@ -50,6 +58,7 @@ public:
 	string name;
 	InsertionOrderPreservingMap<string> extra_text;
 	vector<Coordinate> child_positions;
+	vector<ExplainSubPlan> sub_plans;
 };
 
 struct RenderTree {

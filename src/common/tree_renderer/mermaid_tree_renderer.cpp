@@ -80,41 +80,59 @@ static string SanitizeMermaidLabel(const string &text) {
 	return result;
 }
 
-void MermaidTreeRenderer::ToStreamInternal(RenderTree &root, BaseTreeRenderer &ss) {
-	vector<string> nodes;
-	vector<string> edges;
+static string MermaidNodeName(const string &prefix, idx_t x, idx_t y) {
+	if (prefix.empty()) {
+		return StringUtil::Format("node_%d_%d", x, y);
+	}
+	return StringUtil::Format("node_%s_%d_%d", prefix, x, y);
+}
 
-	const string node_format = "    node_%d_%d[\"`**%s**%s`\"]";
-
-	for (idx_t y = 0; y < root.height; y++) {
-		for (idx_t x = 0; x < root.width; x++) {
-			auto node = root.GetNode(x, y);
+static void RenderMermaidGraph(RenderTree &tree, const string &prefix, vector<string> &nodes, vector<string> &edges,
+                               idx_t &next_sub_plan) {
+	for (idx_t y = 0; y < tree.height; y++) {
+		for (idx_t x = 0; x < tree.width; x++) {
+			auto node = tree.GetNode(x, y);
 			if (!node) {
 				continue;
 			}
 
-			// Build node label with markdown formatting
 			string extra_info;
 			for (auto &item : node->extra_text) {
-				auto &key = item.first;
-				auto &value_raw = item.second;
-
-				auto value = QueryProfiler::JSONSanitize(value_raw);
-				// Add newline and key-value pair
-				extra_info += StringUtil::Format("\n\t%s: %s", key, SanitizeMermaidLabel(value));
+				auto value = QueryProfiler::JSONSanitize(item.second);
+				extra_info += StringUtil::Format("\n\t%s: %s", item.first, SanitizeMermaidLabel(value));
 			}
-
-			// Create node with bold operator name and extra info (trim name to remove trailing spaces)
 			auto trimmed_name = node->name;
 			StringUtil::Trim(trimmed_name);
-			nodes.push_back(StringUtil::Format(node_format, x, y, SanitizeMermaidLabel(trimmed_name), extra_info));
+			auto node_name = MermaidNodeName(prefix, x, y);
+			nodes.push_back(StringUtil::Format("    %s[\"`**%s**%s`\"]", node_name, SanitizeMermaidLabel(trimmed_name),
+			                                   extra_info));
 
-			// Create Edge(s)
 			for (auto &coord : node->child_positions) {
-				edges.push_back(StringUtil::Format("    node_%d_%d --> node_%d_%d", x, y, coord.x, coord.y));
+				edges.push_back(
+				    StringUtil::Format("    %s --> %s", node_name, MermaidNodeName(prefix, coord.x, coord.y)));
+			}
+			for (auto &sub_plan : node->sub_plans) {
+				if (!sub_plan.tree) {
+					continue;
+				}
+				auto sub_plan_name = StringUtil::Format("subplan_%d", next_sub_plan++);
+				vector<string> sub_plan_nodes;
+				vector<string> sub_plan_edges;
+				RenderMermaidGraph(*sub_plan.tree, sub_plan_name, sub_plan_nodes, sub_plan_edges, next_sub_plan);
+				nodes.push_back(StringUtil::Format(
+				    "    subgraph %s [\"%s\"]\n%s\n%s\n    end", sub_plan_name, SanitizeMermaidLabel(sub_plan.label),
+				    StringUtil::Join(sub_plan_nodes, "\n\n"), StringUtil::Join(sub_plan_edges, "\n")));
+				edges.push_back(StringUtil::Format("    %s -.-> %s", node_name, MermaidNodeName(sub_plan_name, 0, 0)));
 			}
 		}
 	}
+}
+
+void MermaidTreeRenderer::ToStreamInternal(RenderTree &root, BaseTreeRenderer &ss) {
+	vector<string> nodes;
+	vector<string> edges;
+	idx_t next_sub_plan = 0;
+	RenderMermaidGraph(root, string(), nodes, edges, next_sub_plan);
 
 	// Output Mermaid flowchart
 	ss << "flowchart TD\n";

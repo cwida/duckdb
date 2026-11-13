@@ -59,6 +59,55 @@ void GRAPHVIZTreeRenderer::Render(const Pipeline &op, BaseTreeRenderer &ss) {
 	ToStream(*tree, ss);
 }
 
+static string GraphvizNodeName(const string &prefix, idx_t x, idx_t y) {
+	if (prefix.empty()) {
+		return StringUtil::Format("node_%d_%d", x, y);
+	}
+	return StringUtil::Format("node_%s_%d_%d", prefix, x, y);
+}
+
+static void RenderGraph(RenderTree &tree, const string &prefix, vector<string> &nodes, vector<string> &edges,
+                        idx_t &next_sub_plan) {
+	for (idx_t y = 0; y < tree.height; y++) {
+		for (idx_t x = 0; x < tree.width; x++) {
+			auto node = tree.GetNode(x, y);
+			if (!node) {
+				continue;
+			}
+
+			vector<string> body;
+			body.push_back(node->name);
+			for (auto &item : node->extra_text) {
+				auto value = QueryProfiler::JSONSanitize(item.second);
+				body.push_back(StringUtil::Format("%s:\\n%s", item.first, value));
+			}
+			auto node_name = GraphvizNodeName(prefix, x, y);
+			nodes.push_back(
+			    StringUtil::Format("    %s [label=\"%s\"];", node_name, StringUtil::Join(body, "\\n───\\n")));
+
+			for (auto &coord : node->child_positions) {
+				edges.push_back(
+				    StringUtil::Format("    %s -> %s;", node_name, GraphvizNodeName(prefix, coord.x, coord.y)));
+			}
+			for (auto &sub_plan : node->sub_plans) {
+				if (!sub_plan.tree) {
+					continue;
+				}
+				auto sub_plan_name = StringUtil::Format("subplan_%d", next_sub_plan++);
+				vector<string> sub_plan_nodes;
+				vector<string> sub_plan_edges;
+				RenderGraph(*sub_plan.tree, sub_plan_name, sub_plan_nodes, sub_plan_edges, next_sub_plan);
+				nodes.push_back(StringUtil::Format("    subgraph cluster_%s {\n        label=\"%s\";\n%s\n%s\n    }",
+				                                   sub_plan_name, QueryProfiler::JSONSanitize(sub_plan.label),
+				                                   StringUtil::Join(sub_plan_nodes, "\n"),
+				                                   StringUtil::Join(sub_plan_edges, "\n")));
+				edges.push_back(StringUtil::Format("    %s -> %s [style=dashed];", node_name,
+				                                   GraphvizNodeName(sub_plan_name, 0, 0)));
+			}
+		}
+	}
+}
+
 void GRAPHVIZTreeRenderer::ToStreamInternal(RenderTree &root, BaseTreeRenderer &ss) {
 	const string digraph_format = R"(
 digraph G {
@@ -70,34 +119,8 @@ digraph G {
 
 	vector<string> nodes;
 	vector<string> edges;
-
-	const string node_format = R"(    node_%d_%d [label="%s"];)";
-
-	for (idx_t y = 0; y < root.height; y++) {
-		for (idx_t x = 0; x < root.width; x++) {
-			auto node = root.GetNode(x, y);
-			if (!node) {
-				continue;
-			}
-
-			// Create Node
-			vector<string> body;
-			body.push_back(node->name);
-			for (auto &item : node->extra_text) {
-				auto &key = item.first;
-				auto &value_raw = item.second;
-
-				auto value = QueryProfiler::JSONSanitize(value_raw);
-				body.push_back(StringUtil::Format("%s:\\n%s", key, value));
-			}
-			nodes.push_back(StringUtil::Format(node_format, x, y, StringUtil::Join(body, "\\n───\\n")));
-
-			// Create Edge(s)
-			for (auto &coord : node->child_positions) {
-				edges.push_back(StringUtil::Format("    node_%d_%d -> node_%d_%d;", x, y, coord.x, coord.y));
-			}
-		}
-	}
+	idx_t next_sub_plan = 0;
+	RenderGraph(root, string(), nodes, edges, next_sub_plan);
 	auto node_lines = StringUtil::Join(nodes, "\n");
 	auto edge_lines = StringUtil::Join(edges, "\n");
 

@@ -93,6 +93,10 @@ InsertionOrderPreservingMap<string> LogicalOperator::ParamsToString() const {
 	return result;
 }
 
+vector<ExplainSubPlan> LogicalOperator::GetExplainSubPlans() const {
+	return {};
+}
+
 bool LogicalOperator::HasSideEffects() const {
 	switch (type) {
 	case LogicalOperatorType::LOGICAL_INSERT:

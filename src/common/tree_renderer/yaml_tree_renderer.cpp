@@ -129,6 +129,20 @@ void YAMLTreeRenderer::RenderRecursive(RenderTree &node, BaseTreeRenderer &ss, i
 			RenderRecursive(node, ss, indent + 2, child_pos.x, child_pos.y);
 		}
 	}
+
+	bool rendered_sub_plans = false;
+	for (auto &sub_plan : current_node.sub_plans) {
+		if (!sub_plan.tree) {
+			continue;
+		}
+		if (!rendered_sub_plans) {
+			ss << string(indent, ' ') << "sub_plans:\n";
+			rendered_sub_plans = true;
+		}
+		ss << string(indent + 2, ' ') << "- label: " << EscapedString(sub_plan.label) << '\n';
+		ss << string(indent + 4, ' ') << "tree:\n";
+		RenderRecursive(*sub_plan.tree, ss, indent + 6, 0, 0);
+	}
 }
 
 } // namespace duckdb

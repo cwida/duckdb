@@ -1419,6 +1419,21 @@ void TextTreeRenderer::ToStreamInternal(RenderTree &root, BaseTreeRenderer &ss) 
 		ss << "\n";
 	}
 	ss.max_render_width = MaxValue<idx_t>(ss.max_render_width, max_width);
+	for (idx_t y = 0; y < root.height; y++) {
+		for (idx_t x = 0; x < root.width; x++) {
+			auto node = root.GetNode(x, y);
+			if (!node) {
+				continue;
+			}
+			for (auto &sub_plan : node->sub_plans) {
+				if (!sub_plan.tree) {
+					continue;
+				}
+				ss.Render("\nSub-plan \"" + sub_plan.label + "\" of " + node->name + ":\n", TreeRenderType::HEADER);
+				TextTreeRenderer(config).ToStream(*sub_plan.tree, ss);
+			}
+		}
+	}
 }
 
 void TextTreeRenderer::Configure(const unordered_map<string, Value> &settings) {

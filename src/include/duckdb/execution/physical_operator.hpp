@@ -32,6 +32,7 @@ class Pipeline;
 class PipelineBuildState;
 class MetaPipeline;
 class PhysicalPlan;
+struct ExplainSubPlan;
 
 enum class TableFunctionParallelism : uint8_t;
 enum class OperatorCachingMode : uint8_t { NONE, PARTITIONED, ORDERED, UNORDERED };
@@ -81,6 +82,8 @@ public:
 	                        const ProfilerPrintFormat &format = ProfilerPrintFormat::Default()) const;
 	void Print() const;
 	virtual vector<const_reference<PhysicalOperator>> GetChildren() const;
+	//! Sub-plans owned by this operator that are not part of the enclosing plan tree.
+	virtual vector<ExplainSubPlan> GetExplainSubPlans() const;
 
 	//! Return a vector of the types that will be returned by this operator
 	const vector<LogicalType> &GetTypes() const {

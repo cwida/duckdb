@@ -89,6 +89,21 @@ static JSONMutableValue RenderRecursive(JSONWriter &writer, RenderTree &tree, id
 		}
 	}
 	object.Add("extra_info", extra_info);
+	auto sub_plans = writer.CreateArray();
+	bool has_sub_plans = false;
+	for (auto &sub_plan : node.sub_plans) {
+		if (!sub_plan.tree) {
+			continue;
+		}
+		auto sub_plan_object = writer.CreateObject();
+		sub_plan_object.AddString("label", sub_plan.label);
+		sub_plan_object.Add("tree", RenderRecursive(writer, *sub_plan.tree, 0, 0));
+		sub_plans.Append(sub_plan_object);
+		has_sub_plans = true;
+	}
+	if (has_sub_plans) {
+		object.Add("sub_plans", sub_plans);
+	}
 	return object;
 }
 

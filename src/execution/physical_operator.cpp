@@ -55,6 +55,10 @@ vector<const_reference<PhysicalOperator>> PhysicalOperator::GetChildren() const 
 	return result;
 }
 
+vector<ExplainSubPlan> PhysicalOperator::GetExplainSubPlans() const {
+	return {};
+}
+
 void PhysicalOperator::SetEstimatedCardinality(InsertionOrderPreservingMap<string> &result,
                                                idx_t estimated_cardinality) {
 	result[RenderTreeNode::ESTIMATED_CARDINALITY] = StringUtil::Format("%llu", estimated_cardinality);

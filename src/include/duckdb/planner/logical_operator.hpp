@@ -22,6 +22,7 @@
 
 namespace duckdb {
 
+struct ExplainSubPlan;
 class LogicalPlanVerifier;
 struct LogicalPlanSQLExportRelation;
 struct LogicalPlanVerificationPath;
@@ -76,6 +77,8 @@ public:
 
 	virtual string GetName() const;
 	virtual InsertionOrderPreservingMap<string> ParamsToString() const;
+	//! Sub-plans owned by this operator that are not part of the enclosing plan tree.
+	virtual vector<ExplainSubPlan> GetExplainSubPlans() const;
 	virtual string ToString(optional_ptr<ClientContext> context = nullptr,
 	                        const ProfilerPrintFormat &format = ProfilerPrintFormat::Default()) const;
 	DUCKDB_API void Print();
