@@ -17,7 +17,6 @@ create macro data() as table (
 			'time_ns',
 			'timestamp_s',
 			'timestamp_ms',
-			'timestamp_tz',
 			'time_tz',
 			'interval',
 			'bit',
