@@ -374,7 +374,7 @@ public:
 	static idx_t FillWithHTOffsets(JoinHTScanState &state, Vector &addresses);
 
 	//! Materialize RHS dictionaries after all finalize tasks complete.
-	void BuildDictionaryArrays(const PhysicalHashJoin &op);
+	void BuildDictionaryArrays(const PhysicalHashJoin &op, idx_t reservation_size);
 
 	idx_t Count() const {
 		return data_collection ? data_collection->Count() : 0;
@@ -480,10 +480,9 @@ public:
 	//! Dict-surviving descriptor shared with every per-thread table of the same join.
 	shared_ptr<const DictSurvivingInfo> dict_info;
 
-	//! Total bytes materialized dictionaries would cost for the given RHS output types
-	idx_t ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const;
-	//! Returns true iff small-build-side dictionary emission should activate
-	bool CanUseDictionaryEmission(const PhysicalHashJoin &op, bool external, idx_t probe_cardinality) const;
+	//! Peak allocation estimate, or zero when materialized dictionary emission is unsuitable.
+	idx_t GetDictionaryReservationSize(const PhysicalHashJoin &op, bool external, idx_t probe_cardinality) const;
+	idx_t GetMaterializedDictionarySize() const;
 
 	struct {
 		mutex mj_lock;
@@ -749,11 +748,16 @@ public:
 	                            bool parallel = false);
 	void MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state);
 
-	//! Get total size of HT if all partitions would be built
+	void MergePerfectHashBounds(const vector<reference<JoinHashTable>> &local_hts);
+	enum class LookupSizing { SELECTED, HASH_ONLY };
+	//! Cost the whole build using the selected lookup representation.
 	idx_t GetTotalSize(const vector<reference<JoinHashTable>> &local_hts, idx_t &max_partition_size,
-	                   idx_t &max_partition_count) const;
+	                   idx_t &max_partition_count, LookupSizing lookup_sizing = LookupSizing::SELECTED) const;
+	//! External partitions always use ordinary hashing.
 	idx_t GetTotalSize(const vector<idx_t> &partition_sizes, const vector<idx_t> &partition_counts,
 	                   idx_t &max_partition_size, idx_t &max_partition_count) const;
+	//! Dictionaries retained outside spillable tuple storage.
+	idx_t GetRetainedDictionarySize() const;
 	//! Get the remaining size of the unbuilt partitions
 	idx_t GetRemainingSize() const;
 	//! Sets number of radix bits according to the max ht size

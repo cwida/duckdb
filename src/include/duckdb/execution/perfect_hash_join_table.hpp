@@ -36,6 +36,8 @@ public:
 	//! Accumulate bounds before allocating the directory, independently of runtime filters.
 	virtual void UpdateBounds(const Vector &keys) = 0;
 	virtual void MergeBounds(const PerfectHashJoinTable &other) = 0;
+	//! Allocation size including match tracking, or zero for an unaffordable domain.
+	virtual idx_t EstimateSize(idx_t build_count, idx_t pointer_table_size) const = 0;
 	virtual bool Initialize(Allocator &allocator, idx_t build_count, idx_t pointer_table_size) = 0;
 	//! Returns whether duplicate keys produced a chain.
 	virtual bool Insert(const Vector &rows, const TupleDataLayout &layout, idx_t pointer_offset, bool parallel) = 0;

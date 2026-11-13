@@ -2611,6 +2611,7 @@ idx_t JoinHashTable::GetTotalSize(const vector<idx_t> &partition_sizes, const ve
 	const auto num_partitions = RadixPartitioning::NumberOfPartitions(radix_bits);
 	const auto mark_join_size =
 	    mark_join_info.uncorrelated_condition_rows ? mark_join_info.uncorrelated_condition_rows->SizeInBytes() : 0;
+	const auto retained_size = mark_join_size + GetRetainedDictionarySize();
 
 	idx_t total_size = 0;
 	idx_t total_count = 0;
@@ -2630,22 +2631,51 @@ idx_t JoinHashTable::GetTotalSize(const vector<idx_t> &partition_sizes, const ve
 	}
 
 	if (total_count == 0) {
-		return mark_join_size;
+		return retained_size;
 	}
 
-	return total_size + PointerTableSize(total_count) + mark_join_size;
+	return total_size + PointerTableSize(total_count) + retained_size;
+}
+
+void JoinHashTable::MergePerfectHashBounds(const vector<reference<JoinHashTable>> &local_hts) {
+	if (!perfect_hash_candidate) {
+		return;
+	}
+	for (const auto &ht : local_hts) {
+		D_ASSERT(ht.get().perfect_hash_candidate);
+		perfect_hash_candidate->MergeBounds(*ht.get().perfect_hash_candidate);
+	}
 }
 
 idx_t JoinHashTable::GetTotalSize(const vector<reference<JoinHashTable>> &local_hts, idx_t &max_partition_size,
-                                  idx_t &max_partition_count) const {
+                                  idx_t &max_partition_count, LookupSizing lookup_sizing) const {
 	const auto num_partitions = RadixPartitioning::NumberOfPartitions(radix_bits);
 	vector<idx_t> partition_sizes(num_partitions, 0);
 	vector<idx_t> partition_counts(num_partitions, 0);
+	idx_t allocated_size = 0;
 	for (auto &ht : local_hts) {
 		ht.get().GetSinkCollection().GetSizesAndCounts(partition_sizes, partition_counts);
+		allocated_size += ht.get().GetSinkCollection().GetAllocatedSizeInBytes();
 	}
 
 	auto total_size = GetTotalSize(partition_sizes, partition_counts, max_partition_size, max_partition_count);
+	idx_t logical_size = 0;
+	for (const auto partition_size : partition_sizes) {
+		logical_size += partition_size;
+	}
+	// Pinning the whole build retains unused capacity in every producer's row and heap blocks.
+	total_size += allocated_size > logical_size ? allocated_size - logical_size : 0;
+	if (lookup_sizing == LookupSizing::SELECTED && perfect_hash_candidate) {
+		idx_t count = 0;
+		for (const auto partition_count : partition_counts) {
+			count += partition_count;
+		}
+		const auto pointer_size = PointerTableSize(count);
+		const auto perfect_size = perfect_hash_candidate->EstimateSize(count, pointer_size);
+		if (perfect_size) {
+			total_size = total_size - pointer_size + perfect_size;
+		}
+	}
 	for (auto &ht : local_hts) {
 		auto &condition_rows = ht.get().mark_join_info.uncorrelated_condition_rows;
 		if (condition_rows) {
@@ -2653,6 +2683,18 @@ idx_t JoinHashTable::GetTotalSize(const vector<reference<JoinHashTable>> &local_
 		}
 	}
 	return total_size;
+}
+
+idx_t JoinHashTable::GetRetainedDictionarySize() const {
+	idx_t result = 0;
+	if (dict_info) {
+		for (const auto &column : dict_info->columns) {
+			if (column.index_width) {
+				result += column.entry->data.GetAllocationSize();
+			}
+		}
+	}
+	return result;
 }
 
 idx_t JoinHashTable::GetRemainingSize() const {
@@ -2671,7 +2713,7 @@ idx_t JoinHashTable::GetRemainingSize() const {
 
 	const auto mark_join_size =
 	    mark_join_info.uncorrelated_condition_rows ? mark_join_info.uncorrelated_condition_rows->SizeInBytes() : 0;
-	return data_size + PointerTableSize(count) + mark_join_size;
+	return data_size + PointerTableSize(count) + mark_join_size + GetRetainedDictionarySize();
 }
 
 void JoinHashTable::Unpartition() {
@@ -2982,35 +3024,43 @@ void ProbeSpill::PrepareNextProbe() {
 //===--------------------------------------------------------------------===//
 //! Threshold constants gating small-build-side dictionary emission
 struct DictionaryEmissionActivation {
-	//! Bounds materialized dictionaries and their chain-link sidecar
+	//! Bounds the retained payload arrays
 	static constexpr idx_t MAX_BUILD_PAYLOAD_BYTES = 8ULL * 1024ULL * 1024ULL;
 	//! Below this ratio, per-row savings are unlikely to amortize the setup cost
 	static constexpr idx_t PROBE_BUILD_RATIO = 100;
+	//! Conservative allowance for simultaneous gather/copy buffers, capacity rounding and string heaps.
+	static constexpr idx_t NESTED_ALLOCATION_FACTOR = 8;
 };
 
-idx_t JoinHashTable::ComputeBuildPayloadBytes(const vector<LogicalType> &rhs_output_types) const {
-	D_ASSERT(Count() > 0);
+//! Include default child capacities before allocating a nested dictionary.
+static idx_t EstimateNestedDictionaryBuffers(const LogicalType &type, idx_t count) {
 	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
-	idx_t payload_bytes = 0;
-	bool has_nested = false;
-	for (const auto &type : rhs_output_types) {
-		const auto row_size = GetTypeIdSize(type.InternalType());
-		const auto entry_count = Count() + !type.IsNested();
-		if (row_size > (limit - payload_bytes) / entry_count) {
+	count = MaxValue<idx_t>(count, STANDARD_VECTOR_SIZE);
+	if (count > limit) {
+		return limit + 1;
+	}
+	idx_t size = ((count + 63) / 64) * sizeof(validity_t);
+	switch (type.InternalType()) {
+	case PhysicalType::STRUCT:
+		for (const auto &child : StructType::GetChildTypes(type)) {
+			size += EstimateNestedDictionaryBuffers(child.second, count);
+			if (size > limit) {
+				return limit + 1;
+			}
+		}
+		return size;
+	case PhysicalType::ARRAY:
+		if (ArrayType::GetSize(type) > limit / count) {
 			return limit + 1;
 		}
-		payload_bytes += row_size * entry_count;
-		has_nested |= type.IsNested();
+		return size + EstimateNestedDictionaryBuffers(ArrayType::GetChildType(type), count * ArrayType::GetSize(type));
+	case PhysicalType::LIST:
+		size += EstimateNestedDictionaryBuffers(ListType::GetChildType(type), STANDARD_VECTOR_SIZE);
+		break;
+	default:
+		break;
 	}
-	// Nested gathers copy children; scalar strings continue to reference the pinned build heap.
-	if (has_nested) {
-		const auto collection_bytes = data_collection->SizeInBytes();
-		if (collection_bytes > limit - payload_bytes) {
-			return limit + 1;
-		}
-		payload_bytes += collection_bytes;
-	}
-	return payload_bytes;
+	return size + count * GetTypeIdSize(type.InternalType());
 }
 
 bool JoinHashTable::CanUsePerfectDictionaryLookup() const {
@@ -3023,48 +3073,75 @@ bool JoinHashTable::UsesDictionaryLookup() const {
 	return perfect_hash_table && perfect_hash_table->GetType() == PerfectHashJoinTable::Type::DICTIONARY;
 }
 
-bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool external, idx_t probe_cardinality) const {
-	// external joins rebuild partitions, invalidating row pointers
-	if (external) {
-		return false;
-	}
-	// mutually exclusive with the dict-surviving path: that path narrows the payload slot to a 1/2/4-byte
-	// index, while NEXT_PTR embedding here overwrites a different field and assumes payload bytes are intact.
-	if (HasDictSurvivingColumns()) {
-		return false;
-	}
-	if (op.rhs_output_columns.col_types.empty()) {
-		return false;
+idx_t JoinHashTable::GetDictionaryReservationSize(const PhysicalHashJoin &op, bool external,
+                                                  idx_t probe_cardinality) const {
+	// External rounds invalidate pointers; surviving dictionaries already own the payload representation.
+	if (external || HasDictSurvivingColumns() || op.rhs_output_columns.col_types.empty()) {
+		return 0;
 	}
 	if (Count() == 0 || Count() > NumericLimits<uint32_t>::Maximum()) {
-		return false;
+		return 0;
 	}
 	if (probe_cardinality < Count() ||
 	    (!CanUsePerfectDictionaryLookup() &&
 	     probe_cardinality / DictionaryEmissionActivation::PROBE_BUILD_RATIO < Count())) {
-		return false;
+		return 0;
 	}
+
+	const auto limit = DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES;
+	idx_t payload_bytes = 0;
+	idx_t size = Count() * sizeof(data_ptr_t);
+	if (chains_longer_than_one.load(std::memory_order_relaxed)) {
+		size += Count() * sizeof(data_ptr_t);
+	}
+	bool has_nested = false;
 	for (const auto &type : op.rhs_output_columns.col_types) {
-		if (type.InternalType() == PhysicalType::STRUCT) {
-			// STRUCT vectors apply selections to their children instead of wrapping a dictionary.
-			return false;
+		if (type.InternalType() == PhysicalType::STRUCT || type.InternalType() == PhysicalType::ARRAY) {
+			// STRUCT applies selections to its children; ARRAY dictionary hashing loses child batching.
+			return 0;
 		}
-		if (type.InternalType() == PhysicalType::ARRAY) {
-			// ARRAY dictionary hashing processes individual arrays instead of batching their children.
-			return false;
+		const auto needs_null = IsLeftOuterJoin(join_type) || join_type == JoinType::SINGLE;
+		const auto entries = Count() + (needs_null && !type.IsNested());
+		const auto row_size = GetTypeIdSize(type.InternalType());
+		if (row_size > (limit - payload_bytes) / entries) {
+			return 0;
 		}
-		if (type.IsNested() && Count() > STANDARD_VECTOR_SIZE) {
+		payload_bytes += entries * row_size;
+		if (type.IsNested()) {
 			// A chunk must be able to reference every nested dictionary entry.
-			return false;
+			if (Count() > STANDARD_VECTOR_SIZE) {
+				return 0;
+			}
+			const auto buffers = EstimateNestedDictionaryBuffers(type, Count());
+			if (buffers > limit) {
+				return 0;
+			}
+			has_nested = true;
+			size += DictionaryEmissionActivation::NESTED_ALLOCATION_FACTOR * buffers;
+		} else {
+			const auto validity_capacity = MaxValue<idx_t>(entries, STANDARD_VECTOR_SIZE);
+			size += entries * row_size + ValidityMask::EntryCount(validity_capacity) * sizeof(validity_t);
 		}
 	}
-	if (ComputeBuildPayloadBytes(op.rhs_output_columns.col_types) >
-	    DictionaryEmissionActivation::MAX_BUILD_PAYLOAD_BYTES) {
-		return false;
+	if (has_nested) {
+		const auto collection_bytes = data_collection->SizeInBytes();
+		if (collection_bytes > limit - payload_bytes) {
+			return 0;
+		}
+		size += DictionaryEmissionActivation::NESTED_ALLOCATION_FACTOR * collection_bytes;
 	}
-	// Count() fits in the uint32_t dict index stored into NEXT_PTR by BuildDictionaryArrays
-	D_ASSERT(Count() <= NumericLimits<uint32_t>::Maximum());
-	return true;
+	return size;
+}
+
+idx_t JoinHashTable::GetMaterializedDictionarySize() const {
+	if (!materialized_dictionary) {
+		return 0;
+	}
+	idx_t size = materialized_dictionary->next_pointers.GetSize();
+	for (const auto &column : materialized_dictionary->columns) {
+		size += column->data.GetAllocationSize();
+	}
+	return size;
 }
 
 void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const JoinBuildSelection &selection, DataChunk &result,
@@ -3093,10 +3170,10 @@ void JoinHashTable::EmitDictVectors(const SelectionVector &build_sel, idx_t coun
 	}
 }
 
-void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
+void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op, idx_t reservation_size) {
 	auto &collection = *data_collection;
 	const auto build_count = collection.Count();
-	// preconditions enforced by CanUseDictionaryEmission
+	// Preconditions enforced by GetDictionaryReservationSize.
 	D_ASSERT(build_count > 0);
 	D_ASSERT(!materialized_dictionary);
 	// dict index is a uint32_t; assert defensively if MAX_BUILD_PAYLOAD_BYTES is ever relaxed
@@ -3168,6 +3245,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 		Store<uint32_t>(static_cast<uint32_t>(i), next_ptr_location);
 	}
 	materialized_dictionary = std::move(state);
+	D_ASSERT(GetMaterializedDictionarySize() + row_pointer_vector.GetAllocationSize() <= reservation_size);
 
 	// Nested output can fall back to native gathering, which needs the original row pointers.
 	if (CanUsePerfectDictionaryLookup() && !HasNestedDictionary(materialized_dictionary->columns)) {

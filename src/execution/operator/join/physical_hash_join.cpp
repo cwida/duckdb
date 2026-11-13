@@ -546,7 +546,14 @@ public:
 	//! The memory available to the hash table: the reservation minus what partitioning the probe side requires
 	idx_t GetMaxExternalHTSize() const {
 		const auto reservation = temporary_memory_state->GetReservation();
-		return reservation > probe_side_requirement ? reservation - probe_side_requirement : 0;
+		const auto retained_size = probe_side_requirement + hash_table->GetRetainedDictionarySize();
+		return reservation > retained_size ? reservation - retained_size : 0;
+	}
+
+	idx_t GetMaxInMemoryHTSize() const {
+		// The external minimum reservation can exceed the memory limit.
+		return MinValue(temporary_memory_state->GetReservation(),
+		                BufferManager::GetBufferManager(context).GetMaxMemory());
 	}
 
 	//! Whether we are doing an external + some sizes
@@ -1017,15 +1024,17 @@ void PhysicalHashJoin::PrepareFinalize(ClientContext &context, GlobalSinkState &
 		}
 		gstate.layout_gate.layout_ptr = std::move(layout);
 	});
-	const auto &ht = *gstate.hash_table;
+	auto &ht = *gstate.hash_table;
 
+	ht.MergePerfectHashBounds(gstate.local_hash_tables);
 	gstate.total_size =
 	    ht.GetTotalSize(gstate.local_hash_tables, gstate.max_partition_size, gstate.max_partition_count);
 	gstate.probe_side_requirement =
 	    GetPartitioningSpaceRequirement(context, gstate.probe_types, ht.GetRadixBits(), gstate.num_threads);
 	const auto max_partition_ht_size =
 	    gstate.max_partition_size + gstate.hash_table->PointerTableSize(gstate.max_partition_count);
-	gstate.temporary_memory_state->SetMinimumReservation(max_partition_ht_size + gstate.probe_side_requirement);
+	gstate.temporary_memory_state->SetMinimumReservation(max_partition_ht_size + gstate.probe_side_requirement +
+	                                                     ht.GetRetainedDictionarySize());
 
 	bool all_constant;
 	gstate.temporary_memory_state->SetMaterializationPenalty(GetTupleWidth(gstate.probe_types, all_constant));
@@ -1304,9 +1313,18 @@ private:
 
 		// Both finalize paths finish writing the chains before reaching here,
 		// so dictionary emission is safe on either path
-		if (sink.hash_table->CanUseDictionaryEmission(sink.op, sink.external,
-		                                              sink.op.children[0].get().estimated_cardinality)) {
-			sink.hash_table->BuildDictionaryArrays(sink.op);
+		const auto dictionary_size = sink.hash_table->GetDictionaryReservationSize(
+		    sink.op, sink.external, sink.op.children[0].get().estimated_cardinality);
+		if (dictionary_size > 0) {
+			auto &memory = *sink.temporary_memory_state;
+			const auto requested_size = sink.total_size + dictionary_size;
+			memory.SetRemainingSizeAndUpdateReservation(sink.context.GetContext(), requested_size);
+			if (sink.GetMaxInMemoryHTSize() >= requested_size) {
+				sink.hash_table->BuildDictionaryArrays(sink.op, dictionary_size);
+			}
+			const auto retained_size = sink.total_size + sink.hash_table->GetMaterializedDictionarySize();
+			memory.SetMinimumReservation(retained_size);
+			memory.SetRemainingSizeAndUpdateReservation(sink.context.GetContext(), retained_size);
 		}
 
 		if (sink.global_filter_state) {
@@ -1467,14 +1485,16 @@ public:
 		const auto num_partitions = RadixPartitioning::NumberOfPartitions(sink.hash_table->GetRadixBits());
 		vector<idx_t> partition_sizes(num_partitions, 0);
 		vector<idx_t> partition_counts(num_partitions, 0);
+		sink.hash_table->GetSinkCollection().GetSizesAndCounts(partition_sizes, partition_counts);
 		sink.total_size = sink.hash_table->GetTotalSize(partition_sizes, partition_counts, sink.max_partition_size,
 		                                                sink.max_partition_count);
 		sink.probe_side_requirement =
 		    GetPartitioningSpaceRequirement(sink.context, op.types, sink.hash_table->GetRadixBits(), sink.num_threads);
 
-		sink.temporary_memory_state->SetMinimumReservation(sink.max_partition_size +
-		                                                   sink.hash_table->PointerTableSize(sink.max_partition_count) +
-		                                                   sink.probe_side_requirement);
+		sink.temporary_memory_state->SetMinimumReservation(
+		    sink.max_partition_size + sink.hash_table->PointerTableSize(sink.max_partition_count) +
+		    sink.probe_side_requirement + sink.hash_table->GetRetainedDictionarySize());
+		sink.temporary_memory_state->SetRemainingSize(sink.total_size);
 		sink.temporary_memory_state->UpdateReservation(executor.context.GetContext());
 
 		FinalizeExternalRuntimeFilters(sink.context, op, sink);
@@ -2040,7 +2060,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	ht.SealBloomFilter();
 
 	sink.temporary_memory_state->UpdateReservation(context.GetContext());
-	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
+	sink.external = sink.GetMaxInMemoryHTSize() < sink.total_size;
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
 		ht.load_factor = JoinHashTable::EXTERNAL_LOAD_FACTOR;
@@ -2050,7 +2070,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		idx_t temp_total_size =
 		    ht.GetTotalSize(sink.local_hash_tables, temp_max_partition_size, temp_max_partition_count);
 
-		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
+		if (temp_total_size <= sink.GetMaxInMemoryHTSize()) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
 			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), temp_total_size);
@@ -2063,19 +2083,23 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		}
 	}
 	DUCKDB_LOG(context, PhysicalOperatorLogType, *this, "PhysicalHashJoin", "Finalize",
-	           {{"external", to_string(sink.external)}});
+	           {{"external", to_string(sink.external)},
+	            {"build_size", to_string(sink.total_size)},
+	            {"reservation", to_string(sink.temporary_memory_state->GetReservation())}});
 	if (sink.external) {
 		// External Hash Join
 		// Recursive preserved-build reuse only applies to the in-memory finalized HT. External hash join
 		// runs through repeated build/probe rounds with partition/probe-spill state, so it cannot be
 		// treated as a stable materialized build that later recursive iterations may skip entirely.
 		sink.preserve_build_for_reuse = false;
+		sink.total_size = ht.GetTotalSize(sink.local_hash_tables, sink.max_partition_size, sink.max_partition_count,
+		                                  JoinHashTable::LookupSizing::HASH_ONLY);
+		sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), sink.total_size);
 
 		const auto max_partition_ht_size = sink.max_partition_size + ht.PointerTableSize(sink.max_partition_count);
 		const auto very_very_skewed = // No point in repartitioning if it's this skewed
 		    static_cast<double>(max_partition_ht_size) >= 0.8 * static_cast<double>(sink.total_size);
-		if (!very_very_skewed &&
-		    (max_partition_ht_size + sink.probe_side_requirement) > sink.temporary_memory_state->GetReservation()) {
+		if (!very_very_skewed && max_partition_ht_size > sink.GetMaxExternalHTSize()) {
 			// We have to repartition
 			const auto radix_bits_before = ht.GetRadixBits();
 			ht.SetRepartitionRadixBits(sink.GetMaxExternalHTSize(), sink.max_partition_size, sink.max_partition_count);
@@ -2100,6 +2124,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	}
 
 	// In-memory Hash Join
+	sink.temporary_memory_state->SetMinimumReservation(sink.total_size);
 	for (auto &local_ht : sink.local_hash_tables) {
 		ht.Merge(local_ht.get());
 	}
@@ -2559,6 +2584,7 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 
 	auto &data_collection = ht.GetDataCollection();
 	if (data_collection.Count() == 0 && op.EmptyResultIfRHSIsEmpty()) {
+		ht.Reset();
 		PrepareBuild(sink);
 		return;
 	}
