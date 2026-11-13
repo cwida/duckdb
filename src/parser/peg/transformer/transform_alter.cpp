@@ -156,10 +156,9 @@ unique_ptr<AlterInfo> PEGTransformerFactory::TransformAlterSequenceStmt(PEGTrans
 	return alter_sequence_options;
 }
 
-QualifiedName PEGTransformerFactory::TransformQualifiedSequenceName(PEGTransformer &transformer,
-                                                                    const optional<Identifier> &catalog_qualification,
-                                                                    const optional<Identifier> &schema_qualification,
-                                                                    const Identifier &sequence_name) {
+QualifiedName PEGTransformerFactory::TransformQualifiedSequenceName(
+    PEGTransformer &transformer, const optional<Identifier> &catalog_qualification,
+    const optional<vector<Identifier>> &schema_qualification, const Identifier &sequence_name) {
 	// The grammar greedily fills the catalog qualifier first, so a 2-part name "a.b" arrives as catalog="a"
 	// with no schema. Store the qualifiers as a plain schema path: a lone qualifier becomes the schema, and the
 	// binder's BindSchemaOrCatalog promotes it to a catalog if it names an attached database.
@@ -168,7 +167,7 @@ QualifiedName PEGTransformerFactory::TransformQualifiedSequenceName(PEGTransform
 		schema_path.push_back(*catalog_qualification);
 	}
 	if (schema_qualification) {
-		schema_path.push_back(*schema_qualification);
+		schema_path.insert(schema_path.end(), schema_qualification->begin(), schema_qualification->end());
 	}
 	return QualifiedName(std::move(schema_path), sequence_name);
 }

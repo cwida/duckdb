@@ -1,0 +1,169 @@
+# name: test/sql/catalog/nested_schema/nested_show_tables.test
+# description: SHOW TABLES resolves full schema paths and distinguishes schemas with the same name
+# group: [nested_schema]
+
+statement ok
+ATTACH ':memory:' AS lake;
+
+statement ok
+USE lake;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog.salesdemo;
+
+statement ok
+CREATE SCHEMA lake.s3tablescatalog.salesdemo.retail;
+
+statement ok
+CREATE SCHEMA lake.retail;
+
+statement ok
+CREATE TABLE lake.s3tablescatalog.salesdemo.retail.widget_sales(id INTEGER);
+
+statement ok
+CREATE VIEW lake.s3tablescatalog.salesdemo.retail.widget_view AS SELECT 42 AS id;
+
+statement ok
+CREATE TABLE lake.retail.other(id INTEGER);
+
+query I
+SHOW TABLES FROM lake.s3tablescatalog.salesdemo.retail;
+----
+widget_sales
+widget_view
+
+# Prepared SHOW FROM resolves the schema again after it is recreated.
+statement ok
+CREATE SCHEMA lake.recreated;
+
+statement ok
+CREATE SCHEMA lake.recreated.child;
+
+statement ok
+CREATE TABLE lake.recreated.child.old_table(i INTEGER);
+
+statement ok
+PREPARE list_recreated AS SHOW TABLES FROM lake.recreated.child;
+
+query I
+EXECUTE list_recreated;
+----
+old_table
+
+statement ok
+DROP SCHEMA lake.recreated.child CASCADE;
+
+statement ok
+CREATE SCHEMA lake.recreated.child;
+
+statement ok
+CREATE TABLE lake.recreated.child.new_table(i INTEGER);
+
+query I
+EXECUTE list_recreated;
+----
+new_table
+
+statement ok
+DROP SCHEMA lake.recreated CASCADE;
+
+query I
+SHOW TABLES FROM s3tablescatalog.salesdemo.retail;
+----
+widget_sales
+widget_view
+
+query I
+SHOW TABLES FROM lake.retail;
+----
+other
+
+query I
+SHOW TABLES FROM retail;
+----
+other
+
+query I
+SHOW TABLES FROM lake.s3tablescatalog.salesdemo;
+----
+
+query I
+SHOW TABLES FROM lake;
+----
+other
+widget_sales
+widget_view
+
+statement ok
+USE lake.retail;
+
+query I
+SHOW TABLES;
+----
+other
+
+query I
+PRAGMA show_tables;
+----
+other
+
+statement ok
+USE lake;
+
+statement ok
+PREPARE list_tables AS SHOW TABLES;
+
+statement ok
+USE lake.retail;
+
+query I
+EXECUTE list_tables;
+----
+other
+
+statement ok
+USE lake;
+
+query I
+EXECUTE list_tables;
+----
+
+statement error
+SHOW TABLES FROM lake.s3tablescatalog.missing.retail;
+----
+No catalog + schema named
+
+statement ok
+CREATE SCHEMA lake."a.b";
+
+statement ok
+CREATE SCHEMA lake."a.b"."c,d";
+
+statement ok
+CREATE SCHEMA lake."a.b"."c,d"."e""f";
+
+statement ok
+CREATE TABLE lake."a.b"."c,d"."e""f".quoted_table(i INTEGER);
+
+query I
+SHOW TABLES FROM lake."a.b"."c,d"."e""f";
+----
+quoted_table
+
+# An attached database takes precedence over a schema with the same name.
+statement ok
+ATTACH ':memory:' AS s3tablescatalog;
+
+statement error
+SHOW TABLES FROM s3tablescatalog.salesdemo.retail;
+----
+No catalog + schema named
+
+query I
+SHOW TABLES FROM lake.s3tablescatalog.salesdemo.retail;
+----
+widget_sales
+widget_view

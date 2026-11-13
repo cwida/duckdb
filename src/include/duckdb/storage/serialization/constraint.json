@@ -83,6 +83,14 @@
         "name": "fk_keys",
         "type": "vector<PhysicalIndex>",
         "property":  "info.fk_keys"
+      },
+      {
+        "id": 207,
+        "name": "referenced_table",
+        "type": "QualifiedName",
+        "version": "v2.0.0",
+        "serialize_condition": "referenced_table.Path().size() > 2",
+        "deserialize_default": "QualifiedName()"
       }
     ]
   },

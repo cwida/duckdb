@@ -564,9 +564,25 @@ static void BindCreateTableConstraints(CreateTableInfo &create_info, CatalogEntr
 		D_ASSERT(fk.info.fk_keys.empty());
 		FindForeignKeyIndexes(create_info.columns, fk.fk_columns, fk.info.fk_keys);
 
+		auto reference = fk.referenced_table;
+		if (reference.Path().empty()) {
+			reference = fk.info.schema.empty() || fk.info.schema == schema.name
+			                ? QualifiedName(fk.info.table)
+			                : QualifiedName(Identifier(), fk.info.schema, fk.info.table);
+		}
+		auto resolved = Binder::ResolveCatalog(entry_retriever, reference, false);
+		auto &path = resolved.Path();
+		auto catalog = path.front().empty() ? schema.ParentCatalog().GetName() : path.front();
+		vector<Identifier> schema_path(path.begin() + 1, path.end() - 1);
+		if (schema_path.empty()) {
+			schema_path = schema.GetSchemaPath();
+		}
+		auto fk_name = QualifiedName::FromCatalogSchema(std::move(catalog), std::move(schema_path), fk.info.table);
+
 		// Resolve the self-reference.
-		if (create_info.GetTableName() == fk.info.table) {
+		if (fk_name == schema.GetQualifiedName(create_info.GetTableName())) {
 			fk.info.type = ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE;
+			fk.referenced_table = QualifiedName(schema.GetSchemaPath(), fk.info.table);
 			FindMatchingPrimaryKeyColumns(create_info.columns, create_info.constraints, fk);
 			FindForeignKeyIndexes(create_info.columns, fk.pk_columns, fk.info.pk_keys);
 			CheckForeignKeyTypes(create_info.columns, create_info.columns, fk);
@@ -576,13 +592,6 @@ static void BindCreateTableConstraints(CreateTableInfo &create_info, CatalogEntr
 		// Resolve the table reference in the same catalog/schema as the table being
 		// created, so FK references work for external catalogs (not just the default).
 		EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, QualifiedName(fk.info.table));
-		QualifiedName fk_name;
-		if (fk.info.schema.empty() || fk.info.schema == schema.name) {
-			// a foreign key can only reference a table in the same (possibly nested) schema
-			fk_name = schema.GetQualifiedName(fk.info.table);
-		} else {
-			fk_name = QualifiedName(Identifier::InvalidCatalog(), fk.info.schema, fk.info.table);
-		}
 		auto table_entry = entry_retriever.GetEntry(EntryLookupInfo(table_lookup, fk_name));
 		if (table_entry->type == CatalogType::VIEW_ENTRY) {
 			throw BinderException("cannot reference a VIEW with a FOREIGN KEY");
@@ -593,6 +602,7 @@ static void BindCreateTableConstraints(CreateTableInfo &create_info, CatalogEntr
 		if (&pk_table_entry_ptr.schema != &schema) {
 			throw BinderException("Creating foreign keys across different schemas or catalogs is not supported");
 		}
+		fk.referenced_table = QualifiedName(schema.GetSchemaPath(), fk.info.table);
 		FindMatchingPrimaryKeyColumns(pk_table_entry_ptr.GetColumns(), pk_table_entry_ptr.GetConstraints(), fk);
 		FindForeignKeyIndexes(pk_table_entry_ptr.GetColumns(), fk.pk_columns, fk.info.pk_keys);
 		CheckForeignKeyTypes(pk_table_entry_ptr.GetColumns(), create_info.columns, fk);

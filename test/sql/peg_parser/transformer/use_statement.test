@@ -62,4 +62,4 @@ Catalog Error: SET schema: No catalog + schema named "main.extra" found.
 statement error
 USE main.main.extra
 ----
-Parser Error: Expected "USE database" or "USE database.schema"
+Catalog Error: SET schema: No catalog + schema named "main.main.extra" found.
