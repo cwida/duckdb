@@ -2133,9 +2133,6 @@ static bool CanUseCompressedProbe(const HashJoinGlobalSinkState &sink, const vec
 		// external joins re-finalize the HT mid-probe, invalidating the per-id pointer cache
 		return false;
 	}
-	if (!sink.hash_table->SupportsCompressedProbe()) {
-		return false;
-	}
 	if (conditions.size() != 1) {
 		return false;
 	}
@@ -2193,8 +2190,8 @@ public:
 		if (spill_chunk.ColumnCount() != 0) {
 			spill_chunk.Reset();
 		}
-		// discard cached build-side pointers; the HT may have been reset between iterations (e.g. recursive CTE)
-		if (probe_state.dict_state) {
+		probe_state.dict_state.reset();
+		if (CanUseCompressedProbe(op.sink_state->Cast<HashJoinGlobalSinkState>(), op.conditions)) {
 			probe_state.dict_state = make_uniq<JoinHashTable::ProbeDictionaryState>();
 		}
 	}

@@ -73,12 +73,10 @@ JoinHashTable::SharedState::SharedState()
 
 JoinHashTable::ProbeState::ProbeState()
     : SharedState(), hashes(LogicalType::HASH), ht_offsets_and_salts_v(LogicalType::UBIGINT),
-      hashes_dense_v(LogicalType::HASH), non_empty_sel(STANDARD_VECTOR_SIZE) {
+      hashes_dense_v(LogicalType::HASH) {
 }
 
-JoinHashTable::ProbeDictionaryState::ProbeDictionaryState()
-    : new_dictionary_pointers(LogicalType::POINTER), unique_entries(STANDARD_VECTOR_SIZE),
-      match_sel(STANDARD_VECTOR_SIZE) {
+JoinHashTable::ProbeDictionaryState::ProbeDictionaryState() : unique_entries(STANDARD_VECTOR_SIZE) {
 }
 
 JoinHashTable::InsertState::InsertState(const JoinHashTable &ht)
@@ -1153,10 +1151,6 @@ bool JoinHashTable::TryInitializePerfectHashTable() {
 	return perfect_hash_table != nullptr;
 }
 
-bool JoinHashTable::SupportsCompressedProbe() const {
-	return !perfect_hash_table || perfect_hash_table->GetType() == PerfectHashJoinTable::Type::ROWS;
-}
-
 void JoinHashTable::AllocatePointerTable(bool use_radix_layout) {
 	if (perfect_hash_table) {
 		hash_map.Reset();
@@ -1331,9 +1325,6 @@ bool JoinHashTable::TryProbePerfectHashTable(ScanStructure &scan_structure, Data
 
 void JoinHashTable::Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
                           ProbeState &probe_state, optional_ptr<Vector> precomputed_hashes) {
-	if (TryProbePerfectHashTable(scan_structure, keys)) {
-		return;
-	}
 	// Compressed probes resolve distinct keys instead of using hashes for the full chunk.
 	if (probe_state.dict_state && !precomputed_hashes) {
 		auto &lhs_key = keys.data[0];
@@ -1343,6 +1334,9 @@ void JoinHashTable::Probe(ScanStructure &scan_structure, DataChunk &keys, TupleD
 		if (LHSChunkIsDictionaryEligible(lhs_key) && TryProbeDictionary(scan_structure, keys, key_state, probe_state)) {
 			return;
 		}
+	}
+	if (TryProbePerfectHashTable(scan_structure, keys)) {
+		return;
 	}
 
 	optional_ptr<const SelectionVector> current_sel;
@@ -1383,7 +1377,6 @@ bool JoinHashTable::TryProbeDictionary(ScanStructure &scan_structure, DataChunk 
 		return false;
 	}
 	if (dict_size == 0) {
-		// the cache below is never allocated for an empty dictionary - avoid dereferencing a null Vector
 		return false;
 	}
 
@@ -1395,13 +1388,12 @@ bool JoinHashTable::TryProbeDictionary(ScanStructure &scan_structure, DataChunk 
 	if (dict_state.dictionary_id.empty() || dict_state.dictionary_id != dictionary_id) {
 		// new dictionary - initialize the per-id cache
 		if (dict_size > dict_state.capacity) {
-			dict_state.dictionary_pointers = make_uniq<Vector>(LogicalType::POINTER, dict_size);
+			dict_state.dictionary_results = make_unsafe_uniq_array<uint64_t>(dict_size);
 			dict_state.found_entry = make_unsafe_uniq_array<bool>(dict_size);
 			dict_state.capacity = dict_size;
 		}
 		memset(dict_state.found_entry.get(), 0, dict_size * sizeof(bool));
-		// zero the cache - an unresolved slot reads back as nullptr, the miss sentinel
-		memset(FlatVector::GetDataMutable(*dict_state.dictionary_pointers), 0, dict_size * sizeof(data_ptr_t));
+		memset(dict_state.dictionary_results.get(), 0, dict_size * sizeof(uint64_t));
 		dict_state.dictionary_id = dictionary_id;
 		dict_state.resolved_count = 0;
 		// storage dictionaries reserve a NULL sentinel slot that non-NULL probe rows never
@@ -1443,52 +1435,16 @@ bool JoinHashTable::TryProbeDictionary(ScanStructure &scan_structure, DataChunk 
 		auto &unique_values = dict_state.unique_values;
 		if (unique_values.ColumnCount() == 0) {
 			unique_values.InitializeEmpty(vector<LogicalType> {equality_types[0]});
-			TupleDataCollection::InitializeChunkState(dict_state.unique_key_state, {equality_types[0]});
 		}
 		unique_values.data[0].Slice(dictionary_vector, unique_entries, unique_count);
 		unique_values.CheckCardinality(unique_count);
 
-		TupleDataCollection::ToUnifiedFormat(dict_state.unique_key_state, unique_values);
-
-		idx_t count = unique_count;
-		GetRowPointers(unique_values, dict_state.unique_key_state, probe_state, nullptr, nullptr, count,
-		               dict_state.new_dictionary_pointers, dict_state.match_sel, false);
-
-		// remap hits from position to dict slot; missed slots stay nullptr from the rebind memset
-		const auto new_dict_ptrs = FlatVector::GetData<data_ptr_t>(dict_state.new_dictionary_pointers);
-		auto unique_dict_ptrs = FlatVector::GetDataMutable<data_ptr_t>(*dict_state.dictionary_pointers);
-		for (idx_t i = 0; i < count; i++) {
-			const auto position = dict_state.match_sel.get_index(i);
-			const auto dict_idx = unique_entries.get_index(position);
-			unique_dict_ptrs[dict_idx] = new_dict_ptrs[position];
-		}
+		ResolveProbeKeys(scan_structure, unique_values, probe_state, {dict_state.dictionary_results.get(), dict_size},
+		                 unique_entries);
 	}
 
-	// fan out the cache into the scan_structure shape that Probe() produces
-	scan_structure.is_null = false;
-	scan_structure.finished = false;
-	if (join_type != JoinType::INNER) {
-		memset(scan_structure.found_match.get(), 0, sizeof(bool) * STANDARD_VECTOR_SIZE);
-	}
-	TupleDataCollection::ToUnifiedFormat(key_state, keys);
-	optional_ptr<const SelectionVector> current_sel;
-	const idx_t prepared_count =
-	    PrepareKeys(keys, key_state.vector_data, current_sel, scan_structure.sel_vector, false);
-	scan_structure.has_null_value_filter = prepared_count < keys.size();
-
-	auto scan_structure_ptrs = FlatVector::GetDataMutable<data_ptr_t>(scan_structure.pointers);
-	const auto unique_dict_ptrs = FlatVector::GetData<data_ptr_t>(*dict_state.dictionary_pointers);
-	idx_t kept = 0;
-	for (idx_t i = 0; i < prepared_count; i++) {
-		const auto row_index = current_sel->get_index(i);
-		const auto dict_idx = offsets.get_index(row_index);
-		const auto ptr = unique_dict_ptrs[dict_idx];
-		scan_structure_ptrs[row_index] = ptr;
-		scan_structure.sel_vector.set_index(kept, row_index);
-		// miss rows leave a stale pointer, but Next() only reads pointers at positions in sel_vector[0..count)
-		kept += (ptr != nullptr);
-	}
-	scan_structure.count = kept;
+	ExpandProbeResults<false>(scan_structure, keys, key_state, {dict_state.dictionary_results.get(), dict_size},
+	                          offsets);
 	return true;
 }
 
@@ -1500,6 +1456,10 @@ bool JoinHashTable::TryProbeConstant(ScanStructure &scan_structure, DataChunk &k
 
 	auto &constant_col = keys.data[0];
 	if (constant_col.GetVectorType() != VectorType::CONSTANT_VECTOR) {
+		return false;
+	}
+	// Direct membership and dictionary loops already read constant keys cheaply.
+	if (GetProbeResultType() != PerfectHashJoinTable::Type::ROWS) {
 		return false;
 	}
 #ifndef DEBUG
@@ -1516,46 +1476,105 @@ bool JoinHashTable::TryProbeConstant(ScanStructure &scan_structure, DataChunk &k
 	auto &unique_values = dict_state.unique_values;
 	if (unique_values.ColumnCount() == 0) {
 		unique_values.InitializeEmpty(vector<LogicalType> {equality_types[0]});
-		TupleDataCollection::InitializeChunkState(dict_state.unique_key_state, {equality_types[0]});
 	}
 	SelectionVector sel(1);
 	sel.set_index(0, 0);
 	unique_values.data[0].Slice(constant_col, sel, 1);
-	unique_values.Flatten();
 
-	TupleDataCollection::ToUnifiedFormat(dict_state.unique_key_state, unique_values);
-
-	// Resolve the equality chain; Next() checks any additional predicates.
-	idx_t count = 1;
-	GetRowPointers(unique_values, dict_state.unique_key_state, probe_state, nullptr, nullptr, count,
-	               dict_state.new_dictionary_pointers, dict_state.match_sel, false);
-	const auto resolved_ptr =
-	    count == 0 ? nullptr : FlatVector::GetData<data_ptr_t>(dict_state.new_dictionary_pointers)[0];
-
-	// fan out the resolved pointer into the scan_structure shape that Probe() produces
-	scan_structure.is_null = false;
-	scan_structure.finished = false;
-	if (join_type != JoinType::INNER) {
-		memset(scan_structure.found_match.get(), 0, sizeof(bool) * STANDARD_VECTOR_SIZE);
-	}
-	TupleDataCollection::ToUnifiedFormat(key_state, keys);
-	optional_ptr<const SelectionVector> current_sel;
-	const idx_t prepared_count =
-	    PrepareKeys(keys, key_state.vector_data, current_sel, scan_structure.sel_vector, false);
-	scan_structure.has_null_value_filter = prepared_count < keys.size();
-
-	auto scan_structure_ptrs = FlatVector::GetDataMutable<data_ptr_t>(scan_structure.pointers);
-	idx_t kept = 0;
-	if (resolved_ptr) {
-		// PrepareKeys dropped NULL probe rows - the rest all share the one resolved chain-head
-		for (idx_t i = 0; i < prepared_count; i++) {
-			const auto row_index = current_sel->get_index(i);
-			scan_structure_ptrs[row_index] = resolved_ptr;
-			scan_structure.sel_vector.set_index(kept++, row_index);
-		}
-	}
-	scan_structure.count = kept;
+	uint64_t resolved = 0;
+	ResolveProbeKeys(scan_structure, unique_values, probe_state, {&resolved, 1}, sel);
+	ExpandProbeResults<true>(scan_structure, keys, key_state, {&resolved, 1}, sel);
 	return true;
+}
+
+PerfectHashJoinTable::Type JoinHashTable::GetProbeResultType() const {
+	return perfect_hash_table ? perfect_hash_table->GetType() : PerfectHashJoinTable::Type::ROWS;
+}
+
+void JoinHashTable::ResolveProbeKeys(ScanStructure &scan, DataChunk &keys, ProbeState &state,
+                                     array_ptr<uint64_t> results, const SelectionVector &result_sel) {
+	auto count = keys.size();
+	switch (GetProbeResultType()) {
+	case PerfectHashJoinTable::Type::ROWS: {
+		TupleDataCollection::ToUnifiedFormat(scan.key_state, keys);
+		GetRowPointers(keys, scan.key_state, state, nullptr, nullptr, count, scan.pointers, scan.sel_vector, false);
+		const auto pointers = FlatVector::GetData<data_ptr_t>(scan.pointers);
+		for (idx_t i = 0; i < count; i++) {
+			const auto row = scan.sel_vector.get_index(i);
+			results[result_sel.get_index(row)] = cast_pointer_to_uint64(pointers[row]);
+		}
+		break;
+	}
+	case PerfectHashJoinTable::Type::DICTIONARY:
+		if (!scan.dictionary_selection) {
+			scan.dictionary_selection = make_uniq<SelectionVector>(STANDARD_VECTOR_SIZE);
+		}
+		count = perfect_hash_table->ProbeDictionary(keys.data[0], scan.sel_vector, *scan.dictionary_selection);
+		for (idx_t i = 0; i < count; i++) {
+			results[result_sel.get_index(scan.sel_vector.get_index(i))] = scan.dictionary_selection->get_index(i) + 1;
+		}
+		break;
+	case PerfectHashJoinTable::Type::BITMAP:
+		perfect_hash_table->ProbeMembership(keys.data[0], scan.found_match);
+		for (idx_t i = 0; i < count; i++) {
+			results[result_sel.get_index(i)] = scan.found_match[i];
+		}
+		break;
+	}
+}
+
+template <bool CONSTANT>
+void JoinHashTable::ExpandProbeResults(ScanStructure &scan, DataChunk &keys, TupleDataChunkState &key_state,
+                                       array_ptr<const uint64_t> results, const SelectionVector &result_sel) {
+	scan.is_null = false;
+	scan.finished = false;
+	const auto constant_result = CONSTANT ? results[0] : 0;
+	D_ASSERT(!CONSTANT || GetProbeResultType() == PerfectHashJoinTable::Type::ROWS);
+	switch (GetProbeResultType()) {
+	case PerfectHashJoinTable::Type::BITMAP: {
+		scan.count = 0;
+		idx_t matches = 0;
+		for (idx_t i = 0; i < keys.size(); i++) {
+			scan.found_match[i] = results[result_sel.get_index(i)] != 0;
+			matches += scan.found_match[i];
+		}
+		scan.local_probe_matches += matches;
+		return;
+	}
+	case PerfectHashJoinTable::Type::DICTIONARY:
+		if (!scan.dictionary_selection) {
+			scan.dictionary_selection = make_uniq<SelectionVector>(STANDARD_VECTOR_SIZE);
+		}
+		scan.count = 0;
+		for (idx_t i = 0; i < keys.size(); i++) {
+			const auto position = results[result_sel.get_index(i)];
+			if (position) {
+				scan.sel_vector.set_index(scan.count, i);
+				scan.dictionary_selection->set_index(scan.count++, position - 1);
+			}
+		}
+		scan.local_probe_matches += scan.count;
+		return;
+	case PerfectHashJoinTable::Type::ROWS:
+		break;
+	}
+
+	optional_ptr<const SelectionVector> current_sel;
+	InitializeScanStructure(scan, keys, key_state, current_sel);
+	if (CONSTANT && !constant_result) {
+		scan.count = 0;
+		return;
+	}
+	auto pointers = FlatVector::GetDataMutable<data_ptr_t>(scan.pointers);
+	idx_t count = 0;
+	for (idx_t i = 0; i < scan.count; i++) {
+		const auto row = current_sel->get_index(i);
+		const auto pointer = CONSTANT ? constant_result : results[result_sel.get_index(row)];
+		pointers[row] = cast_uint64_to_pointer(pointer);
+		scan.sel_vector.set_index(count, row);
+		count += pointer != 0;
+	}
+	scan.count = count;
 }
 
 ScanStructure::ScanStructure(JoinHashTable &ht_p, TupleDataChunkState &key_state_p)

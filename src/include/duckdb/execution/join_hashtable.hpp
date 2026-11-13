@@ -22,6 +22,7 @@
 #include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/ht_entry.hpp"
+#include "duckdb/execution/perfect_hash_join_table.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/joinside.hpp"
 
@@ -34,7 +35,6 @@ struct ColumnDataAppendState;
 struct ClientConfig;
 struct ResidualPredicateInfo;
 class PhysicalHashJoin;
-class PerfectHashJoinTable;
 
 //! Each producer has its own refcounts; emitted vectors retain the original dictionaries through these owners.
 class DictionaryOwnershipCache {
@@ -272,17 +272,14 @@ public:
 
 		//! The current dictionary vector id (if any)
 		string dictionary_id;
-		DataChunk unique_values;
-		TupleDataChunkState unique_key_state;
-		Vector new_dictionary_pointers;
-		SelectionVector unique_entries;
-		//! Per-slot head-of-chain pointer cache; nullptr marks a miss
-		unique_ptr<Vector> dictionary_pointers;
+		//! Row pointers, membership bits or one-based dictionary positions; zero marks a miss.
+		unsafe_unique_array<uint64_t> dictionary_results;
 		unsafe_unique_array<bool> found_entry;
 		idx_t capacity = 0;
-		SelectionVector match_sel;
 		//! Number of dict slots already resolved; the unique-entries walk is skipped once it reaches dict_size
 		idx_t resolved_count = 0;
+		DataChunk unique_values;
+		SelectionVector unique_entries;
 	};
 
 	struct ProbeState : SharedState {
@@ -291,7 +288,6 @@ public:
 		Vector hashes;
 		Vector ht_offsets_and_salts_v;
 		Vector hashes_dense_v;
-		SelectionVector non_empty_sel;
 		//! Allocated only when the operator gates the compressed-probe paths on; null otherwise
 		unique_ptr<ProbeDictionaryState> dict_state;
 	};
@@ -412,8 +408,6 @@ public:
 
 	//! Choose direct lookup from the completed in-memory build.
 	bool TryInitializePerfectHashTable();
-	//! Whether lookup produces row pointers for compressed-probe fan-out.
-	bool SupportsCompressedProbe() const;
 
 	ClientContext &context;
 	const PhysicalOperator &op;
@@ -547,6 +541,12 @@ private:
 	//! Constant-vector variant of Probe. Returns false if the LHS keys are not a constant vector.
 	bool TryProbeConstant(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
 	                      ProbeState &probe_state);
+	PerfectHashJoinTable::Type GetProbeResultType() const;
+	void ResolveProbeKeys(ScanStructure &scan, DataChunk &keys, ProbeState &state, array_ptr<uint64_t> results,
+	                      const SelectionVector &result_sel);
+	template <bool CONSTANT>
+	void ExpandProbeResults(ScanStructure &scan, DataChunk &keys, TupleDataChunkState &key_state,
+	                        array_ptr<const uint64_t> results, const SelectionVector &result_sel);
 
 	bool UseSalt() const;
 
