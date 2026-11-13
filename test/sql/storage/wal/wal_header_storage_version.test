@@ -1,0 +1,48 @@
+# name: test/sql/storage/wal/wal_header_storage_version.test
+# description: Issue #28725: the WAL header only contains the database identifier and checkpoint iteration for storage version v1.4.0 and up, so DuckDB v1.3 can replay the WAL of a v1.3.x database file
+# group: [wal]
+
+# We inspect the WAL file while it is still in use, so it must not be checkpointed or reloaded away.
+require skip_reload
+
+require no_alternative_verify
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+# v1.3.x storage: the WAL header is wal_type (field 100), version (field 101), then the end-of-object marker (0xFFFF).
+# DuckDB v1.3 does not know fields 102/103 and would treat the WAL as torn and delete it.
+statement ok
+ATTACH '{TEST_DIR}/wal_header_v1_3.db' AS v13 (STORAGE_VERSION 'v1.3.0');
+
+statement ok
+CREATE TABLE v13.t AS SELECT 42 AS x;
+
+query I
+SELECT hex(content)[1:16] FROM read_blob('{TEST_DIR}/wal_header_v1_3.db.wal');
+----
+640062650002FFFF
+
+# v1.4.0 storage and later keep the db_identifier (field 102) and checkpoint_iteration (field 103).
+statement ok
+ATTACH '{TEST_DIR}/wal_header_v1_4.db' AS v14 (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE TABLE v14.t AS SELECT 42 AS x;
+
+query I
+SELECT hex(content)[1:16] FROM read_blob('{TEST_DIR}/wal_header_v1_4.db.wal');
+----
+6400626500026600
+
+# The data is still readable after re-attaching.
+statement ok
+DETACH v13;
+
+statement ok
+ATTACH '{TEST_DIR}/wal_header_v1_3.db' AS v13;
+
+query I
+SELECT x FROM v13.t;
+----
+42
