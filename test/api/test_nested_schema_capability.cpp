@@ -112,6 +112,15 @@ TEST_CASE("Unsupported catalogs reject nested schemas", "[api][nested_schema]") 
 		con.Commit();
 	}
 
+	auto check_error = [&con](const string &query, const string &schema_path) {
+		INFO(query);
+		auto result = con.Query(query);
+		REQUIRE_FAIL(result);
+		INFO(result->GetError());
+		auto message = StringUtil::Split(result->GetErrorObject().RawMessage(), '\n')[0];
+		REQUIRE(message == "Catalog \"flat\" does not support nested schemas: " + schema_path);
+	};
+
 	const vector<string> queries {
 	    "SELECT * FROM flat.a.b.t",
 	    "SELECT * FROM a.b.t",
@@ -132,12 +141,13 @@ TEST_CASE("Unsupported catalogs reject nested schemas", "[api][nested_schema]") 
 	    "DROP SCHEMA IF EXISTS flat.a.b CASCADE",
 	};
 	for (auto &query : queries) {
-		INFO(query);
-		auto result = con.Query(query);
-		REQUIRE_FAIL(result);
-		INFO(result->GetError());
-		REQUIRE(StringUtil::Contains(result->GetError(), "does not support nested schemas"));
+		check_error(query, "a.b");
 	}
+	check_error("SELECT * FROM lakee.sales.t", "lakee.sales");
+	check_error("SELECT * FROM flat.a.b.c.t", "a.b.c");
+	check_error("SELECT * FROM flat.\"a.b\".\"c\"\"d\".t", "\"a.b\".\"c\"\"d\"");
+	check_error("CREATE SCHEMA flat.\"a.b\".\"c\"\"d\"", "\"a.b\".\"c\"\"d\"");
+	check_error("DROP SCHEMA flat.\"a.b\".\"c\"\"d\"", "\"a.b\".\"c\"\"d\"");
 
 	if (remote) {
 		con.BeginTransaction();
