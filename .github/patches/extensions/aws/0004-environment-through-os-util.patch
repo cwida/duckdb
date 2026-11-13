@@ -1,5 +1,5 @@
 diff --git a/src/aws_secret.cpp b/src/aws_secret.cpp
-index ef92dd2..c2482f1 100644
+index ef92dd2..5cc30d2 100644
 --- a/src/aws_secret.cpp
 +++ b/src/aws_secret.cpp
 @@ -13,6 +13,7 @@
@@ -39,6 +39,18 @@ index ef92dd2..c2482f1 100644
  				if (!container_provider->IsValid()) {
  					throw InvalidConfigurationException(
  					    "Chain value 'container' requires container credentials to be available: "
+@@ -303,9 +306,9 @@ public:
+ 	}
+ };
+ 
+-static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider() {
++static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider(DatabaseInstance &db) {
+ 	if constexpr (AWS_DISABLE_IMDS) {
+-		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", "env;config", false);
++		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", db, "env;config", false);
+ 	} else {
+ 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+ 	}
 @@ -431,16 +434,16 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	for (const auto &item : StringUtil::Split(chain, ';')) {
  		if (item == "container") {
@@ -75,7 +87,7 @@ index ef92dd2..c2482f1 100644
  		return CreateRDSSecretWithProvider(provider, input, region);
  	}
  
-@@ -466,8 +469,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
+@@ -466,15 +469,15 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	}
  
  	if (!chain.empty()) {
@@ -86,6 +98,14 @@ index ef92dd2..c2482f1 100644
  		credentials = provider.GetAWSCredentials();
  	} else {
  		if (input.options.find("profile") != input.options.end()) {
+ 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+ 			credentials = provider.GetAWSCredentials();
+ 		} else {
+-			credentials = BuildDefaultAwsCredentialsProvider()->GetAWSCredentials();
++			credentials = BuildDefaultAwsCredentialsProvider(*context.db)->GetAWSCredentials();
+ 		}
+ 	}
+ 
 @@ -485,7 +488,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
  		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
@@ -96,7 +116,7 @@ index ef92dd2..c2482f1 100644
  		credentials = provider.GetAWSCredentials();
  	}
  
-@@ -617,9 +621,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
+@@ -617,17 +621,18 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
  }
  
  std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
@@ -110,9 +130,10 @@ index ef92dd2..c2482f1 100644
  	if (chain.empty()) {
  		if (!profile.empty()) {
  			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
-@@ -627,7 +632,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
+ 			                                                                           profile.c_str());
  		}
- 		return BuildDefaultAwsCredentialsProvider();
+-		return BuildDefaultAwsCredentialsProvider();
++		return BuildDefaultAwsCredentialsProvider(db);
  	}
 -	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
 +	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", db, chain, require_credentials,
