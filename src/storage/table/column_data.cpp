@@ -461,6 +461,28 @@ idx_t ColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t scan_c
 }
 
 void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+                        SelectionVector &sel, idx_t &s_count, const TableFilter &filter, TableFilterState &filter_state,
+                        ColumnData &validity_column) {
+	auto compression = GetCompressionFunction();
+	auto target_count = GetVectorCount(vector_index);
+	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
+	if (!compression || !compression->filter_partial || s_count == target_count || verify_fetch_row || HasUpdates() ||
+	    validity_column.HasUpdates()) {
+		ColumnData::Filter(transaction, vector_index, state, result, sel, s_count, filter, filter_state);
+		return;
+	}
+	bool filter_includes_validity = compression->validity == CompressionValidity::NO_VALIDITY_REQUIRED;
+	if (!filter_includes_validity) {
+		validity_column.ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
+		                           ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
+	}
+	FilterVector(state, result, target_count, sel, s_count, filter, filter_state);
+	if (filter_includes_validity) {
+		validity_column.Skip(state.child_states[0], target_count);
+	}
+}
+
+void ColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                         SelectionVector &sel, idx_t &s_count, const TableFilter &filter,
                         TableFilterState &filter_state) {
 	idx_t scan_count = Scan(transaction, vector_index, state, result);

@@ -263,6 +263,10 @@ protected:
 	                  idx_t sel_count, ScanVectorType scan_type, idx_t result_offset = 0);
 	void FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
 	                  idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state);
+	//! Try selected-row filtering with validity, otherwise use the regular scan-and-filter path.
+	void Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+	            SelectionVector &sel, idx_t &count, const TableFilter &filter, TableFilterState &filter_state,
+	            ColumnData &validity_column);
 
 	void FetchUpdates(TransactionData transaction, idx_t vector_index, Vector &result, idx_t scan_count,
 	                  UpdateScanType update_type);

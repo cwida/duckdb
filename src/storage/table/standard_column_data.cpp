@@ -9,8 +9,6 @@
 
 namespace duckdb {
 
-static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
-
 StandardColumnData::StandardColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
                                        LogicalType type, ColumnDataType data_type, optional_ptr<ColumnData> parent)
     : ColumnData(block_manager, info, column_index, std::move(type), data_type, parent) {
@@ -79,7 +77,7 @@ idx_t StandardColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_
 void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
                                 SelectionVector &sel, idx_t &count, const TableFilter &filter,
                                 TableFilterState &filter_state) {
-	// check if we can do a specialized filter
+	// check if we can do a specialized select
 	// the compression functions need to support this
 	auto compression = GetCompressionFunction();
 	bool has_filter = compression && compression->filter;
@@ -90,24 +88,19 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	bool partial_filter = count < target_count && compression && compression->filter_partial;
-	// Encoded filters may evaluate unselected dictionary values or runs, so exclude throwing predicates.
-	bool can_filter = partial_filter
-	                      ? !HasUpdates() && !validity->HasUpdates()
-	                      : has_filter && validity_has_filter && scan_entire_vector && !filter_state.can_throw;
-	if (!can_filter || verify_fetch_row) {
-		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
+	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
+		// we are not scanning an entire vector - this can have several causes (updates, etc)
+		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
+		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
+		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
+		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state, *validity);
 		return;
 	}
-	if (partial_filter && !filter_includes_validity) {
-		validity->ScanVector(transaction, vector_index, state.child_states[0], result, target_count,
-		                     ScanVectorType::SCAN_FLAT_VECTOR, state.update_scan_type);
-	}
 	FilterVector(state, result, target_count, sel, count, filter, filter_state);
-	if (filter_includes_validity) {
-		validity->Skip(state.child_states[0], target_count);
-	} else if (!partial_filter) {
+	if (!filter_includes_validity) {
 		validity->FilterVector(state.child_states[0], result, target_count, sel, count, filter, filter_state);
+	} else {
+		validity->Skip(state.child_states[0], target_count);
 	}
 }
 
@@ -127,6 +120,7 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 		return;
 	}
 	// a scan references uncompressed data without copying it: slicing beats gathering unless few rows are selected
+	static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
 	if (compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
 	    sel_count * UNCOMPRESSED_SELECT_DENSITY > target_count) {
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
