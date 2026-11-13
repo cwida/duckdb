@@ -193,6 +193,12 @@
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
+    },
+    {
+      "reason": "A temporary secret must still be there at the next statement, which a restart in between prevents.",
+      "paths": [
+        "test/sql/extensions/extension_repository_from_host_httpfs.test"
+      ]
     }
   ]
 }

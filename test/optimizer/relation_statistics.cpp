@@ -1521,10 +1521,10 @@ TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer
 		auto binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
 		condition.GetLHS().Cast<BoundColumnRefExpression>().DepthMutable() = 1;
 		if (cast) {
-			condition.LeftReference() =
-			    BoundCastExpression::AddDefaultCastToType(std::move(condition.LeftReference()), LogicalType::BIGINT);
-			condition.RightReference() =
-			    BoundCastExpression::AddDefaultCastToType(std::move(condition.RightReference()), LogicalType::BIGINT);
+			condition.LeftReference() = BoundCastExpression::AddCastToType(
+			    *connection.context, std::move(condition.LeftReference()), LogicalType::BIGINT);
+			condition.RightReference() = BoundCastExpression::AddCastToType(
+			    *connection.context, std::move(condition.RightReference()), LogicalType::BIGINT);
 		}
 		JoinOrderSourceStats snapshot(*connection.context, projection);
 		auto sources = snapshot.Resolve(projection);

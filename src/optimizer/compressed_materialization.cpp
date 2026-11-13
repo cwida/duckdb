@@ -133,10 +133,12 @@ unique_ptr<Expression> CMHelper::CreateDefaultStatsAwareCast(ClientContext &cont
                                                              const LogicalType &target_type,
                                                              const BaseStatistics &input_stats,
                                                              unique_ptr<BaseStatistics> &result_stats) {
-	auto result = BoundCastExpression::AddDefaultCastToType(std::move(input), target_type);
-	if (!BoundCastExpression::IsCast(*result)) { // LCOV_EXCL_START
-		throw InternalException("Expected a cast in CMHelper::CreateDefaultStatsAwareCast");
-	} // LCOV_EXCL_STOP
+	// compression and restoration must use the built-in casts, regardless of the registered casts
+	CastFunctionSet default_casts;
+	GetCastFunctionInput get_input(context);
+	get_input.query_location = input->GetQueryLocation();
+	auto bound_cast = default_casts.GetCastFunction(input->GetReturnType(), target_type, get_input);
+	auto result = BoundCastExpression::CreateDefault(std::move(input), target_type, std::move(bound_cast), false);
 	auto &cast = result->Cast<BoundFunctionExpression>();
 	CMUtils::MarkCast(cast);
 	result_stats = BoundCastExpression::PropagateStatistics(cast, input_stats, context);
