@@ -1,0 +1,39 @@
+# name: test/sql/types/timestamp/test_timestamp_unknown_zone_suffix.test
+# description: A VARCHAR -> TIMESTAMP cast must not silently drop a trailing word that is not UTC (issue #28587)
+# group: [timestamp]
+
+statement error
+SELECT '2024-01-02 10:30:00 PM'::TIMESTAMP;
+----
+not UTC
+
+statement error
+SELECT '2024-01-02 10:30:00 XX'::TIMESTAMP;
+----
+not UTC
+
+statement error
+SELECT '2024-01-02 10:30:00 CET'::TIMESTAMP;
+----
+not UTC
+
+statement error
+SELECT '2024-01-02 10:30:00 +02:00'::TIMESTAMP;
+----
+not UTC
+
+query I
+SELECT TRY_CAST('2024-01-02 10:30:00 PM' AS TIMESTAMP);
+----
+NULL
+
+# UTC and a trailing Z / offset directly after the time are still accepted
+query I
+SELECT '2024-01-02 10:30:00 UTC'::TIMESTAMP;
+----
+2024-01-02 10:30:00
+
+query I
+SELECT '2024-01-02 10:30:00Z'::TIMESTAMP;
+----
+2024-01-02 10:30:00
