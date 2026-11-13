@@ -61,10 +61,10 @@ SELECT * FROM repeat_row(1, num_rows=NULL)
 statement error
 SELECT * FROM repeat_row(1, num_rows=-1)
 ----
-<REGEX>:Binder Error.*num_rows cannot be less than zero.*
+<REGEX>:Binder Error.*No function matches.*repeat_row.*
 
 # num_rows is a large negative value
 statement error
 SELECT * FROM repeat_row(1, num_rows=-9223372036854775808)
 ----
-<REGEX>:Binder Error.*num_rows cannot be less than zero.*
+<REGEX>:Binder Error.*No function matches.*repeat_row.*

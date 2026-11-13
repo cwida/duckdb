@@ -25,12 +25,9 @@ static unique_ptr<FunctionData> RepeatBind(ClientContext &context, TableFunction
 	return_types.push_back(inputs[0].type());
 	names.emplace_back(inputs[0].ToString());
 	if (inputs[1].IsNull()) {
-		throw BinderException("Repeat second parameter cannot be NULL");
+		throw BinderException("count cannot be NULL");
 	}
-	auto repeat_count = inputs[1].GetValue<int64_t>();
-	if (repeat_count < 0) {
-		throw BinderException("Repeat second parameter cannot be be less than 0");
-	}
+	auto repeat_count = inputs[1].GetValue<uint64_t>();
 	return make_uniq<RepeatFunctionData>(inputs[0], NumericCast<idx_t>(repeat_count));
 }
 
@@ -68,7 +65,7 @@ void RepeatTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction repeat("repeat",
 	                     FunctionSignature()
 	                         .AddPositionalOnly("value", LogicalType::ANY)
-	                         .AddPositionalOnly("count", LogicalType::BIGINT),
+	                         .AddPositionalOnly("count", LogicalType::UBIGINT),
 	                     RepeatFunction, RepeatBind, RepeatInit);
 	repeat.cardinality = RepeatCardinality;
 	repeat.table_scan_progress = RepeatProgress;

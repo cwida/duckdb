@@ -33,11 +33,7 @@ static unique_ptr<FunctionData> RepeatRowBind(ClientContext &context, TableFunct
 	if (num_rows.IsNull()) {
 		throw BinderException("num_rows should be an integer value >= 0");
 	}
-	auto repeat_rows = num_rows.GetValue<int64_t>();
-	if (repeat_rows < 0) {
-		throw BinderException("num_rows cannot be less than zero");
-	}
-	return make_uniq<RepeatRowFunctionData>(inputs, NumericCast<idx_t>(repeat_rows));
+	return make_uniq<RepeatRowFunctionData>(inputs, NumericCast<idx_t>(num_rows.GetValue<uint64_t>()));
 }
 
 static unique_ptr<GlobalTableFunctionState> RepeatRowInit(ClientContext &context, TableFunctionInitInput &input) {
@@ -76,7 +72,7 @@ void RepeatRowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction repeat_row("repeat_row", {}, RepeatRowFunction, RepeatRowBind, RepeatRowInit);
 	// a positional list, so it declares "*args" and no "**kwargs" - an argument named after no parameter is an error
 	repeat_row.GetSignature().AddArgs("args", LogicalType::ANY);
-	repeat_row.GetSignature().AddKeywordOnly("num_rows", LogicalType::BIGINT);
+	repeat_row.GetSignature().AddKeywordOnly("num_rows", LogicalType::UBIGINT);
 	repeat_row.cardinality = RepeatRowCardinality;
 	repeat_row.table_scan_progress = RepeatRowProgress;
 	set.AddFunction(repeat_row);
