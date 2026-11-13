@@ -1,0 +1,118 @@
+# name: test/sql/trigger/trigger_nested_schema.test
+# description: Test that triggers on tables in a nested schema survive EXPORT/IMPORT DATABASE and COPY FROM DATABASE
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+ATTACH ':memory:' AS src;
+
+statement ok
+USE src;
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s1.s2;
+
+statement ok
+CREATE TABLE s1.s2.t(a INT);
+
+statement ok
+CREATE TABLE s1.s2.log(x INT);
+
+# a same-named table in the default schema, to show that the body resolves in the schema of the base table
+statement ok
+CREATE TABLE main.log(x INT);
+
+statement ok
+CREATE TRIGGER tr AFTER INSERT ON s1.s2.t FOR EACH STATEMENT INSERT INTO log VALUES (1);
+
+statement ok
+INSERT INTO s1.s2.t VALUES (1);
+
+query II
+SELECT (SELECT count(*) FROM s1.s2.log), (SELECT count(*) FROM main.log);
+----
+1	0
+
+# ---------------- EXPORT DATABASE / IMPORT DATABASE ----------------
+
+# empty the log so that every row counted below is written by a trigger rather than copied as data
+statement ok
+DELETE FROM s1.s2.log;
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/nested_trigger_export'
+
+statement ok
+DROP TABLE s1.s2.t CASCADE;
+
+statement ok
+DROP TABLE s1.s2.log;
+
+statement ok
+DROP TABLE main.log;
+
+statement ok
+DROP SCHEMA s1.s2;
+
+statement ok
+DROP SCHEMA s1;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/nested_trigger_export'
+
+query TT
+SELECT schema_name, trigger_name FROM duckdb_triggers() WHERE trigger_name = 'tr';
+----
+s2	tr
+
+# IMPORT loads the one row of s1.s2.t with COPY, which fires the re-imported trigger into the nested schema again
+query II
+SELECT (SELECT count(*) FROM s1.s2.log), (SELECT count(*) FROM main.log);
+----
+1	0
+
+statement ok
+INSERT INTO s1.s2.t VALUES (2);
+
+query II
+SELECT (SELECT count(*) FROM s1.s2.log), (SELECT count(*) FROM main.log);
+----
+2	0
+
+# ---------------- COPY FROM DATABASE ----------------
+
+statement ok
+ATTACH ':memory:' AS dst;
+
+statement ok
+COPY FROM DATABASE src TO dst;
+
+query TTT
+SELECT database_name, schema_name, trigger_name FROM duckdb_triggers() WHERE trigger_name = 'tr' ORDER BY ALL;
+----
+dst	s2	tr
+src	s2	tr
+
+statement ok
+USE dst;
+
+statement ok
+INSERT INTO s1.s2.t VALUES (3);
+
+# dst holds the two log rows copied from src, the row written while copying the two rows of t, and the row written by
+# the INSERT above - src is untouched, and neither database ever wrote to its own main.log
+query III
+SELECT (SELECT count(*) FROM src.s1.s2.log), (SELECT count(*) FROM dst.s1.s2.log),
+       (SELECT count(*) FROM dst.main.log);
+----
+2	4	0
+
+statement ok
+USE src;
+
+statement ok
+DETACH dst;

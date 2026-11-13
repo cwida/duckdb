@@ -129,6 +129,11 @@ void CTEBindState::Bind(CTEBinding &binding) {
 	// we need to bind it as if we were binding it during PrepareCTE
 	query_binder = Binder::CreateBinder(parent_binder.context, parent_binder);
 	query_binder->SetCanContainNulls(true);
+	if (!trigger_binding_catalog.empty()) {
+		// a trigger body binds unqualified names in the namespace of its base table, not in the session's
+		query_binder->SetSearchPath(Catalog::GetCatalog(parent_binder.context, trigger_binding_catalog),
+		                            trigger_binding_schema_path);
+	}
 
 	// we clear any expression binders that were added in the mean-time, to ensure we are not binding to any newly added
 	// correlated columns
@@ -176,6 +181,8 @@ BoundCTEData Binder::PrepareCTE(const Identifier &ctename, CommonTableExpression
 	// instead of eagerly binding the CTE here we add the CTE bind state to the list of CTE bindings
 	// the CTE is bound lazily - when referenced for the first time we perform the binding
 	result.cte_bind_state = make_shared_ptr<CTEBindState>(*this, *statement.query_node, statement.aliases);
+	result.cte_bind_state->trigger_binding_catalog = statement.trigger_binding_catalog;
+	result.cte_bind_state->trigger_binding_schema_path = statement.trigger_binding_schema_path;
 
 	result.child_binder = Binder::CreateBinder(context, this);
 

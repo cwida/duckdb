@@ -182,6 +182,16 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 
 	ReorderTableEntries(entries.tables);
 
+	// triggers live on their table, so they can only be reached after the tables are known
+	auto transaction = catalog.GetCatalogTransaction(context);
+	for (auto &table : entries.tables) {
+		table.get().Cast<TableCatalogEntry>().ScanTriggers(transaction, [&](CatalogEntry &trigger) {
+			if (!trigger.internal) {
+				entries.triggers.push_back(trigger);
+			}
+		});
+	}
+
 	// order macro's by timestamp so nested macro's are imported nicely
 	sort(entries.macros.begin(), entries.macros.end(),
 	     [](const reference<CatalogEntry> &lhs, const reference<CatalogEntry> &rhs) {
@@ -197,6 +207,7 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 	size += entries.views.size();
 	size += entries.indexes.size();
 	size += entries.macros.size();
+	size += entries.triggers.size();
 	catalog_entries.reserve(size);
 	AddEntries(catalog_entries, entries.schemas);
 	AddEntries(catalog_entries, entries.sequences);
@@ -205,6 +216,7 @@ catalog_entry_vector_t PhysicalExport::GetNaiveExportOrder(ClientContext &contex
 	AddEntries(catalog_entries, entries.macros);
 	AddEntries(catalog_entries, entries.views);
 	AddEntries(catalog_entries, entries.indexes);
+	AddEntries(catalog_entries, entries.triggers);
 	return catalog_entries;
 }
 

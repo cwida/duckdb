@@ -1,0 +1,73 @@
+# name: test/sql/copy_database/copy_database_with_trigger.test
+# description: Test that COPY FROM DATABASE copies triggers to the target database
+# group: [copy_database]
+
+require noforcestorage
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+USE db1;
+
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TABLE log(x INT);
+
+statement ok
+CREATE TRIGGER tr AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO log VALUES (1);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query I
+SELECT count(*) FROM db1.log;
+----
+1
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+COPY FROM DATABASE db1 TO db2;
+
+query TT
+SELECT database_name, trigger_name FROM duckdb_triggers() ORDER BY ALL;
+----
+db1	tr
+db2	tr
+
+# db2.log holds the row copied out of db1.log plus the row written by the trigger that fired while copying t
+query II
+SELECT (SELECT count(*) FROM db1.log), (SELECT count(*) FROM db2.log);
+----
+1	2
+
+statement ok
+USE db2;
+
+statement ok
+INSERT INTO t VALUES (42);
+
+# db1.log is untouched: the copied trigger writes to the log table of the database it was copied into
+query II
+SELECT (SELECT count(*) FROM db1.log), (SELECT count(*) FROM db2.log);
+----
+1	3
+
+# the copied trigger lives on the copied table, so dropping that table takes the trigger with it and needs no CASCADE
+statement ok
+DROP TABLE t;
+
+query I
+SELECT count(*) FROM duckdb_triggers() WHERE database_name = 'db2';
+----
+0
+
+statement ok
+USE db1;
+
+statement ok
+DETACH db2;

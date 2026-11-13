@@ -1,0 +1,47 @@
+# name: test/sql/copy_database/copy_database_trigger_restart.test
+# description: A trigger copied by COPY FROM DATABASE persists in the target database
+# group: [copy_database]
+
+require noforcestorage
+
+statement ok
+ATTACH '{TEST_DIR}/copy_trig_src.db' AS db1;
+
+statement ok
+ATTACH '{TEST_DIR}/copy_trig_dst.db' AS db2;
+
+statement ok
+CREATE TABLE db1.t(a INT);
+
+statement ok
+CREATE TABLE db1.log(x INT);
+
+# the body names "log" unqualified: it is resolved in the schema of the base table
+statement ok
+CREATE TRIGGER tr AFTER INSERT ON db1.t FOR EACH STATEMENT INSERT INTO log VALUES (1);
+
+statement ok
+INSERT INTO db1.t VALUES (1), (2);
+
+statement ok
+COPY FROM DATABASE db1 TO db2;
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/copy_trig_dst.db' AS db2;
+
+query TTT
+SELECT trigger_name, table_name, event_manipulation FROM duckdb_triggers() WHERE database_name = 'db2';
+----
+tr	t	INSERT
+
+statement ok
+INSERT INTO db2.t VALUES (3);
+
+# two rows were copied from db1.log plus the row written by the trigger that fired while copying t, and one more
+# by the INSERT above - which proves the copied trigger survived the restart and still resolves log in db2
+query I
+SELECT count(*) FROM db2.log;
+----
+3
