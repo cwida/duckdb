@@ -7,8 +7,16 @@
 
 namespace duckdb {
 
-static optional<RelationStats>
-ProjectChildStats(LogicalOperator &op, const vector<reference<const RelationStats>> &children, idx_t cardinality) {
+static bool JoinCanNullChild(JoinType join_type, idx_t child_idx) {
+	if (child_idx == 0) {
+		return IsRightOuterJoin(join_type);
+	}
+	return IsLeftOuterJoin(join_type) || join_type == JoinType::SINGLE;
+}
+
+static optional<RelationStats> ProjectChildStats(LogicalOperator &op,
+                                                 const vector<reference<const RelationStats>> &children,
+                                                 idx_t cardinality, JoinType join_type = JoinType::INNER) {
 	RelationStats result;
 	result.cardinality = cardinality;
 	result.stats_initialized = true;
@@ -23,6 +31,16 @@ ProjectChildStats(LogicalOperator &op, const vector<reference<const RelationStat
 			return {};
 		}
 		result.columns.emplace_back(binding, source->total_domain, source->current_domain, source->name);
+		bool may_become_null = false;
+		for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+			if (JoinCanNullChild(join_type, child_idx) && children[child_idx].get().GetColumnStats(binding)) {
+				may_become_null = true;
+			}
+		}
+		// base stats do not account for NULLs added by an outer join
+		if (!may_become_null) {
+			result.columns.back().base_stats = source->base_stats;
+		}
 	}
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(op.GetColumnBindings());
@@ -204,7 +222,7 @@ static optional<RelationStats> ExtractComparisonJoinStats(LogicalComparisonJoin 
 		return result;
 	}
 	auto cardinality = JoinCardinality(join, child_stats[0], child_stats[1]);
-	auto result = ProjectChildStats(join, child_stats, cardinality);
+	auto result = ProjectChildStats(join, child_stats, cardinality, join.join_type);
 	if (result || join.join_type != JoinType::MARK) {
 		return result;
 	}
@@ -365,7 +383,7 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 	case LogicalOperatorType::LOGICAL_CHUNK_GET:
 		return ExtractColumnDataGetStats(op.Cast<LogicalColumnDataGet>(), context);
 	case LogicalOperatorType::LOGICAL_PROJECTION:
-		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get());
+		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		return ExtractAggregationStats(op.Cast<LogicalAggregate>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_WINDOW:

@@ -1,8 +1,7 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/common/operator/add.hpp"
-#include "duckdb/common/operator/subtract.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -29,78 +28,15 @@ static idx_t CapMinMaxDistinctCount(uint64_t distinct_count, idx_t base_table_ca
 	return capped_distinct_count == NumericLimits<idx_t>::Maximum() ? 0 : capped_distinct_count;
 }
 
-static idx_t GetMinMaxSpanDistinctCount(uint64_t span, idx_t base_table_cardinality) {
-	uint64_t distinct_count;
-	if (!TryAddOperator::Operation<uint64_t, uint64_t, uint64_t>(span, 1, distinct_count)) {
-		return 0;
-	}
-	return CapMinMaxDistinctCount(distinct_count, base_table_cardinality);
-}
-
-template <class T>
-static idx_t GetSignedMinMaxDistinctCount(const BaseStatistics &base_stats, idx_t base_table_cardinality) {
-	auto min_value = NumericStats::Min(base_stats).GetValueUnsafe<T>();
-	auto max_value = NumericStats::Max(base_stats).GetValueUnsafe<T>();
-	if (max_value < min_value) {
-		return 0;
-	}
-	hugeint_t span;
-	if (!TrySubtractOperator::Operation(hugeint_t(static_cast<int64_t>(max_value)),
-	                                    hugeint_t(static_cast<int64_t>(min_value)), span)) {
-		return 0;
-	}
-	uint64_t unsigned_span;
-	if (!Hugeint::TryCast(span, unsigned_span)) {
-		return 0;
-	}
-	return GetMinMaxSpanDistinctCount(unsigned_span, base_table_cardinality);
-}
-
-template <class T>
-static idx_t GetUnsignedMinMaxDistinctCount(const BaseStatistics &base_stats, idx_t base_table_cardinality) {
-	auto min_value = NumericStats::Min(base_stats).GetValueUnsafe<T>();
-	auto max_value = NumericStats::Max(base_stats).GetValueUnsafe<T>();
-	T span;
-	if (!TrySubtractOperator::Operation(max_value, min_value, span)) {
-		return 0;
-	}
-	return GetMinMaxSpanDistinctCount(static_cast<uint64_t>(span), base_table_cardinality);
-}
-
-static idx_t GetBooleanMinMaxDistinctCount(const BaseStatistics &base_stats, idx_t base_table_cardinality) {
-	auto min_value = NumericStats::Min(base_stats).GetValueUnsafe<bool>();
-	auto max_value = NumericStats::Max(base_stats).GetValueUnsafe<bool>();
-	return CapMinMaxDistinctCount(min_value == max_value ? idx_t(1) : idx_t(2), base_table_cardinality);
-}
-
 static idx_t GetMinMaxDistinctCount(const BaseStatistics &base_stats, idx_t base_table_cardinality) {
-	if (base_table_cardinality == 0 || base_stats.GetStatsType() != StatisticsType::NUMERIC_STATS ||
-	    !NumericStats::HasMinMax(base_stats)) {
+	if (base_table_cardinality == 0) {
 		return 0;
 	}
-
-	switch (base_stats.GetType().InternalType()) {
-	case PhysicalType::BOOL:
-		return GetBooleanMinMaxDistinctCount(base_stats, base_table_cardinality);
-	case PhysicalType::INT8:
-		return GetSignedMinMaxDistinctCount<int8_t>(base_stats, base_table_cardinality);
-	case PhysicalType::INT16:
-		return GetSignedMinMaxDistinctCount<int16_t>(base_stats, base_table_cardinality);
-	case PhysicalType::INT32:
-		return GetSignedMinMaxDistinctCount<int32_t>(base_stats, base_table_cardinality);
-	case PhysicalType::INT64:
-		return GetSignedMinMaxDistinctCount<int64_t>(base_stats, base_table_cardinality);
-	case PhysicalType::UINT8:
-		return GetUnsignedMinMaxDistinctCount<uint8_t>(base_stats, base_table_cardinality);
-	case PhysicalType::UINT16:
-		return GetUnsignedMinMaxDistinctCount<uint16_t>(base_stats, base_table_cardinality);
-	case PhysicalType::UINT32:
-		return GetUnsignedMinMaxDistinctCount<uint32_t>(base_stats, base_table_cardinality);
-	case PhysicalType::UINT64:
-		return GetUnsignedMinMaxDistinctCount<uint64_t>(base_stats, base_table_cardinality);
-	default:
+	auto distinct_count = RelationStatisticsHelper::NumericStatsDistinctCount(base_stats);
+	if (!distinct_count.IsValid()) {
 		return 0;
 	}
+	return CapMinMaxDistinctCount(distinct_count.GetIndex(), base_table_cardinality);
 }
 
 static DistinctCount GetDistinctCountFromStats(BaseStatistics &base_stats, idx_t base_table_cardinality) {
@@ -411,6 +347,8 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 		                            Identifier(get.GetName() + "." + get.GetColumnName(column_id)));
 		if (column_statistics && column_statistics->GetType().EqualsIncludingCollation(get.GetColumnType(column_id))) {
 			scan_statistics.push_back(std::move(*column_statistics));
+			// kept so a projection above the scan can bound keys derived from this column
+			result.columns.back().base_stats = make_shared_ptr<BaseStatistics>(scan_statistics.back().Copy());
 		} else {
 			scan_statistics.push_back(BaseStatistics::CreateUnknown(get.GetColumnType(column_id)));
 		}

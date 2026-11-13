@@ -10,11 +10,14 @@
 
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 
 namespace duckdb {
+
+class BaseStatistics;
 
 enum class DistinctCountSource : uint8_t { CARDINALITY, MIN_MAX, HLL, EXACT };
 
@@ -58,6 +61,8 @@ public:
 	//! Structural evidence that permits using current_domain for SEMI/ANTI joins.
 	SemiAntiJoinDomainEvidence semi_anti_join_domain_evidence;
 	Identifier name;
+	//! Base column statistics from the scan, used to bound keys derived from this column
+	shared_ptr<BaseStatistics> base_stats;
 };
 
 struct RelationStats {

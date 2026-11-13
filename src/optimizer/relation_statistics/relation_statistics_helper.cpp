@@ -1,14 +1,19 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/operator/list.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
+#include <functional>
 #include <math.h>
 
 namespace duckdb {
@@ -54,6 +59,65 @@ idx_t RelationStatisticsHelper::CardinalityFromDouble(double cardinality) {
 		return NumericLimits<idx_t>::Maximum();
 	}
 	return LossyNumericCast<idx_t>(cardinality);
+}
+
+template <class T>
+static optional_idx SignedRangeCount(const BaseStatistics &stats) {
+	auto min_value = NumericStats::Min(stats).GetValueUnsafe<T>();
+	auto max_value = NumericStats::Max(stats).GetValueUnsafe<T>();
+	if (max_value < min_value) {
+		return optional_idx();
+	}
+	// a full int64 range does not fit in int64_t
+	auto span = hugeint_t(static_cast<int64_t>(max_value)) - hugeint_t(static_cast<int64_t>(min_value));
+	idx_t count;
+	if (!Hugeint::TryCast(span + hugeint_t(1), count)) {
+		return optional_idx();
+	}
+	return optional_idx(count);
+}
+
+template <class T>
+static optional_idx UnsignedRangeCount(const BaseStatistics &stats) {
+	auto min_value = NumericStats::Min(stats).GetValueUnsafe<T>();
+	auto max_value = NumericStats::Max(stats).GetValueUnsafe<T>();
+	if (max_value < min_value) {
+		return optional_idx();
+	}
+	idx_t span = static_cast<uint64_t>(max_value) - static_cast<uint64_t>(min_value);
+	if (span == NumericLimits<idx_t>::Maximum()) {
+		return optional_idx();
+	}
+	return optional_idx(span + 1);
+}
+
+optional_idx RelationStatisticsHelper::NumericStatsDistinctCount(const BaseStatistics &stats) {
+	if (stats.GetStatsType() != StatisticsType::NUMERIC_STATS || !NumericStats::HasMinMax(stats)) {
+		return optional_idx();
+	}
+	switch (stats.GetType().InternalType()) {
+	case PhysicalType::BOOL:
+		return optional_idx(
+		    NumericStats::Min(stats).GetValueUnsafe<bool>() == NumericStats::Max(stats).GetValueUnsafe<bool>() ? 1 : 2);
+	case PhysicalType::INT8:
+		return SignedRangeCount<int8_t>(stats);
+	case PhysicalType::INT16:
+		return SignedRangeCount<int16_t>(stats);
+	case PhysicalType::INT32:
+		return SignedRangeCount<int32_t>(stats);
+	case PhysicalType::INT64:
+		return SignedRangeCount<int64_t>(stats);
+	case PhysicalType::UINT8:
+		return UnsignedRangeCount<uint8_t>(stats);
+	case PhysicalType::UINT16:
+		return UnsignedRangeCount<uint16_t>(stats);
+	case PhysicalType::UINT32:
+		return UnsignedRangeCount<uint32_t>(stats);
+	case PhysicalType::UINT64:
+		return UnsignedRangeCount<uint64_t>(stats);
+	default:
+		return optional_idx();
+	}
 }
 
 static bool MatchesTargetColumn(const Expression &expression, optional<ColumnBinding> target_binding) {
@@ -178,8 +242,69 @@ static ExpressionBinding GetChildColumnBinding(Expression &expr) {
 	return result;
 }
 
+static bool IsMultiColumnExpression(const Expression &expression) {
+	column_binding_set_t bindings;
+	std::function<void(const Expression &)> collect = [&](const Expression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			bindings.insert(expr.Cast<BoundColumnRefExpression>().Binding());
+			return;
+		}
+		ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { collect(child); });
+	};
+	collect(expression);
+	return bindings.size() > 1;
+}
+
+//! Number of values a key computed from base columns (e.g. ts::DATE, year(ts)) can take, from its derived range
+static optional_idx DeriveExpressionDomain(const Expression &expression, const RelationColumnStatsLookup &child_columns,
+                                           ClientContext &context) {
+	if (expression.IsVolatile()) {
+		return optional_idx();
+	}
+	auto expr_copy = expression.Copy();
+	vector<BaseStatistics> input_stats;
+	column_binding_map_t<idx_t> indexes;
+	bool usable = true;
+	// column refs become positional refs into input_stats, so the expression's statistics callbacks can run
+	std::function<void(unique_ptr<Expression> &)> rewrite = [&](unique_ptr<Expression> &child) {
+		if (!usable) {
+			return;
+		}
+		if (child->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			auto &ref = child->Cast<BoundColumnRefExpression>();
+			auto entry = indexes.find(ref.Binding());
+			if (entry == indexes.end()) {
+				auto column = child_columns.Find(ref.Binding());
+				if (!column || !column->base_stats) {
+					usable = false;
+					return;
+				}
+				auto index = input_stats.size();
+				indexes.emplace(ref.Binding(), index);
+				input_stats.push_back(column->base_stats->Copy());
+				child = make_uniq<BoundReferenceExpression>(ref.GetReturnType(), index);
+			} else {
+				child = make_uniq<BoundReferenceExpression>(ref.GetReturnType(), entry->second);
+			}
+			return;
+		}
+		ExpressionIterator::EnumerateChildren(*child, rewrite);
+	};
+	ExpressionIterator::EnumerateChildren(*expr_copy, rewrite);
+	if (!usable || input_stats.empty()) {
+		return optional_idx();
+	}
+	auto derived = ExpressionFilter::TryGetExpressionStatistics(
+	    context, *expr_copy, array_ptr<const BaseStatistics>(input_stats.data(), input_stats.size()));
+	if (!derived) {
+		return optional_idx();
+	}
+	return RelationStatisticsHelper::NumericStatsDistinctCount(*derived);
+}
+
 optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(LogicalProjection &projection,
-                                                                         const RelationStats &child_stats) {
+                                                                         const RelationStats &child_stats,
+                                                                         ClientContext &context) {
 	RelationStats result;
 	result.cardinality = child_stats.cardinality;
 	result.row_retention = child_stats.row_retention;
@@ -208,10 +333,33 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 			current_domain = child_column->current_domain;
 			if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 				semi_anti_join_domain_evidence = child_column->semi_anti_join_domain_evidence;
+			} else {
+				// cap a derived key (cast or function) by the range of the expression
+				auto bound = DeriveExpressionDomain(expression, child_columns, context);
+				if (bound.IsValid()) {
+					if (bound.GetIndex() < distinct_count.distinct_count) {
+						// keep HLL/EXACT sources, SelectTotalDomain ranks them above MIN_MAX
+						auto source = distinct_count.source == DistinctCountSource::CARDINALITY
+						                  ? DistinctCountSource::MIN_MAX
+						                  : distinct_count.source;
+						distinct_count = DistinctCount(bound.GetIndex(), source);
+					}
+					current_domain.distinct_count = MinValue(current_domain.distinct_count, bound.GetIndex());
+				} else if (IsMultiColumnExpression(expression)) {
+					// no expression-derived bound and multiple input columns (e.g. COALESCE after
+					// a LEFT join drops base_stats): the single-column estimate is unreliable,
+					// fall back to the projection cardinality
+					distinct_count = DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY);
+					current_domain = distinct_count;
+				}
 			}
 		}
 		result.columns.emplace_back(bindings[expression_idx], distinct_count, current_domain,
 		                            Identifier(expression.GetName()), semi_anti_join_domain_evidence);
+		if (child_column && expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			// keep base stats for a projection on top of this one
+			result.columns.back().base_stats = child_column->base_stats;
+		}
 	}
 	result.Verify(bindings);
 	return result;

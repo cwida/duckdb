@@ -372,15 +372,35 @@ GetEqualityDomainBounds(const vector<JoinEqualityClass> &equality_classes,
 	return equality_bounds;
 }
 
+static bool IsLeftJoinNullableRelation(const vector<unique_ptr<JoinOrderOperator>> &join_operators,
+                                       RelationIndex relation) {
+	for (auto &join_operator : join_operators) {
+		if (join_operator->type != JoinOrderOperatorType::LEFT) {
+			continue;
+		}
+		auto &nullable = join_operator->right_relations.get();
+		for (idx_t i = 0; i < nullable.count; i++) {
+			if (nullable.relations[i] == relation) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 static RelationColumnStats CombineColumnStats(const ColumnBinding &binding, const ColumnBinding &normalized,
                                               const RelationColumnStats &source,
                                               const column_binding_map_t<idx_t> &equality_bounds,
-                                              bool preserve_semi_anti_evidence) {
+                                              bool preserve_semi_anti_evidence, bool may_become_null) {
 	SemiAntiJoinDomainEvidence semi_anti_evidence;
 	if (preserve_semi_anti_evidence) {
 		semi_anti_evidence = source.semi_anti_join_domain_evidence;
 	}
 	RelationColumnStats column(binding, source.total_domain, source.current_domain, source.name, semi_anti_evidence);
+	// base stats do not account for NULLs added by a LEFT join
+	if (!may_become_null) {
+		column.base_stats = source.base_stats;
+	}
 	auto equality_entry = equality_bounds.find(normalized);
 	if (equality_entry != equality_bounds.end()) {
 		column.current_domain = DistinctCount(MinValue(column.current_domain.distinct_count, equality_entry->second),
@@ -431,8 +451,9 @@ optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<Col
 		if (source_entry == source_columns.end()) {
 			return {};
 		}
-		result.columns.push_back(
-		    CombineColumnStats(binding, normalized, source_entry->second.get(), equality_bounds, inputs.size() == 1));
+		auto may_become_null = IsLeftJoinNullableRelation(join_operators, RelationIndex(normalized.table_index.index));
+		result.columns.push_back(CombineColumnStats(binding, normalized, source_entry->second.get(), equality_bounds,
+		                                            inputs.size() == 1, may_become_null));
 	}
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(bindings);

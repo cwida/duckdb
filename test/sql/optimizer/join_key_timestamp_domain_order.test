@@ -1,0 +1,161 @@
+# name: test/sql/optimizer/join_key_timestamp_domain_order.test
+# description: Join order caps a key derived from a timestamp (ts::DATE, year(ts)) by its value range
+# group: [optimizer]
+
+require parquet
+
+# a key derived from a Parquet timestamp should not look near-unique, so items is joined first
+
+statement ok
+COPY (SELECT 'A' || a AS attr, TIMESTAMP '2025-01-01' + INTERVAL (r) HOUR AS ts
+      FROM range(60) x(a), range(8760) y(r)) TO '{TEST_DIR}/jk_rates.parquet';
+
+statement ok
+COPY (SELECT i AS item, 'A' || (i % 60) AS attr FROM range(400) t(i)) TO '{TEST_DIR}/jk_items.parquet';
+
+statement ok
+COPY (SELECT last_day(DATE '2025-01-01' + INTERVAL (i % 12) MONTH)::DATE AS month_end, (i * 7) % 400 AS item
+      FROM range(300000) t(i)) TO '{TEST_DIR}/jk_facts.parquet';
+
+statement ok
+COPY (SELECT 'A' || a AS attr, TIMESTAMP '2000-01-01' + INTERVAL (r) DAY AS ts
+      FROM range(60) x(a), range(7300) y(r)) TO '{TEST_DIR}/jk_prices.parquet';
+
+statement ok
+COPY (SELECT 2000 + (i % 20) AS yr, (i * 7) % 400 AS item FROM range(300000) t(i)) TO '{TEST_DIR}/jk_sales.parquet';
+
+# ts::DATE key: month_end is only joined together with attr, after items
+query II
+EXPLAIN (FORMAT compact)
+WITH f AS (SELECT * FROM '{TEST_DIR}/jk_facts.parquet' WHERE month_end > DATE '2025-02-28' AND month_end <= DATE '2025-10-31'),
+     r AS (SELECT attr, ts::DATE AS month_end FROM '{TEST_DIR}/jk_rates.parquet'
+           WHERE ts = last_day(ts::DATE) + INTERVAL '23 hours')
+SELECT count(*)
+FROM f
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = f.item
+JOIN r ON r.attr = i.attr AND r.month_end = f.month_end;
+----
+physical_plan	<!REGEX>:(?s).*Conditions: month_end = month_end\n.*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH f AS (SELECT * FROM '{TEST_DIR}/jk_facts.parquet' WHERE month_end > DATE '2025-02-28' AND month_end <= DATE '2025-10-31'),
+     r AS (SELECT attr, ts::DATE AS month_end FROM '{TEST_DIR}/jk_rates.parquet'
+           WHERE ts = last_day(ts::DATE) + INTERVAL '23 hours')
+SELECT count(*)
+FROM f
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = f.item
+JOIN r ON r.attr = i.attr AND r.month_end = f.month_end;
+----
+physical_plan	<REGEX>:(?s).*Conditions: item = item\n.*
+
+# year(ts) key: yr is only joined together with attr, after items
+query II
+EXPLAIN (FORMAT compact)
+WITH s AS (SELECT * FROM '{TEST_DIR}/jk_sales.parquet' WHERE yr > 2002 AND yr <= 2017),
+     p AS (SELECT attr, year(ts) AS yr FROM '{TEST_DIR}/jk_prices.parquet' WHERE ts = date_trunc('year', ts))
+SELECT count(*)
+FROM s
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = s.item
+JOIN p ON p.attr = i.attr AND p.yr = s.yr;
+----
+physical_plan	<!REGEX>:(?s).*Conditions: yr = yr\n.*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH s AS (SELECT * FROM '{TEST_DIR}/jk_sales.parquet' WHERE yr > 2002 AND yr <= 2017),
+     p AS (SELECT attr, year(ts) AS yr FROM '{TEST_DIR}/jk_prices.parquet' WHERE ts = date_trunc('year', ts))
+SELECT count(*)
+FROM s
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = s.item
+JOIN p ON p.attr = i.attr AND p.yr = s.yr;
+----
+physical_plan	<REGEX>:(?s).*Conditions: attr = attr\n.*
+
+# the reordered plan still returns the right answer
+query I
+WITH f AS (SELECT * FROM '{TEST_DIR}/jk_facts.parquet' WHERE month_end > DATE '2025-02-28' AND month_end <= DATE '2025-10-31'),
+     r AS (SELECT attr, ts::DATE AS month_end FROM '{TEST_DIR}/jk_rates.parquet'
+           WHERE ts = last_day(ts::DATE) + INTERVAL '23 hours')
+SELECT count(*)
+FROM f
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = f.item
+JOIN r ON r.attr = i.attr AND r.month_end = f.month_end;
+----
+200000
+
+query I
+WITH s AS (SELECT * FROM '{TEST_DIR}/jk_sales.parquet' WHERE yr > 2002 AND yr <= 2017),
+     p AS (SELECT attr, year(ts) AS yr FROM '{TEST_DIR}/jk_prices.parquet' WHERE ts = date_trunc('year', ts))
+SELECT count(*)
+FROM s
+JOIN '{TEST_DIR}/jk_items.parquet' i ON i.item = s.item
+JOIN p ON p.attr = i.attr AND p.yr = s.yr;
+----
+225000
+
+# outer joins can add NULLs, so a key from the nullable side is not bounded by its scan range
+statement ok
+CREATE TABLE nl AS SELECT i AS id, DATE '2000-01-01' + i::INT AS d FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE nr AS SELECT i AS id, TIMESTAMP '2100-01-01' + INTERVAL (i) SECOND AS ts FROM range(5000) t(i);
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nl LEFT JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nr RIGHT JOIN nl ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT coalesce(nr.ts::DATE, nl.d) AS k FROM nl FULL OUTER JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query I
+SELECT count(DISTINCT coalesce(nr.ts::DATE, nl.d)) FROM nl LEFT JOIN nr ON nl.id = nr.id;
+----
+5001
+
+# when the date key is computed before the LEFT join (materialized CTE), the multi-column
+# coalesce must not inherit the capped single-column estimate
+query II
+EXPLAIN (FORMAT compact)
+WITH r AS MATERIALIZED (
+    SELECT id, ts::DATE AS d FROM nr
+), q AS (
+    SELECT coalesce(r.d, nl.d) AS k
+    FROM nl LEFT JOIN r ON nl.id = r.id
+)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY \(est=\d{4,}\).*
+
+query I
+WITH r AS MATERIALIZED (
+    SELECT id, ts::DATE AS d FROM nr
+), q AS (
+    SELECT coalesce(r.d, nl.d) AS k
+    FROM nl LEFT JOIN r ON nl.id = r.id
+)
+SELECT count(DISTINCT k) FROM q;
+----
+5001
+
+# an inner join keeps the scan range, all nr.ts values fall on one day
+query II
+EXPLAIN (FORMAT compact)
+WITH q AS (SELECT nr.ts::DATE AS k FROM nl JOIN nr ON nl.id = nr.id)
+SELECT k, count(*) FROM q GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=1\).*
