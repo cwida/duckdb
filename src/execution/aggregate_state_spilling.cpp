@@ -1,6 +1,7 @@
 #include "duckdb/execution/aggregate_state_spilling.hpp"
 
 #include "duckdb/function/aggregate_state_serialization.hpp"
+#include "duckdb/function/scalar/generic_common.hpp"
 
 #include "duckdb/storage/arena_allocator.hpp"
 #include "duckdb/common/radix_partitioning.hpp"
@@ -42,20 +43,23 @@ unique_ptr<AggregateStateSpillPlan> AggregateStateSpilling::TryCreateSpillPlan(c
 	if (aggregates.empty()) {
 		return nullptr;
 	}
+	auto plan = make_uniq<AggregateStateSpillPlan>();
+	plan->state_layouts.reserve(aggregates.size());
 	for (auto &aggr : aggregates) {
-		if (!aggr.function.HasGetStateTypeCallback()) {
-			// the aggregate cannot describe its state
-			return nullptr;
-		}
 		if (aggr.function.HasStateDestructorCallback()) {
 			// the state owns resources beyond the arena
 			return nullptr;
 		}
-	}
-	auto plan = make_uniq<AggregateStateSpillPlan>();
-	plan->state_layouts.reserve(aggregates.size());
-	for (auto &aggr : aggregates) {
-		plan->state_layouts.push_back(aggr.function.GetStateType(aggr.GetFunctionData()));
+		AggregateStateLayout state_layout;
+		if (aggr.function.HasGetStateTypeCallback()) {
+			state_layout = aggr.function.GetStateType(aggr.GetFunctionData());
+		} else if (!ExportAggregateFunction::TryGetCombinedStateLayout(aggr.function, aggr.GetFunctionData(),
+		                                                               state_layout)) {
+			// the aggregate cannot describe its state, and it is not a combine_aggr over states that can: the
+			// states combine_aggr accumulates have the layout of the aggregate that exported them
+			return nullptr;
+		}
+		plan->state_layouts.push_back(std::move(state_layout));
 	}
 	// only layouts whose states can reference the arena benefit from spilling
 	bool arena_backed = false;

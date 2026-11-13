@@ -1,0 +1,55 @@
+# name: test/optimizer/partial_aggregate_pushdown_exported_state_star_join.test
+# description: ROLLUP over a fact table joined to a filtered dimension and to the dimension that provides the groups: the exported finest level is pre-aggregated by the fact's join key between the two joins
+# group: [optimizer]
+
+require tpcds
+
+statement ok
+CALL dsdgen(sf=0.01)
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# In the JSON plan an operator's children are printed before its own details: the join with the filtered dimension,
+# then the pre-aggregate that exports its states, then the join with the dimension that provides the groups.
+query II
+EXPLAIN (FORMAT JSON) SELECT i_product_name, i_brand, i_class, i_category, avg(inv_quantity_on_hand) FROM inventory JOIN date_dim ON inv_date_sk = d_date_sk JOIN item ON inv_item_sk = i_item_sk WHERE d_month_seq BETWEEN 1200 AND 1211 GROUP BY ROLLUP (i_product_name, i_brand, i_class, i_category)
+----
+logical_opt	<REGEX>:.*Join Type.*EXPORT_STATE.*Join Type.*
+
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT i_product_name, i_brand, i_class, i_category, avg(inv_quantity_on_hand) FROM inventory JOIN date_dim ON inv_date_sk = d_date_sk JOIN item ON inv_item_sk = i_item_sk WHERE d_month_seq BETWEEN 1200 AND 1211 GROUP BY ROLLUP (i_product_name, i_brand, i_class, i_category)
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*Join Type.*
+
+# the rows without the pushdown
+statement ok
+CREATE TABLE expected AS SELECT i_product_name, i_brand, i_class, i_category, avg(inv_quantity_on_hand) AS qoh, count(*) AS c FROM inventory JOIN date_dim ON inv_date_sk = d_date_sk JOIN item ON inv_item_sk = i_item_sk WHERE d_month_seq BETWEEN 1200 AND 1211 GROUP BY ROLLUP (i_product_name, i_brand, i_class, i_category)
+
+statement ok
+SET disabled_optimizers = '';
+
+query IIIIII
+SELECT count(*), count(i_product_name), count(i_brand), count(i_class), count(i_category), sum(c) FROM expected
+----
+361	360	270	180	90	23400
+
+foreach threads 1 8
+
+statement ok
+SET threads = {threads};
+
+query I
+SELECT count(*) FROM ((SELECT i_product_name, i_brand, i_class, i_category, avg(inv_quantity_on_hand) AS qoh, count(*) AS c FROM inventory JOIN date_dim ON inv_date_sk = d_date_sk JOIN item ON inv_item_sk = i_item_sk WHERE d_month_seq BETWEEN 1200 AND 1211 GROUP BY ROLLUP (i_product_name, i_brand, i_class, i_category)) EXCEPT ALL SELECT * FROM expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM expected EXCEPT ALL (SELECT i_product_name, i_brand, i_class, i_category, avg(inv_quantity_on_hand) AS qoh, count(*) AS c FROM inventory JOIN date_dim ON inv_date_sk = d_date_sk JOIN item ON inv_item_sk = i_item_sk WHERE d_month_seq BETWEEN 1200 AND 1211 GROUP BY ROLLUP (i_product_name, i_brand, i_class, i_category)))
+----
+0
+
+endloop
