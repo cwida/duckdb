@@ -335,7 +335,7 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 		break;
 	case LogicalTypeId::BIGINT:
 		success = TrySimpleIntegerCast(value_ptr, size,
-		                               static_cast<int64_t *>(vector_ptr[chunk_col_id])[number_of_rows], false);
+		                               static_cast<int64_t *>(vector_ptr[chunk_col_id])[number_of_rows], true);
 		break;
 	case LogicalTypeId::HUGEINT: {
 		auto &result_value = static_cast<hugeint_t *>(vector_ptr[chunk_col_id])[number_of_rows];
