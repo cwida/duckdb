@@ -5,6 +5,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/main/user_settings.hpp"
 #include "duckdb/parallel/task_scheduler_pool.hpp"
 #include "duckdb/parallel/task_scheduler_queue.hpp"
 #include "duckdb/storage/block_allocator.hpp"
@@ -207,11 +208,15 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	const auto &block_allocator = BlockAllocator::Get(db);
 	const auto &config = DBConfig::GetConfig(db);
 	auto &pool = GetPool(pool_type);
+	// this thread allocates blocks and reads settings while the heap may be exhausted: its block cache and its
+	// settings cache live here, so neither creates a thread_local whose destructor registration glibc cannot fail to
+	// allocate without ending the process. Creating them allocates, so that happens in the retry loop below
+	BlockAllocatorWorkerState block_state;
+	WorkerSettingsCache settings_cache;
 
 	// Only a thread that ran a task since its last flush has allocations to flush, both blocks and the jemalloc cache
 	// of the allocator, so other threads skip the flush and leave the trim of the system heap to the threads that ran
-	// tasks. Reading the settings would be the first use of their thread_local cache in a thread that never ran one,
-	// and glibc ends the process when it cannot allocate the registration of a thread_local destructor
+	// tasks
 	bool flush_pending = false;
 	bool ran_task = false;
 
@@ -223,6 +228,12 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	// MAX_TASK_RETRIES times
 	while (true) {
 		try {
+			if (!block_state.IsInitialized()) {
+				block_state.Initialize(block_allocator);
+			}
+			if (!settings_cache.IsInitialized()) {
+				settings_cache.Initialize();
+			}
 			if (!consumer) {
 				consumer = make_uniq<ConsumerToken>(queues);
 			}
