@@ -31,7 +31,9 @@ struct RegrBaseOperation {
 			finalize_data.ReturnNull();
 			return;
 		}
-		auto var_pop = state.var_pop.count > 1 ? (state.var_pop.dsquared / state.var_pop.count) : 0;
+		// REGR_SXX = count * VAR_POP(x). A lone non-finite x must propagate NaN, so do not
+		// special-case count == 1 to 0 (single-value Welford dsquared is already NaN).
+		auto var_pop = state.var_pop.dsquared / state.var_pop.count;
 		RegrCountFunction::Finalize<T, uint64_t>(state.count, target, finalize_data);
 		target *= var_pop;
 	}

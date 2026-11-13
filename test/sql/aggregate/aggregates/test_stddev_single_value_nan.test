@@ -1,0 +1,120 @@
+# name: test/sql/aggregate/aggregates/test_stddev_single_value_nan.test
+# description: population variance/stddev of a single NaN or inf value is NaN
+# group: [aggregates]
+
+# Single-value (count == 1) population variance / standard deviation must
+# propagate NaN for a lone NaN or inf input instead of reporting 0.0.
+# Regression test for https://github.com/duckdb/duckdb/issues/28329
+#
+# With a single value Welford's running dsquared is (x - x) * x, which is 0 for
+# a finite x and NaN for a NaN/inf input. The finalizers used to special-case
+# count == 1 to a literal 0, hiding that NaN for the one-row case while the
+# two-or-more-row case (and covar_pop(x, x), sem(x)) already returned NaN.
+
+require core_functions
+
+# --- single NaN ---
+query R
+select isnan(var_pop(x)) from (values ('nan'::double)) t(x)
+----
+true
+
+query R
+select isnan(stddev_pop(x)) from (values ('nan'::double)) t(x)
+----
+true
+
+query R
+select isnan(regr_sxx(x, x)) from (values ('nan'::double)) t(x)
+----
+true
+
+# --- single +inf / -inf ---
+query R
+select isnan(var_pop(x)) from (values ('inf'::double)) t(x)
+----
+true
+
+query R
+select isnan(var_pop(x)) from (values ('-inf'::double)) t(x)
+----
+true
+
+query R
+select isnan(stddev_pop(x)) from (values ('inf'::double)) t(x)
+----
+true
+
+# --- consistency: one NaN alone vs one NaN plus a second value, both NaN ---
+query T
+select isnan(v1) and isnan(v2)
+from (
+  select
+    (select var_pop(x) from (values ('nan'::double)) t(x)) as v1,
+    (select var_pop(x) from (values ('nan'::double), (1.0)) t(x)) as v2
+)
+----
+true
+
+# --- a finite single value still has population variance exactly 0 ---
+query R
+select var_pop(x) from (values (1.0)) t(x)
+----
+0
+
+query R
+select var_pop(x) from (values (3.5)) t(x)
+----
+0
+
+query R
+select regr_sxx(x, x) from (values (1.0)) t(x)
+----
+0
+
+# --- var_samp / stddev_samp stay NULL for a single value (unchanged) ---
+query T
+select var_samp(x) is null from (values ('nan'::double)) t(x)
+----
+true
+
+query T
+select stddev_samp(x) is null from (values ('inf'::double)) t(x)
+----
+true
+
+# --- sem(x) of a single NaN is already NaN; var_pop(x) now agrees with it ---
+query T
+select isnan(sem(x)) and isnan(var_pop(x))
+from (values ('nan'::double)) t(x)
+----
+true
+
+# --- covar_pop(x, x) of a single NaN is already NaN; var_pop(x) now agrees ---
+query T
+select isnan(covar_pop(x, x)) and isnan(var_pop(x))
+from (values ('nan'::double)) t(x)
+----
+true
+
+# --- a non-finite value grouped by itself (per-group single row); finite group stays 0 ---
+query II
+select grp, isnan(var_pop(x))
+from (
+  select 1::int as grp, 'nan'::double as x
+  union all select 2, 'nan'::double
+  union all select 3, 1.0
+) t group by grp order by grp
+----
+1	true
+2	true
+3	false
+
+# --- multi-threaded combine path: a lone non-finite value among others ---
+statement ok
+set threads = 4;
+
+query R
+select isnan(var_pop(x)) from (values ('nan'::double), (1.0), (2.0)) t(x)
+----
+true
