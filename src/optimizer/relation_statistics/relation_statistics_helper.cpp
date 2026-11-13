@@ -339,6 +339,9 @@ static bool TryMapProjectionGroups(LogicalOperator &op, vector<idx_t> &groups) {
 	auto child_bindings = op.children[0]->GetColumnBindings();
 	vector<idx_t> mapped;
 	for (auto index : groups) {
+		if (index >= op.expressions.size()) {
+			return false;
+		}
 		auto &expr = *op.expressions[index];
 		if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 			return false;
@@ -370,27 +373,22 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 		auto entry = std::move(pending.back());
 		pending.pop_back();
 		auto &op = entry.first.get();
-		auto bindings = op.GetColumnBindings();
-		for (auto index : entry.second) {
-			if (index >= bindings.size()) {
-				return {};
-			}
-		}
 		if (op.type == LogicalOperatorType::LOGICAL_PROJECTION && op.children.size() == 1 &&
 		    TryMapProjectionGroups(op, entry.second)) {
 			pending.emplace_back(*op.children[0], std::move(entry.second));
 			continue;
 		}
 		if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-			auto definition = extractor.GetCTEDefinition(op.Cast<LogicalCTERef>());
-			if (!definition || definition->GetColumnBindings().size() != bindings.size()) {
+			auto &ref = op.Cast<LogicalCTERef>();
+			auto definition = extractor.GetCTEDefinition(ref);
+			if (!definition || definition->GetColumnBindings().size() != ref.chunk_types.size()) {
 				return {};
 			}
 			pending.emplace_back(*definition, std::move(entry.second));
 			continue;
 		}
 		if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
-			if (op.children.size() != 2 || op.children[1]->GetColumnBindings() != bindings) {
+			if (op.children.size() != 2) {
 				return {};
 			}
 			pending.emplace_back(*op.children[1], std::move(entry.second));
@@ -399,7 +397,7 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 		if (op.type == LogicalOperatorType::LOGICAL_UNION) {
 			found_union = true;
 			for (auto &child : op.children) {
-				if (child->GetColumnBindings().size() != bindings.size()) {
+				if (child->GetColumnBindings().size() != op.Cast<LogicalSetOperation>().column_count) {
 					return {};
 				}
 				pending.emplace_back(*child, entry.second);
@@ -417,6 +415,9 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 		    use_operator_cardinality && op.has_estimated_cardinality ? op.estimated_cardinality : stats->cardinality;
 		auto estimate = MinValue<idx_t>(cardinality, 1);
 		for (auto index : entry.second) {
+			if (index >= stats->columns.size()) {
+				return {};
+			}
 			auto domain = MaxValue<idx_t>(stats->columns[index].current_domain.distinct_count, 1);
 			if (estimate > cardinality / domain) {
 				estimate = cardinality;
