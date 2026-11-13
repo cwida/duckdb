@@ -65,7 +65,7 @@ BoundStatement Binder::BindNode(DeleteQueryNode &node) {
 		WhereBinder binder(*this, context);
 		condition = binder.Bind(node.condition);
 
-		PlanSubqueries(condition, root);
+		DeferSubqueries(condition);
 		auto filter = make_uniq<LogicalFilter>(std::move(condition));
 		filter->AddChild(std::move(root));
 		root = std::move(filter);

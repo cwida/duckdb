@@ -477,7 +477,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 		auto filter = make_uniq<LogicalFilter>(std::move(ref.condition));
 		// visit the expressions in the filter
 		for (auto &expression : filter->expressions) {
-			PlanSubqueries(expression, root);
+			DeferSubqueries(expression);
 		}
 		filter->AddChild(std::move(root));
 		return std::move(filter);

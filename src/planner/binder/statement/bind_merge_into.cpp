@@ -368,7 +368,7 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 
 	// plan merge action subqueries
 	for (auto &expr : projection_expressions) {
-		PlanSubqueries(expr, root);
+		DeferSubqueries(expr);
 	}
 
 	if (has_not_matched_by_source) {

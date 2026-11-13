@@ -1,0 +1,257 @@
+# name: test/sql/extensions/pre_subquery_planning.test
+# description: A planner extension's pre_subquery_planning_function sees subqueries unplanned
+# group: [extensions]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+require notmingw
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+CREATE TABLE integers AS SELECT * FROM (VALUES (1), (2), (3)) t(i);
+
+statement ok
+SET count_unplanned_subqueries = true;
+
+# The counts are per statement: statement verification binds each statement again, and
+# EXPLAIN plans the subqueries of the statement it explains before the hook runs.
+statement ok
+SET debug_verify_statement = 'none';
+
+# A statement with no subquery has none to see.
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+SELECT i FROM integers;
+
+query I
+SELECT test_unplanned_subqueries();
+----
+0
+
+# An uncorrelated scalar subquery is still a BoundSubqueryExpression at this point; after
+# planning there is none left anywhere in the plan.
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+SELECT (SELECT max(i) FROM integers);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# So is a correlated one, in a WHERE clause.
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+SELECT i FROM integers i1 WHERE EXISTS (SELECT 1 FROM integers i2 WHERE i2.i = i1.i);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# A subquery nested in another is held by that subquery's own bound plan rather than by the
+# enclosing operator tree, so the outer one is what this walk of the tree finds.
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+SELECT (SELECT (SELECT max(i) FROM integers));
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# Each place the binder defers a subquery from is seen the same way. A HAVING clause:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT i FROM integers GROUP BY i HAVING max(i) > (SELECT min(i) FROM integers) ORDER BY i;
+----
+2
+3
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# A join condition:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query II
+SELECT i1.i, i2.i FROM integers i1 JOIN integers i2 ON i1.i = (SELECT max(i) FROM integers) ORDER BY 2;
+----
+3	1
+3	2
+3	3
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# A VALUES list:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT * FROM (VALUES ((SELECT max(i) FROM integers)));
+----
+3
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# An aggregate's projection:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT sum(i) + (SELECT max(i) FROM integers) FROM integers;
+----
+9
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# A window's projection:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT sum(i) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) + (SELECT 1) AS s FROM integers ORDER BY s;
+----
+2
+4
+7
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# A QUALIFY clause:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT i FROM integers QUALIFY row_number() OVER (ORDER BY i) <= (SELECT 2) ORDER BY i;
+----
+1
+2
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# An UNNEST:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT unnest([(SELECT max(i) FROM integers)]);
+----
+3
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# Two subqueries in one WHERE clause are two:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+query I
+SELECT i FROM integers WHERE i IN (SELECT i FROM integers) AND EXISTS (SELECT 1) ORDER BY i;
+----
+1
+2
+3
+
+query I
+SELECT test_unplanned_subqueries();
+----
+2
+
+# An UPDATE's SET and WHERE, and a DELETE's WHERE, are planned the same way:
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+UPDATE integers SET i = (SELECT max(i) FROM integers) WHERE i = (SELECT min(i) FROM integers);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+2
+
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+DELETE FROM integers WHERE i > (SELECT max(i) FROM integers);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+1
+
+# EXPLAIN shows the statement with its subqueries planned, so the hook sees none
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+EXPLAIN SELECT (SELECT max(i) FROM integers);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+0
+
+# and its unoptimized logical plan shows them planned, as before binding deferred them
+statement ok
+PRAGMA explain_output='all';
+
+query II
+EXPLAIN SELECT i FROM integers WHERE i IN (SELECT i FROM integers);
+----
+logical_plan	<REGEX>:.*MARK.*
+logical_opt	<REGEX>:.*SEMI.*
+physical_plan	<REGEX>:.*
+
+statement ok
+PRAGMA explain_output='physical_only';
+
+# Off by default: the hook runs, but this extension's setting leaves it counting nothing.
+statement ok
+SELECT test_reset_unplanned_subqueries();
+
+statement ok
+SET count_unplanned_subqueries = false;
+
+statement ok
+SELECT (SELECT max(i) FROM integers);
+
+query I
+SELECT test_unplanned_subqueries();
+----
+0

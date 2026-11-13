@@ -32,8 +32,11 @@ BoundStatement Binder::Bind(ExplainStatement &stmt) {
 		}
 	}
 
-	// bind the underlying statement
+	// bind the underlying statement, and plan its subqueries: EXPLAIN shows the logical plan they are planned in
 	auto plan = Bind(*stmt.stmt);
+	if (plan.plan) {
+		PlanDeferredSubqueries(*plan.plan);
+	}
 	// render the unoptimized logical plan, but only when it will be shown: a plain EXPLAIN in a multi-plan format.
 	// (it is unused for EXPLAIN ANALYZE, and single-plan formats like FORMAT WEB render only the final plan)
 	string logical_plan_unopt;

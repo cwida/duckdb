@@ -20,6 +20,9 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/planner_extension.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -480,6 +483,51 @@ public:
 		statement.types.push_back(LogicalType::VARCHAR);
 	}
 };
+
+//===--------------------------------------------------------------------===//
+// Planner extension - counts the subqueries a bound plan still holds
+//===--------------------------------------------------------------------===//
+static atomic<idx_t> unplanned_subqueries {0};
+
+//! The subqueries in op that are still BoundSubqueryExpressions.
+static idx_t CountUnplannedSubqueries(LogicalOperator &op) {
+	idx_t count = 0;
+	for (auto &child : op.children) {
+		count += CountUnplannedSubqueries(*child);
+	}
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
+		ExpressionIterator::VisitExpression<BoundSubqueryExpression>(**expr,
+		                                                             [&](const BoundSubqueryExpression &) { count++; });
+	});
+	return count;
+}
+
+class CountSubqueriesExtension : public PlannerExtension {
+public:
+	CountSubqueriesExtension() {
+		pre_subquery_planning_function = CountSubqueries;
+	}
+
+	static void CountSubqueries(PlannerExtensionInput &input, BoundStatement &statement) {
+		Value enabled;
+		if (!input.context.TryGetCurrentSetting("count_unplanned_subqueries", enabled) || !enabled.GetValue<bool>()) {
+			return;
+		}
+		if (!statement.plan) {
+			return;
+		}
+		unplanned_subqueries += CountUnplannedSubqueries(*statement.plan);
+	}
+};
+
+static void ResetUnplannedSubqueries(DataChunk &args, ExpressionState &, Vector &result) {
+	unplanned_subqueries.store(0);
+	result.Reference(Value::BIGINT(0), count_t(args.size()));
+}
+
+static void GetUnplannedSubqueries(DataChunk &args, ExpressionState &, Vector &result) {
+	result.Reference(Value::BIGINT(NumericCast<int64_t>(unplanned_subqueries.load())), count_t(args.size()));
+}
 
 static set<string> test_loaded_extension_list; // NOLINT
 
@@ -1381,6 +1429,14 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	    ScalarFunction("test_volatile_aggregate_calls", {}, LogicalType::BIGINT, GetVolatileAggregateCalls);
 	get_volatile_aggregate_calls.SetVolatile();
 	loader.RegisterFunction(std::move(get_volatile_aggregate_calls));
+	auto reset_unplanned_subqueries =
+	    ScalarFunction("test_reset_unplanned_subqueries", {}, LogicalType::BIGINT, ResetUnplannedSubqueries);
+	reset_unplanned_subqueries.SetVolatile();
+	loader.RegisterFunction(std::move(reset_unplanned_subqueries));
+	auto get_unplanned_subqueries =
+	    ScalarFunction("test_unplanned_subqueries", {}, LogicalType::BIGINT, GetUnplannedSubqueries);
+	get_unplanned_subqueries.SetVolatile();
+	loader.RegisterFunction(std::move(get_unplanned_subqueries));
 
 	auto &db = loader.GetDatabaseInstance();
 	// create a scalar function
@@ -1471,6 +1527,12 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	PlannerExtension::Register(config, AddColumnExtension());
 	config.AddExtensionOption("add_column_enabled", "enable adding extra column to queries", LogicalType::BOOLEAN,
 	                          Value::BOOLEAN(false));
+
+	// add a planner extension that counts the subqueries a bound plan still holds, before they
+	// are planned
+	PlannerExtension::Register(config, CountSubqueriesExtension());
+	config.AddExtensionOption("count_unplanned_subqueries", "enable counting unplanned subqueries",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	// Global-default extension option used to exercise RESET on GLOBAL-scoped
 	// extension options across multiple connections.

@@ -232,6 +232,9 @@ struct GlobalBinderState {
 	//! table order, under which the captured OLD image is exposed via SQL aliases. Only populated for capture
 	//! requests presented through a CTE; a consumer that reads the OLD image directly leaves it absent.
 	reference_map_t<QueryNode, vector<Identifier>> trigger_old_capture_cte_names;
+	//! Subqueries whose planning the binder deferred (see Binder::DeferSubqueries), each with the binder that
+	//! deferred it, which is the binder that plans it
+	reference_map_t<const BoundSubqueryExpression, reference<Binder>> deferred_subqueries;
 	//! Set during CREATE TRIGGER body validation to detect self-recursive writes
 	optional_ptr<TableCatalogEntry> trigger_creation_table;
 	//! Name of the trigger being created (for error messages)
@@ -462,6 +465,10 @@ public:
 	                      const string &catalog = "", const vector<Identifier> &schema_path = {});
 	unique_ptr<ParsedExpression> GetSQLValueFunction(const Identifier &column_name);
 	Identifier GetExpressionName(const ParsedExpression &expr);
+	//! Plans the subqueries the binder deferred in a bound plan. Binding leaves every subquery as a
+	//! BoundSubqueryExpression in the operator that holds it; this plans each one as the binder used to while
+	//! building that operator: by the same binder, against the operator's input, inputs first.
+	void PlanDeferredSubqueries(LogicalOperator &op);
 
 private:
 	//! The parent binder (if any)
@@ -681,6 +688,9 @@ private:
 
 	unique_ptr<LogicalOperator> PlanFilter(unique_ptr<Expression> condition, unique_ptr<LogicalOperator> root);
 
+	//! Records the subqueries in expr for PlanDeferredSubqueries, instead of planning them against the root the
+	//! operator that will hold expr is built on
+	void DeferSubqueries(unique_ptr<Expression> &expr);
 	void PlanSubqueries(unique_ptr<Expression> &expr, unique_ptr<LogicalOperator> &root);
 	unique_ptr<Expression> PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root);
 	unique_ptr<LogicalOperator> PlanLateralJoin(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right,

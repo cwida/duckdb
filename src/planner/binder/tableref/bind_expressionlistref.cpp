@@ -156,7 +156,7 @@ BoundStatement Binder::Bind(ExpressionListRef &expr) {
 	auto root = make_uniq_base<LogicalOperator, LogicalDummyScan>(GenerateTableIndex());
 	for (auto &expr_list : values) {
 		for (auto &expr : expr_list) {
-			PlanSubqueries(expr, root);
+			DeferSubqueries(expr);
 		}
 	}
 

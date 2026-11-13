@@ -16,7 +16,7 @@
 namespace duckdb {
 
 unique_ptr<LogicalOperator> Binder::PlanFilter(unique_ptr<Expression> condition, unique_ptr<LogicalOperator> root) {
-	PlanSubqueries(condition, root);
+	DeferSubqueries(condition);
 	auto filter = make_uniq<LogicalFilter>(std::move(condition));
 	filter->AddChild(std::move(root));
 	return std::move(filter);
@@ -168,7 +168,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 			unnest->expressions = std::move(unnest_node.expressions);
 			// visit the unnest expressions
 			for (auto &expr : unnest->expressions) {
-				PlanSubqueries(expr, root);
+				DeferSubqueries(expr);
 			}
 			D_ASSERT(!unnest->expressions.empty());
 			unnest->AddChild(std::move(root));
@@ -183,12 +183,12 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		if (!statement.groups.group_expressions.empty()) {
 			// visit the groups
 			for (auto &group : statement.groups.group_expressions) {
-				PlanSubqueries(group, root);
+				DeferSubqueries(group);
 			}
 		}
 		// now visit all aggregate expressions
 		for (auto &expr : statement.aggregates) {
-			PlanSubqueries(expr, root);
+			DeferSubqueries(expr);
 		}
 
 		if (!DebugAggregateStateExportVerify(statement, root)) {
@@ -210,7 +210,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	}
 
 	if (statement.having) {
-		PlanSubqueries(statement.having, root);
+		DeferSubqueries(statement.having);
 		auto having = make_uniq<LogicalFilter>(std::move(statement.having));
 
 		having->AddChild(std::move(root));
@@ -222,7 +222,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		win->expressions = std::move(statement.windows);
 		// visit the window expressions
 		for (auto &expr : win->expressions) {
-			PlanSubqueries(expr, root);
+			DeferSubqueries(expr);
 		}
 		D_ASSERT(!win->expressions.empty());
 		win->AddChild(std::move(root));
@@ -230,7 +230,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	}
 
 	if (statement.qualify) {
-		PlanSubqueries(statement.qualify, root);
+		DeferSubqueries(statement.qualify);
 		auto qualify = make_uniq<LogicalFilter>(std::move(statement.qualify));
 
 		qualify->AddChild(std::move(root));
@@ -240,7 +240,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	plan_unnests(statement.unnests.SelectList());
 
 	for (auto &expr : statement.select_list) {
-		PlanSubqueries(expr, root);
+		DeferSubqueries(expr);
 	}
 
 	auto proj = make_uniq<LogicalProjection>(statement.projection_index, std::move(statement.select_list));

@@ -995,9 +995,47 @@ void Binder::PlanSubqueries(unique_ptr<Expression> &expr_ptr, unique_ptr<Logical
 	// check if this is a subquery node
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
 		auto &subquery = expr.Cast<BoundSubqueryExpression>();
+		// its own deferred subqueries first, as they were planned when its plan was built: planning it copies its plan
+		PlanDeferredSubqueries(*subquery.SubqueryMutable().plan);
+		global_binder_state->deferred_subqueries.erase(subquery);
 		// subquery node! plan it
 		expr_ptr = PlanSubquery(subquery, root);
 	}
+}
+
+void Binder::DeferSubqueries(unique_ptr<Expression> &expr) {
+	if (!expr) {
+		return;
+	}
+	ExpressionIterator::VisitExpression<BoundSubqueryExpression>(*expr, [&](const BoundSubqueryExpression &subquery) {
+		global_binder_state->deferred_subqueries.emplace(subquery, *this);
+	});
+}
+
+void Binder::PlanDeferredSubqueries(LogicalOperator &op) {
+	// inputs first, in the order the binder built the plan
+	for (auto &child : op.children) {
+		PlanDeferredSubqueries(*child);
+	}
+	// each expression holding a deferred subquery is planned by the binder that deferred it, against this operator's
+	// input: the root that binder passed when it built the operator
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *expr) {
+		optional_ptr<Binder> binder;
+		ExpressionIterator::VisitExpression<BoundSubqueryExpression>(
+		    **expr, [&](const BoundSubqueryExpression &subquery) {
+			    auto entry = global_binder_state->deferred_subqueries.find(subquery);
+			    if (entry != global_binder_state->deferred_subqueries.end()) {
+				    binder = &entry->second.get();
+			    }
+		    });
+		if (!binder) {
+			return;
+		}
+		// every operator the binder defers subqueries for (filters, projections, aggregates, windows, unnests) is
+		// built on a single input, which is the root it would have planned them against
+		D_ASSERT(op.children.size() == 1);
+		binder->PlanSubqueries(*expr, op.children[0]);
+	});
 }
 
 unique_ptr<LogicalOperator> Binder::PlanLateralJoin(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right,
