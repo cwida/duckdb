@@ -318,7 +318,7 @@ public:
 			return;
 		}
 		auto previous = ref_count.fetch_add(1, std::memory_order_relaxed);
-		D_ASSERT(previous < std::numeric_limits<uint32_t>::max());
+		D_ASSERT(previous < (std::numeric_limits<uint32_t>::max())());
 		(void)previous;
 	}
 	inline void Release() const {
