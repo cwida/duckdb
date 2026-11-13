@@ -1,0 +1,117 @@
+# name: test/sql/aggregate/aggregates/bitstring_agg_table_in_out_input.test
+# description: Statistics are propagated through the input of a table in-out function
+# group: [aggregates]
+
+statement ok
+CREATE TABLE bt(id INTEGER);
+
+statement ok
+INSERT INTO bt VALUES (1), (2), (3);
+
+# bitstring_agg without explicit bounds takes its range from the column statistics
+query I
+SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt);
+----
+3
+
+# the same subquery as the argument of a table function is the input of a table in-out function
+query I
+SELECT * FROM range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt)));
+----
+0
+1
+2
+
+query I
+SELECT * FROM generate_series(1, (SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt)));
+----
+1
+2
+3
+
+query I
+SELECT * FROM range((SELECT bit_count(w) FROM (SELECT bitstring_agg(id) AS w FROM bt)));
+----
+0
+1
+2
+
+query I
+SELECT * FROM range((SELECT count(*) FROM range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt)))));
+----
+0
+1
+2
+
+# an input that the statistics prune to an empty result
+query I
+SELECT * FROM range((SELECT count(*) FROM (SELECT id, bitstring_agg(id) AS w FROM bt WHERE id > 10 GROUP BY id)));
+----
+
+# the same input through a table macro
+statement ok
+CREATE MACRO in_out_input() AS TABLE SELECT * FROM range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt)));
+
+query I
+SELECT * FROM in_out_input();
+----
+0
+1
+2
+
+# a correlated input: the function passes the correlated columns through
+query II
+SELECT b.id, r.range FROM bt b, range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt WHERE id <= b.id))) r ORDER BY ALL;
+----
+1	0
+2	0
+2	1
+3	0
+3	1
+3	2
+
+query II
+SELECT * FROM range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt))) WITH ORDINALITY;
+----
+0	1
+1	2
+2	3
+
+query I
+SELECT * FROM unnest((SELECT list(id ORDER BY id) FROM (SELECT DISTINCT id, bitstring_agg(id) OVER () AS w FROM bt)));
+----
+1
+2
+3
+
+# other inputs that the statistics now see: a folded aggregate, a pruned projection chain, pass-through columns
+query I
+SELECT * FROM range((SELECT count(*) FROM bt));
+----
+0
+1
+2
+
+query I
+SELECT * FROM range((SELECT id FROM bt WHERE id > 10));
+----
+
+query II
+SELECT * FROM (VALUES (1), (3)) t(n), range(t.n) r WHERE t.n > 10 ORDER BY ALL;
+----
+
+query II
+SELECT * FROM (VALUES (1), (3)) t(n), range(t.n) r WHERE t.n < 10 ORDER BY ALL;
+----
+1	0
+3	0
+3	1
+3	2
+
+# explicit bounds keep working
+query I
+SELECT * FROM range((SELECT count(*) FROM (SELECT DISTINCT id, bitstring_agg(id, 1, 3) OVER () AS w FROM bt)));
+----
+0
+1
+2

@@ -126,6 +126,7 @@
         "test/fuzzer/sqlsmith/bitstring_agg_overflow.test",
         "test/issues/rigger/overflow_filter_pushdown.test",
         "test/sql/aggregate/aggregates/test_bitstring_agg.test",
+        "test/sql/aggregate/aggregates/bitstring_agg_table_in_out_input.test",
         "test/sql/catalog/function/test_table_macro_complex.test",
         "test/sql/copy/parquet/parquet_filename_filter.test",
         "test/sql/copy/parquet/parquet_hive.test",

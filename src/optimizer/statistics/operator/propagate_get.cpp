@@ -166,6 +166,15 @@ static bool IsNullOnlyForNullColumn(Expression &expr) {
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet &get,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
+	if (!get.children.empty()) {
+		// the input of a table in-out function is a plan of its own
+		PropagateChildren(get, node_ptr);
+		node_stats.reset();
+		if (!get.projected_input.empty()) {
+			// the function can emit an input row any number of times
+			ResetAdditiveStatistics(get.children[0]->GetColumnBindings());
+		}
+	}
 	if (get.function.cardinality) {
 		node_stats = get.function.cardinality(context, get.bind_data.get());
 	} else {
