@@ -215,7 +215,14 @@ bool PipelineExecutor::TryFlushCachingOperators(ExecutionBudget &chunk_budget) {
 			return false;
 		}
 		case OperatorResultType::NEED_MORE_INPUT:
+			break;
 		case OperatorResultType::FINISHED:
+			// operators before the finished operator no longer need to be flushed
+			D_ASSERT(IsFinished());
+			if (flushing_idx < idx_t(finished_processing_idx)) {
+				flushing_idx = idx_t(finished_processing_idx);
+				should_flush_current_idx = true;
+			}
 			break;
 		default:
 			throw InternalException("Unexpected OperatorResultType (%s) in TryFlushCachingOperators",
