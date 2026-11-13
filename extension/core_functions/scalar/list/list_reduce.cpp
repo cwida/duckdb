@@ -1,5 +1,6 @@
 #include "core_functions/scalar/list_functions.hpp"
 
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/context.hpp"
