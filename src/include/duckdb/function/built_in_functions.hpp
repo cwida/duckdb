@@ -33,8 +33,8 @@ public:
 	void AddFunction(TableFunction function);
 	void AddFunction(CopyFunction function);
 
-	void AddCollation(string name, ScalarFunction function, bool combinable = false,
-	                  bool not_required_for_equality = false);
+	//! Registers the function as the string collation with the given name (as collate_<name>)
+	void AddCollation(const string &name, ScalarFunction function, bool combinable = false);
 
 private:
 	CatalogTransaction transaction;
@@ -59,6 +59,7 @@ private:
 
 	// pragmas
 	void RegisterPragmaFunctions();
+	void RegisterCollations();
 
 	void AddExtensionFunction(ScalarFunctionSet set);
 };

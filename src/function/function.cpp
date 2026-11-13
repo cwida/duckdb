@@ -7,6 +7,10 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/planner/collation_binding.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 
 namespace duckdb {
@@ -110,7 +114,41 @@ bool FunctionProperties::operator==(const FunctionProperties &rhs) const {
 	return stability == rhs.stability && null_handling == rhs.null_handling && errors == rhs.errors &&
 	       collation_handling == rhs.collation_handling && capture_argument_aliases == rhs.capture_argument_aliases &&
 	       requires_expression_names == rhs.requires_expression_names &&
-	       requires_ordered_execution == rhs.requires_ordered_execution;
+	       requires_ordered_execution == rhs.requires_ordered_execution && GenericPropertiesEqual(rhs);
+}
+
+bool FunctionProperties::GenericPropertiesEqual(const FunctionProperties &rhs) const {
+	if (generic_properties.size() != rhs.generic_properties.size()) {
+		return false;
+	}
+	for (auto &entry : generic_properties) {
+		auto other = rhs.GetProperty(entry.first);
+		if (!other || !Value::NotDistinctFrom(entry.second, *other)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void FunctionProperties::SetProperty(const string &name, Value value) {
+	generic_properties[name] = std::move(value);
+}
+
+optional_ptr<const Value> FunctionProperties::GetProperty(const string &name) const {
+	auto entry = generic_properties.find(name);
+	if (entry == generic_properties.end()) {
+		return nullptr;
+	}
+	return &entry->second;
+}
+
+bool FunctionProperties::GetBooleanProperty(const string &name) const {
+	auto value = GetProperty(name);
+	// only a BOOLEAN value is a flag - anything else reads as false rather than failing every lookup
+	if (!value || value->IsNull() || value->type().id() != LogicalTypeId::BOOLEAN) {
+		return false;
+	}
+	return BooleanValue::Get(*value);
 }
 
 bool FunctionProperties::operator!=(const FunctionProperties &rhs) const {
@@ -256,6 +294,31 @@ string SimpleFunction::ToString() const {
 }
 
 // add your initializer for new functions here
+void BuiltinFunctions::AddCollation(const string &name, ScalarFunction function, bool combinable) {
+	function.SetName(Identifier(name));
+	if (combinable) {
+		CollationFunctions::SetCombinable(function);
+	}
+	CreateScalarFunctionInfo info(std::move(function));
+	info.SetQualifiedName(
+	    QualifiedName(info.GetQualifiedName().Catalog(), CollationFunctions::GetSchema(), info.GetFunctionName()));
+	info.internal = true;
+	catalog.CreateFunction(transaction, info);
+}
+
+void BuiltinFunctions::RegisterCollations() {
+	// the collations are the scalar functions of their own schema
+	CreateSchemaInfo schema;
+	schema.SetQualifiedName(QualifiedName({CollationFunctions::GetSchema()}, Identifier()));
+	schema.internal = true;
+	schema.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
+	catalog.CreateSchema(transaction, schema);
+
+	AddCollation("nocase", LowerFun::GetFunction(), true);
+	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
+	AddCollation("nfc", NFCNormalizeFun::GetFunction());
+}
+
 void BuiltinFunctions::Initialize() {
 	RegisterTableScanFunctions();
 	RegisterSQLiteFunctions();
@@ -267,10 +330,7 @@ void BuiltinFunctions::Initialize() {
 
 	RegisterCopyFunctions();
 
-	// initialize collations
-	AddCollation("nocase", LowerFun::GetFunction(), true);
-	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
-	AddCollation("nfc", NFCNormalizeFun::GetFunction());
+	RegisterCollations();
 
 	RegisterExtensionOverloads();
 }

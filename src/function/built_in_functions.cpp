@@ -4,7 +4,6 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
-#include "duckdb/parser/parsed_data/create_collation_info.hpp"
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
@@ -22,13 +21,6 @@ BuiltinFunctions::BuiltinFunctions(CatalogTransaction transaction, Catalog &cata
 }
 
 BuiltinFunctions::~BuiltinFunctions() {
-}
-
-void BuiltinFunctions::AddCollation(string name, ScalarFunction function, bool combinable,
-                                    bool not_required_for_equality) {
-	CreateCollationInfo info(Identifier(std::move(name)), std::move(function), combinable, not_required_for_equality);
-	info.internal = true;
-	catalog.CreateCollation(transaction, info);
 }
 
 void BuiltinFunctions::AddFunction(AggregateFunctionSet set) {

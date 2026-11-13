@@ -348,6 +348,8 @@ public:
 	CV2FunctionDocs docs;
 	CV2ScalarFunctionInfo info;
 	Identifier name;
+	//! The schema of the system catalog the function is registered in
+	Identifier schema = Identifier::DefaultSchema();
 	FunctionProperties properties;
 };
 
@@ -375,6 +377,19 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_create(duckdb_v2_factory_handle factor
 	return WithErrorHandler(err, [&]() {
 		auto result = duckdb::make_uniq<CV2ScalarFunction>(Convert(factory)->GetDatabase());
 		*function = Convert(result.release());
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_schema(duckdb_v2_scalar_function_handle function, const char *schema,
+                                                     idx_t schema_length, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(schema, schema_length);
+	return WithErrorHandler(err, [&]() {
+		auto name = ConvertIdentifierName(schema, schema_length);
+		if (name.empty()) {
+			throw duckdb::InvalidInputException("Schema name cannot be empty.");
+		}
+		Convert(function)->schema = duckdb::Identifier(name);
 	});
 }
 
@@ -418,6 +433,29 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_property(duckdb_v2_scalar_function
                                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
 	return WithErrorHandler(err, [&]() { SetScalarFunctionProperty(Convert(function)->properties, key, value); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_generic_property(duckdb_v2_scalar_function_handle function,
+                                                               const char *name, idx_t name_length,
+                                                               duckdb_v2_value_handle value,
+                                                               duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	DUCKDB_CHECK_ARG(value);
+	return WithErrorHandler(
+	    err, [&]() { SetGenericFunctionProperty(Convert(function)->properties, name, name_length, *Convert(value)); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_get_generic_property(duckdb_v2_scalar_function_handle function,
+                                                               const char *name, idx_t name_length,
+                                                               duckdb_v2_value_handle *out_value,
+                                                               duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	DUCKDB_CHECK_ARG(out_value);
+	*out_value = nullptr;
+	return WithErrorHandler(
+	    err, [&]() { *out_value = GetGenericFunctionProperty(Convert(function)->properties, name, name_length); });
 }
 
 DUCKDB_V2_ERROR
@@ -647,6 +685,8 @@ DUCKDB_V2_ERROR duckdb_v2_connection_register_scalar_function(duckdb_v2_connecti
 		context.RunFunctionInTransaction([&]() {
 			auto &self = *Convert(function);
 			auto info = duckdb::CreateScalarFunctionInfo(self.Build(*context.db));
+			info.SetQualifiedName(
+			    duckdb::QualifiedName(info.GetQualifiedName().Catalog(), self.schema, info.GetFunctionName()));
 			self.docs.AddTo(self.signature, info);
 			info.on_conflict = duckdb::OnCreateConflict::ALTER_ON_CONFLICT;
 			auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
@@ -664,6 +704,8 @@ DUCKDB_V2_ERROR duckdb_v2_extension_register_scalar_function(duckdb_v2_extension
 		auto &self = *Convert(function);
 		auto &loader = GetExtensionLoader(extension);
 		duckdb::CreateScalarFunctionInfo info(self.Build(loader.GetDatabaseInstance()));
+		info.SetQualifiedName(
+		    duckdb::QualifiedName(info.GetQualifiedName().Catalog(), self.schema, info.GetFunctionName()));
 		self.docs.AddTo(self.signature, info);
 		info.on_conflict = duckdb::OnCreateConflict::ALTER_ON_CONFLICT;
 		loader.RegisterFunction(std::move(info));

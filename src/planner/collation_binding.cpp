@@ -1,5 +1,4 @@
 #include "duckdb/planner/collation_binding.hpp"
-#include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_case_expression.hpp"
@@ -10,17 +9,67 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/common/exception/catalog_exception.hpp"
+#include <algorithm>
 #include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
-constexpr const char *CollateCatalogEntry::Name;
+Identifier CollationFunctions::GetSchema() {
+	return Identifier(SCHEMA);
+}
 
-static vector<string> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
-                                                   CollationType type) {
+void CollationFunctions::SetCombinable(ScalarFunction &function) {
+	function.GetProperties().SetProperty(COMBINABLE_PROPERTY, Value::BOOLEAN(true));
+}
+
+CollationFunction CollationFunctions::Lookup(ClientContext &context, const string &collation) {
+	auto &catalog = Catalog::GetSystemCatalog(context);
+	QualifiedName qualified_name(catalog.GetName(), GetSchema(), Identifier(collation));
+	auto entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(context, qualified_name, OnEntryNotFound::RETURN_NULL);
+	if (!entry &&
+	    Catalog::AutoLoadExtensionByCatalogEntry(*context.db, CatalogType::COLLATION_ENTRY, Identifier(collation))) {
+		entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(context, qualified_name, OnEntryNotFound::RETURN_NULL);
+	}
+	if (!entry) {
+		auto candidates = StringUtil::TopNJaroWinkler(GetCollations(context), collation, 1);
+		throw CatalogException::MissingEntry(CatalogType::COLLATION_ENTRY, Identifier(collation),
+		                                     candidates.empty() ? string() : candidates[0]);
+	}
+	auto function = entry->functions.GetFunctionByArguments(context, {LogicalType::VARCHAR});
+	if (!function) {
+		throw CatalogException("Collation function \"%s\" must take a single VARCHAR argument", collation);
+	}
+	return CollationFunction {CollationFunctionName(GetSchema(), entry->name),
+	                          function->GetProperties().GetBooleanProperty(COMBINABLE_PROPERTY)};
+}
+
+vector<string> CollationFunctions::GetCollations(ClientContext &context) {
+	// only list what Lookup resolves: scalar functions in the collation schema that take a single VARCHAR
 	vector<string> result;
+	auto schema = Catalog::GetSystemCatalog(context).GetSchema(context, GetSchema(), OnEntryNotFound::RETURN_NULL);
+	if (!schema) {
+		return result;
+	}
+	schema->Scan(context, CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
+		if (entry.type != CatalogType::SCALAR_FUNCTION_ENTRY) {
+			return;
+		}
+		auto &function_entry = entry.Cast<ScalarFunctionCatalogEntry>();
+		if (!FunctionBinder::SelectFunction(context, function_entry.functions, {LogicalType::VARCHAR}).IsSuccess()) {
+			return;
+		}
+		result.push_back(entry.name.GetIdentifierName());
+	});
+	return result;
+}
+
+static vector<CollationFunctionName> GetVarcharCollationFunctions(ClientContext &context, const LogicalType &sql_type,
+                                                                  CollationType type) {
 	if (sql_type.id() != LogicalTypeId::VARCHAR) {
 		// only VARCHAR columns require collation
-		return result;
+		return vector<CollationFunctionName>();
 	}
 	// replace default collation with system collation
 	auto str_collation = StringType::GetCollation(sql_type);
@@ -34,67 +83,70 @@ static vector<string> GetVarcharCollationFunctions(ClientContext &context, const
 	// bind the collation
 	if (collation.empty() || collation == "binary" || collation == "c" || collation == "posix") {
 		// no collation or binary collation: skip
-		return result;
+		return vector<CollationFunctionName>();
 	}
-	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto splits = StringUtil::Split(StringUtil::Lower(collation), ".");
-	vector<reference<CollateCatalogEntry>> entries;
+	vector<CollationFunctionName> functions;
+	string non_combinable_collation;
+	vector<CollationFunctionName> combinable_functions;
 	unordered_set<string> collations;
-	for (auto &collation_argument : splits) {
+	for (auto &collation_argument : StringUtil::Split(collation, ".")) {
 		if (collations.count(collation_argument)) {
 			// we already applied this collation
 			continue;
 		}
-		auto &collation_entry = catalog.GetEntry<CollateCatalogEntry>(
-		    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), Identifier(collation_argument)));
-		if (collation_entry.combinable) {
-			entries.insert(entries.begin(), collation_entry);
-		} else {
-			if (!entries.empty() && !entries.back().get().combinable) {
-				throw BinderException("Cannot combine collation types %s and %s", entries.back().get().name,
-				                      collation_entry.name);
-			}
-			entries.push_back(collation_entry);
-		}
 		collations.insert(collation_argument);
-	}
-	for (auto &entry : entries) {
-		auto &collation_entry = entry.get();
-		if (!collation_entry.combinable && type == CollationType::COMBINABLE_COLLATIONS) {
-			// not a combinable collation - only apply the (preceding) combinable collations
-			break;
+		auto function = CollationFunctions::Lookup(context, collation_argument);
+		if (function.combinable) {
+			combinable_functions.push_back(function.function);
+			continue;
 		}
-		result.push_back(collation_entry.function.GetName().GetIdentifierName());
+		if (!functions.empty()) {
+			throw BinderException("Cannot combine collation types %s and %s", Identifier(non_combinable_collation),
+			                      Identifier(collation_argument));
+		}
+		non_combinable_collation = collation_argument;
+		functions.push_back(function.function);
 	}
-	return result;
+	// combinable collations are applied first, in reverse order of specification
+	std::reverse(combinable_functions.begin(), combinable_functions.end());
+	if (type == CollationType::COMBINABLE_COLLATIONS) {
+		// only apply the combinable collations
+		return combinable_functions;
+	}
+	combinable_functions.insert(combinable_functions.end(), functions.begin(), functions.end());
+	return combinable_functions;
 }
 
-static vector<string> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetTimeTZCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                 CollationType) {
 	if (sql_type.id() != LogicalTypeId::TIME_TZ) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"timetz_byte_comparable"};
+	return {CollationFunctionName(Identifier("timetz_byte_comparable"))};
 }
 
-static vector<string> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetBitStringCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                    CollationType) {
 	if (sql_type.id() != LogicalTypeId::BIT) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"bitstring_byte_comparable"};
+	return {CollationFunctionName(Identifier("bitstring_byte_comparable"))};
 }
 
-static vector<string> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetIntervalCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                   CollationType) {
 	if (sql_type.id() != LogicalTypeId::INTERVAL) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"normalized_interval"};
+	return {CollationFunctionName(Identifier("normalized_interval"))};
 }
 
-static vector<string> GetVariantCollationFunctions(ClientContext &, const LogicalType &sql_type, CollationType) {
+static vector<CollationFunctionName> GetVariantCollationFunctions(ClientContext &, const LogicalType &sql_type,
+                                                                  CollationType) {
 	if (sql_type.id() != LogicalTypeId::VARIANT) {
-		return vector<string>();
+		return vector<CollationFunctionName>();
 	}
-	return {"variant_comparator"};
+	return {CollationFunctionName(Identifier("variant_comparator"))};
 }
 
 CollationBinding::CollationBinding() {
@@ -109,15 +161,30 @@ void CollationBinding::RegisterCollation(CollationCallback callback) {
 	collations.push_back(callback);
 }
 
-//! Binds the scalar function with the given name (looked up from the system catalog) around "source".
-static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, const string &function_name,
+//! Binds the given collation function around "source"
+static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, const CollationFunctionName &function_name,
                                                      unique_ptr<Expression> source) {
 	auto source_alias = source->GetAlias();
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(source));
 	FunctionBinder function_binder(context);
-	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(function_name),
-	                                          std::move(children), false, nullptr, std::move(source_alias));
+	unique_ptr<Expression> function;
+	if (function_name.schema == Identifier::DefaultSchema()) {
+		function = function_binder.BindScalarFunction(function_name.schema, function_name.name, std::move(children));
+	} else {
+		// functions outside of the default schema, such as the collations, live in the system catalog
+		auto &catalog = Catalog::GetSystemCatalog(context);
+		auto entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
+		    context, QualifiedName(catalog.GetName(), function_name.schema, function_name.name),
+		    OnEntryNotFound::THROW_EXCEPTION);
+		ErrorData error;
+		function = function_binder.BindScalarFunction(*entry, std::move(children), error);
+		if (!function) {
+			error.Throw();
+		}
+	}
+	function->SetAlias(source_alias);
+	return function;
 }
 
 //! Pushes collations into STRUCT/TUPLE fields using invoke with a lambda that rebuilds the value and preserves NULLs.

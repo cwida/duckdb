@@ -1,0 +1,28 @@
+diff --git a/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp b/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
+index e30b8dfc8..85f994ec9 100644
+--- a/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
++++ b/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
+@@ -309,11 +309,6 @@ optional_ptr<CatalogEntry> IcebergSchemaEntry::CreatePragmaFunction(CatalogTrans
+ 	throw BinderException("Iceberg databases do not support creating pragma functions");
+ }
+ 
+-optional_ptr<CatalogEntry> IcebergSchemaEntry::CreateCollation(CatalogTransaction transaction,
+-                                                               CreateCollationInfo &info) {
+-	throw BinderException("Iceberg databases do not support creating collations");
+-}
+-
+ static optional_ptr<const IcebergSortOrderField>
+ FindCurrentSortOrderFieldBySourceId(const IcebergTableMetadata &table_metadata, idx_t column_id,
+                                     int32_t &sort_order_id);
+diff --git a/src/include/catalog/rest/catalog_entry/schema/iceberg_schema_entry.hpp b/src/include/catalog/rest/catalog_entry/schema/iceberg_schema_entry.hpp
+index 2572c78fa..7be0c62b0 100644
+--- a/src/include/catalog/rest/catalog_entry/schema/iceberg_schema_entry.hpp
++++ b/src/include/catalog/rest/catalog_entry/schema/iceberg_schema_entry.hpp
+@@ -35,7 +35,6 @@ public:
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+ 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;

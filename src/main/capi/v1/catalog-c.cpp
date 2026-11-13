@@ -1,3 +1,4 @@
+#include "duckdb/planner/collation_binding.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/helper.hpp"
@@ -17,6 +18,8 @@ struct CCatalogWrapper {
 
 struct CCatalogEntryWrapper {
 	CatalogEntry &entry;
+	//! Set when the entry is the function implementing a collation: the entry is reported as that collation
+	string collation_name;
 	CCatalogEntryWrapper(CatalogEntry &entry) : entry(entry) {
 	}
 };
@@ -125,15 +128,25 @@ duckdb_catalog_entry duckdb_catalog_get_entry(duckdb_catalog catalog, duckdb_cli
 	auto &catalog_ref = *reinterpret_cast<duckdb::CCatalogWrapper *>(catalog);
 	auto &context_ref = *reinterpret_cast<duckdb::CClientContextWrapper *>(context);
 
-	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, duckdb::CatalogTypeFromC(entry_type),
-	                                          duckdb::Identifier(schema_name), duckdb::Identifier(entry_name),
+	auto type = duckdb::CatalogTypeFromC(entry_type);
+	duckdb::Identifier schema(schema_name);
+	if (type == duckdb::CatalogType::COLLATION_ENTRY) {
+		// a collation is the scalar function of the same name in the collation schema
+		type = duckdb::CatalogType::SCALAR_FUNCTION_ENTRY;
+		schema = duckdb::CollationFunctions::GetSchema();
+	}
+	auto entry = catalog_ref.catalog.GetEntry(context_ref.context, type, schema, duckdb::Identifier(entry_name),
 	                                          duckdb::OnEntryNotFound::RETURN_NULL);
 
 	if (!entry) {
 		return nullptr;
 	}
 
-	return reinterpret_cast<duckdb_catalog_entry>(new duckdb::CCatalogEntryWrapper(*entry));
+	auto wrapper = new duckdb::CCatalogEntryWrapper(*entry);
+	if (entry_type == DUCKDB_CATALOG_ENTRY_TYPE_COLLATION) {
+		wrapper->collation_name = entry_name;
+	}
+	return reinterpret_cast<duckdb_catalog_entry>(wrapper);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -146,6 +159,9 @@ duckdb_catalog_entry_type duckdb_catalog_entry_get_type(duckdb_catalog_entry ent
 	}
 
 	auto &entry_ref = *reinterpret_cast<duckdb::CCatalogEntryWrapper *>(entry);
+	if (!entry_ref.collation_name.empty()) {
+		return DUCKDB_CATALOG_ENTRY_TYPE_COLLATION;
+	}
 	return duckdb::CatalogTypeToC(entry_ref.entry.type);
 }
 
@@ -154,6 +170,9 @@ const char *duckdb_catalog_entry_get_name(duckdb_catalog_entry entry) {
 		return nullptr;
 	}
 	auto &entry_ref = *reinterpret_cast<duckdb::CCatalogEntryWrapper *>(entry);
+	if (!entry_ref.collation_name.empty()) {
+		return entry_ref.collation_name.c_str();
+	}
 	return entry_ref.entry.name.c_str();
 }
 

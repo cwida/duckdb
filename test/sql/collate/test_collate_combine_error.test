@@ -1,0 +1,10 @@
+# name: test/sql/collate/test_collate_combine_error.test
+# description: Combining two collations that cannot be combined reports both names
+# group: [collate]
+
+require icu
+
+statement error
+SELECT 'a' COLLATE nfc.de
+----
+Binder Error: Cannot combine collation types "nfc" and "de"

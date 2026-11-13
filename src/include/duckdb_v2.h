@@ -5530,6 +5530,55 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_property(duckdb_v2
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Sets a generic, named property on the aggregate function.
+ *
+ * Generic properties are free-form `name = value` pairs that the engine or extensions can read from a function, e.g.
+ * `duckdb.collation.combinable = true` marks a collation function as combinable. Setting a property that is already set
+ * replaces its value. Reading a property that is not set yields NULL, which boolean properties treat as false.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to set the property of.
+ * @param name The name of the property, e.g. `duckdb.collation.combinable`.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
+ * @param value The value of the property. Borrowed (copied in).
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_generic_property(
+    duckdb_v2_aggregate_function_handle function, const char *name, idx_t name_length, duckdb_v2_value_handle value,
+    duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Reads a generic, named property of the aggregate function, as set by
+ * `duckdb_v2_aggregate_function_set_generic_property()`.
+ *
+ * A property that is not set is not an error: `out_value` then receives NULL.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to read the property of.
+ * @param name The name of the property, e.g. `duckdb.collation.combinable`.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
+ * @param out_value Receives the value of the property, owned by the caller, or NULL if the property is not set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_aggregate_function_get_generic_property(
+    duckdb_v2_aggregate_function_handle function, const char *name, idx_t name_length,
+    duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Sets the optional bind callback of the aggregate function.
  *
  * The bind callback is invoked during query planning for each call site of the function. Through its
@@ -11067,6 +11116,30 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Sets the schema of the system catalog that the scalar function is registered in.
+ *
+ * The schema is borrowed and copied. Calling this again replaces the previous schema. Without a schema the function is
+ * registered in the default schema. The schema must exist when the function is registered, e.g. `collations`, whose
+ * functions are the string collations of the database.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to set the schema of.
+ * @param schema The name of the schema. Borrowed and copied.
+ * @param schema_length The length of `schema` in bytes. `schema` must be valid UTF-8, need not be null-terminated, and
+ * may be NULL only when this is 0.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_schema(duckdb_v2_scalar_function_handle function,
+                                                                  const char *schema, idx_t schema_length,
+                                                                  duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Returns the documentation of the function so it can be filled in.
  *
  * Set a description with `duckdb_v2_function_docs_set_description()`, and add examples and categories with
@@ -11155,6 +11228,56 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_property(duckdb_v2_sc
                                                                     DUCKDB_V2_FUNCTION_PROPERTY_KEY key,
                                                                     DUCKDB_V2_FUNCTION_PROPERTY_VALUE value,
                                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets a generic, named property on the scalar function.
+ *
+ * Generic properties are free-form `name = value` pairs that the engine or extensions can read from a function, e.g.
+ * `duckdb.collation.combinable = true` marks a collation function as combinable. Setting a property that is already set
+ * replaces its value. Reading a property that is not set yields NULL, which boolean properties treat as false.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to set the property of.
+ * @param name The name of the property, e.g. `duckdb.collation.combinable`.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
+ * @param value The value of the property. Borrowed (copied in).
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_generic_property(duckdb_v2_scalar_function_handle function,
+                                                                            const char *name, idx_t name_length,
+                                                                            duckdb_v2_value_handle value,
+                                                                            duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Reads a generic, named property of the scalar function, as set by `duckdb_v2_scalar_function_set_generic_property()`.
+ *
+ * A property that is not set is not an error: `out_value` then receives NULL.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to read the property of.
+ * @param name The name of the property, e.g. `duckdb.collation.combinable`.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
+ * @param out_value Receives the value of the property, owned by the caller, or NULL if the property is not set.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_get_generic_property(duckdb_v2_scalar_function_handle function,
+                                                                            const char *name, idx_t name_length,
+                                                                            duckdb_v2_value_handle *out_value,
+                                                                            duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE

@@ -1,0 +1,20 @@
+# name: test/sql/collate/test_collate_not_combinable.test
+# description: Two collations that are not combinable cannot be applied together
+# group: [collate]
+
+require icu
+
+query I
+SELECT 'a' COLLATE de.nocase = 'A'
+----
+true
+
+statement error
+SELECT 'a' COLLATE nfc.de = 'A'
+----
+Binder Error: Cannot combine collation types "nfc" and "de"
+
+statement error
+SELECT 'a' COLLATE de.nocase.icu_noaccent = 'A'
+----
+Binder Error: Cannot combine collation types "de" and "icu_noaccent"

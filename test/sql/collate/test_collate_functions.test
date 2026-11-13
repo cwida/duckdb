@@ -1,0 +1,81 @@
+# name: test/sql/collate/test_collate_functions.test
+# description: Test that collations are the scalar functions of the collations schema of the system catalog
+# group: [collate]
+
+# built-in collations are scalar functions in the collations schema
+query I
+SELECT system.collations.nocase('HeLLo')
+----
+hello
+
+query I
+SELECT system.collations.noaccent('café')
+----
+cafe
+
+query I
+SELECT collname FROM pragma_collations() WHERE collname IN ('nocase', 'noaccent', 'nfc') ORDER BY 1
+----
+nfc
+noaccent
+nocase
+
+query I
+SELECT schema_name FROM duckdb_functions() WHERE function_name = 'nocase'
+----
+collations
+
+# the collation functions do not clash with functions of the same name in the default schema
+statement ok
+CREATE MACRO nocase(s) AS 'macro';
+
+query II
+SELECT nocase('A'), 'A' = 'a' COLLATE nocase
+----
+macro	true
+
+statement ok
+DROP MACRO nocase
+
+# nocase and noaccent are combinable
+query I
+SELECT 'ÀB' = 'ab' COLLATE nocase.noaccent
+----
+true
+
+# unknown collations are still reported as such
+statement error
+SELECT 'a' COLLATE does_not_exist
+----
+Catalog Error: Collation with name does_not_exist does not exist!
+
+# a misspelled collation suggests the closest one
+statement error
+SELECT 'a' COLLATE nocas
+----
+<REGEX>:Catalog Error: Collation with name nocas does not exist!.*Did you mean "nocase"\?.*
+
+# only scalar functions of the collations schema are collations, not functions of other schemas
+statement ok
+CREATE MACRO my_macro(s) AS lower(s);
+
+query I
+SELECT count(*) FROM pragma_collations() WHERE collname = 'my_macro'
+----
+0
+
+statement error
+SELECT 'a' COLLATE my_macro
+----
+Catalog Error: Collation with name my_macro does not exist!
+
+# nfc is not combinable, but can be applied together with combinable collations
+query I
+SELECT 'Ä' COLLATE nfc.nocase = 'ä'
+----
+true
+
+query I
+SELECT 'Ä' COLLATE nocase.nfc.noaccent = 'a'
+----
+true

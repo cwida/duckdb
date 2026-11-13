@@ -25,7 +25,6 @@ enum class OnCreateConflict : uint8_t;
 struct AlterTableInfo;
 struct CreateIndexInfo;
 struct CreateFunctionInfo;
-struct CreateCollationInfo;
 struct CreateCoordinateSystemInfo;
 struct CreateViewInfo;
 struct BoundCreateTableInfo;
@@ -116,10 +115,6 @@ public:
 	virtual optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
 	                                                        CreatePragmaFunctionInfo &info) {
 		throw NotImplementedException("Pragma functions are not supported in schema %s", name);
-	}
-	//! Create a collation within the given schema
-	virtual optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
-		throw NotImplementedException("Collations are not supported in schema %s", name);
 	}
 	//! Create a coordinate system within the given schema
 	virtual optional_ptr<CatalogEntry> CreateCoordinateSystem(CatalogTransaction transaction,

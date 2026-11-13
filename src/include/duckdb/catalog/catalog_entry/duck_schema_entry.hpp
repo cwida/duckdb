@@ -35,8 +35,6 @@ private:
 	CatalogSet functions;
 	//! The catalog set holding the sequences
 	CatalogSet sequences;
-	//! The catalog set holding the collations
-	CatalogSet collations;
 	//! The catalog set holding the types
 	CatalogSet types;
 	//! The catalog set holding the coordinate systems
@@ -60,7 +58,6 @@ public:
 	                                              CreateCopyFunctionInfo &info) override;
 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
 	                                                CreatePragmaFunctionInfo &info) override;
-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
 	optional_ptr<CatalogEntry> CreateCoordinateSystem(CatalogTransaction transaction,
 	                                                  CreateCoordinateSystemInfo &info) override;
 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;

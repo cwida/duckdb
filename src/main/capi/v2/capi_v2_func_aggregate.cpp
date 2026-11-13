@@ -523,6 +523,29 @@ DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_property(duckdb_v2_aggregate_fu
 	return WithErrorHandler(err, [&]() { SetAggregateFunctionProperty(Convert(function)->properties, key, value); });
 }
 
+DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_generic_property(duckdb_v2_aggregate_function_handle function,
+                                                                  const char *name, idx_t name_length,
+                                                                  duckdb_v2_value_handle value,
+                                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	DUCKDB_CHECK_ARG(value);
+	return WithErrorHandler(
+	    err, [&]() { SetGenericFunctionProperty(Convert(function)->properties, name, name_length, *Convert(value)); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_aggregate_function_get_generic_property(duckdb_v2_aggregate_function_handle function,
+                                                                  const char *name, idx_t name_length,
+                                                                  duckdb_v2_value_handle *out_value,
+                                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	DUCKDB_CHECK_ARG(out_value);
+	*out_value = nullptr;
+	return WithErrorHandler(
+	    err, [&]() { *out_value = GetGenericFunctionProperty(Convert(function)->properties, name, name_length); });
+}
+
 DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_bind_callback(duckdb_v2_aggregate_function_handle function,
                                                                duckdb_v2_aggregate_function_bind_callback_fn callback,
                                                                duckdb_v2_error_info_handle *err) {

@@ -1,0 +1,23 @@
+--- a/src/catalog/glue_schema_entry.cpp
++++ b/src/catalog/glue_schema_entry.cpp
+@@ -567,10 +567,6 @@
+ 	throw BinderException("Glue databases do not support creating pragma functions");
+ }
+ 
+-optional_ptr<CatalogEntry> GlueSchemaEntry::CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
+-	throw BinderException("Glue databases do not support creating collations");
+-}
+-
+ optional_ptr<CatalogEntry> GlueSchemaEntry::CreateType(CatalogTransaction transaction, CreateTypeInfo &info) {
+ 	throw BinderException("Glue databases do not support creating types");
+ }
+--- a/src/include/catalog/glue_schema_entry.hpp
++++ b/src/include/catalog/glue_schema_entry.hpp
+@@ -53,7 +53,6 @@
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+ 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;

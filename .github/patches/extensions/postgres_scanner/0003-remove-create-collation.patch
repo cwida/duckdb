@@ -1,0 +1,24 @@
+--- a/src/storage/postgres_schema_entry.cpp
++++ b/src/storage/postgres_schema_entry.cpp
+@@ -147,11 +147,6 @@
+ 	throw BinderException("Postgres databases do not support creating pragma functions");
+ }
+ 
+-optional_ptr<CatalogEntry> PostgresSchemaEntry::CreateCollation(CatalogTransaction transaction,
+-                                                                CreateCollationInfo &info) {
+-	throw BinderException("Postgres databases do not support creating collations");
+-}
+-
+ void PostgresSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
+ 	if (info.type != AlterType::ALTER_TABLE) {
+ 		throw BinderException("Only altering tables is supported for now");
+--- a/src/include/storage/postgres_schema_entry.hpp
++++ b/src/include/storage/postgres_schema_entry.hpp
+@@ -40,7 +40,6 @@
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+ 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;

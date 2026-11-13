@@ -165,4 +165,25 @@ void SetAggregateFunctionProperty(AggregateFunctionProperties &props, DUCKDB_V2_
 	throw InvalidInputException("Function property key " + ToHex(AsU32(key)) + " is not valid for aggregate functions");
 }
 
+static auto GenericPropertyName(const char *name, idx_t name_length) -> string {
+	auto result = ConvertIdentifierName(name, name_length);
+	if (result.empty()) {
+		throw InvalidInputException("Function property name cannot be empty");
+	}
+	return string(result);
+}
+
+void SetGenericFunctionProperty(FunctionProperties &props, const char *name, idx_t name_length, const Value &value) {
+	props.SetProperty(GenericPropertyName(name, name_length), value);
+}
+
+auto GetGenericFunctionProperty(const FunctionProperties &props, const char *name, idx_t name_length)
+    -> duckdb_v2_value_handle {
+	auto value = props.GetProperty(GenericPropertyName(name, name_length));
+	if (!value) {
+		return nullptr;
+	}
+	return Convert(new Value(*value));
+}
+
 } // namespace duckdb::capiv2

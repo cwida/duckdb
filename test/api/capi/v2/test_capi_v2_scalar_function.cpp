@@ -902,6 +902,183 @@ TEST_CASE("V2 scalar: function properties", "[capi_v2][scalar_function]") {
 
 namespace {
 
+// Returns its VARCHAR argument unchanged.
+void VarcharIdentityExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                         duckdb_v2_error_info_handle *err) {
+	duckdb_v2_vector_handle input = nullptr;
+	duckdb_v2_vector_handle output = nullptr;
+	if (duckdb_v2_scalar_function_exec_get_arg(info, 0, &input, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &output, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_vector_reference(output, input, err);
+}
+
+duckdb_v2_scalar_function_handle MakeVarcharIdentity(duckdb_v2_connection_handle conn, std::string_view name,
+                                                     duckdb_v2_logical_type_handle varchar) {
+	auto function = MakeScalar(conn, name);
+	auto sig = SigOf(function);
+	SigParam(sig, "s", varchar);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, varchar, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, VarcharIdentityExec, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	return function;
+}
+
+// Creates a VARCHAR -> VARCHAR identity function in the collations schema, i.e. the collation of the same name.
+duckdb_v2_scalar_function_handle MakeCollation(duckdb_v2_connection_handle conn, std::string_view name,
+                                               duckdb_v2_logical_type_handle varchar) {
+	auto function = MakeVarcharIdentity(conn, name, varchar);
+	constexpr std::string_view schema = "collations";
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, schema.data(), schema.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	return function;
+}
+
+// Reads a BOOLEAN generic property, -1 if it is not set.
+int GetGenericBoolProperty(duckdb_v2_scalar_function_handle function, std::string_view name) {
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_scalar_function_get_generic_property(function, name.data(), name.size(), &value, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	if (!value) {
+		return -1;
+	}
+	bool result = false;
+	REQUIRE(duckdb_v2_value_get_bool(value, &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	return result ? 1 : 0;
+}
+
+constexpr std::string_view COMBINABLE_PROPERTY_NAME = "duckdb.collation.combinable";
+
+} // namespace
+
+TEST_CASE("V2 scalar: generic function properties", "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	auto function = MakeScalar(fx.conn, "generic_props");
+
+	// An absent property reads as NULL.
+	REQUIRE(GetGenericBoolProperty(function, COMBINABLE_PROPERTY_NAME) == -1);
+
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_value_create_bool(fx.factory, true, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	REQUIRE(GetGenericBoolProperty(function, COMBINABLE_PROPERTY_NAME) == 1);
+	// Names are matched exactly.
+	REQUIRE(GetGenericBoolProperty(function, "duckdb.collation") == -1);
+
+	// Setting a property again replaces its value.
+	REQUIRE(duckdb_v2_value_create_bool(fx.factory, false, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(GetGenericBoolProperty(function, COMBINABLE_PROPERTY_NAME) == 0);
+
+	// Any value type can be stored.
+	std::string_view other = "my_extension.tag";
+	duckdb_v2_value_handle text = nullptr;
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, "hello", 5, &text, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, other.data(), other.size(), text, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&text);
+	REQUIRE(duckdb_v2_scalar_function_get_generic_property(function, other.data(), other.size(), &text, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(text != nullptr);
+	const char *str = nullptr;
+	idx_t str_length = 0;
+	REQUIRE(duckdb_v2_value_get_varchar(text, &str, &str_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(str, str_length) == "hello");
+	duckdb_v2_value_destroy(&text);
+
+	// Invalid arguments.
+	duckdb_v2_value_handle out = nullptr;
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, "", 0, value, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, nullptr, 3, value, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), nullptr,
+	                                                       nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(nullptr, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_get_generic_property(function, "", 0, &out, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_get_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), nullptr,
+	                                                       nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_scalar_function_get_generic_property(nullptr, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), &out,
+	                                                       nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_value_destroy(&value);
+	duckdb_v2_scalar_function_destroy(&function);
+}
+
+TEST_CASE("V2 scalar: collations are combinable through a generic property", "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	auto varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+
+	// capi_combinable is marked as combinable, capi_plain is not.
+	auto function = MakeCollation(fx.conn, "capi_combinable", varchar);
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_value_create_bool(fx.factory, true, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+
+	function = MakeCollation(fx.conn, "capi_plain", varchar);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+
+	// a property value that is not a BOOLEAN does not make a collation combinable, and does not break it
+	function = MakeCollation(fx.conn, "capi_text", varchar);
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, "hello", 5, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_generic_property(function, COMBINABLE_PROPERTY_NAME.data(),
+	                                                       COMBINABLE_PROPERTY_NAME.size(), value,
+	                                                       nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
+	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_text = 'A')::INTEGER") == 1);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE nfc.capi_text = 'A'") == DUCKDB_V2_ERROR_QUERY_BINDER);
+
+	// a function in the default schema is not a collation
+	varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	function = MakeVarcharIdentity(fx.conn, "capi_main", varchar);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
+	REQUIRE(QueryI32(fx.conn, "SELECT (capi_main('A') = 'A')::INTEGER") == 1);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE capi_main = 'A'") != DUCKDB_V2_ERROR_NONE);
+
+	// the schema must exist, and cannot be empty
+	varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	function = MakeVarcharIdentity(fx.conn, "capi_nowhere", varchar);
+	constexpr std::string_view missing = "no_such_schema";
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, missing.data(), missing.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_schema(function, "", 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
+
+	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE capi_plain = 'A')::INTEGER") == 1);
+	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE nocase.capi_plain = 'a')::INTEGER") == 1);
+	// nfc is not combinable: it combines with capi_combinable, but not with capi_plain.
+	REQUIRE(QueryI32(fx.conn, "SELECT ('A' COLLATE nfc.capi_combinable = 'A')::INTEGER") == 1);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE nfc.capi_plain = 'A'") == DUCKDB_V2_ERROR_QUERY_BINDER);
+	REQUIRE(RunSql(fx.conn, "SELECT 'A' COLLATE capi_plain.capi_combinable.nfc = 'A'") == DUCKDB_V2_ERROR_QUERY_BINDER);
+}
+
+namespace {
+
 // ---------------------------------------------------------------------------
 // kw_sum(x, /, *args, scale := 1, **kwargs) = (x + sum(args) + sum(kwargs)) * scale.
 // Bind latches the four parts of the argument list and every argument's name, and resolves "scale" to its index;

@@ -11,6 +11,7 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/named_parameter_map.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/main/external_dependencies.hpp"
 #include "duckdb/common/enums/function_errors.hpp"
@@ -590,6 +591,16 @@ public:
 		requires_ordered_execution = value;
 	}
 
+	//! Sets a generic property, e.g. "duckdb.collation.combinable", overwriting any previous value
+	DUCKDB_API void SetProperty(const string &name, Value value);
+	//! Returns the value of a generic property, or nullptr if it is not set
+	DUCKDB_API optional_ptr<const Value> GetProperty(const string &name) const;
+	//! Returns whether a generic property is the BOOLEAN true; an absent or non-BOOLEAN property is false
+	DUCKDB_API bool GetBooleanProperty(const string &name) const;
+	auto GetGenericProperties() const -> const unordered_map<string, Value> & {
+		return generic_properties;
+	}
+
 	// Helpers
 	auto SetFallible() -> void {
 		errors = FunctionErrors::CAN_THROW_RUNTIME_ERROR;
@@ -600,6 +611,9 @@ public:
 
 	bool operator==(const FunctionProperties &rhs) const;
 	bool operator!=(const FunctionProperties &rhs) const;
+
+private:
+	bool GenericPropertiesEqual(const FunctionProperties &rhs) const;
 
 public:
 	FunctionStability stability = FunctionStability::CONSISTENT;
@@ -617,6 +631,8 @@ public:
 	bool requires_expression_names = false;
 	//! Whether calls to this function must follow input order
 	bool requires_ordered_execution = false;
+	//! Generic properties by name, e.g. "duckdb.collation.combinable"
+	unordered_map<string, Value> generic_properties;
 };
 
 class BoundSimpleFunction {

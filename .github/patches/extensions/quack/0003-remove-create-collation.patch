@@ -1,0 +1,24 @@
+--- a/src/storage/quack_schema.cpp
++++ b/src/storage/quack_schema.cpp
+@@ -234,11 +234,6 @@
+                                                                          CreatePragmaFunctionInfo &info) {
+ 	throw NotImplementedException("CreatePragmaFunction not implemented yet");
+ }
+-optional_ptr<CatalogEntry> QuackSchemaCatalogEntry::CreateCollation(CatalogTransaction transaction,
+-                                                                    CreateCollationInfo &info) {
+-	throw NotImplementedException("CreateCollation not implemented yet");
+-}
+-
+ optional_ptr<CatalogEntry> QuackSchemaCatalogEntry::CreateType(CatalogTransaction transaction, CreateTypeInfo &info) {
+ 	throw NotImplementedException("CreateType not implemented yet");
+ }
+--- a/src/include/storage/quack_schema.hpp
++++ b/src/include/storage/quack_schema.hpp
+@@ -84,7 +84,6 @@
+ 	                                              CreateCopyFunctionInfo &info) override;
+ 	optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
+ 	                                                CreatePragmaFunctionInfo &info) override;
+-	optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) override;
+ 
+ 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;
+ 
