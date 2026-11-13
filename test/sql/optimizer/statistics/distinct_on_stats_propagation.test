@@ -2,6 +2,9 @@
 # description: Aggregate domains require exact grouping keys and single-value identity
 # group: [statistics]
 
+# Exact plan estimates depend on sampled distinct counts.
+require vector_size 2048
+
 # HLL can estimate one group per input row even when grouping removes a row.
 statement ok
 CREATE TABLE false_singletons AS
