@@ -20,7 +20,7 @@ statement ok
 CREATE TABLE recovery_build AS
 SELECT 1::BIGINT AS w,1::BIGINT AS d,k,k>=2700 AS keep FROM range(1,3001) t(k);
 
-# Six standard-size vectors accept every row, while the remaining 90% reject.
+# A matching prefix precedes the remaining 90% that reject.
 statement ok
 COPY (
     SELECT 1::BIGINT AS w,1::BIGINT AS d,

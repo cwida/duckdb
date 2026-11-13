@@ -4,6 +4,9 @@
 
 require parquet
 
+# Exact adaptive scan counts below assume 2048-row batches.
+require exact_vector_size 2048
+
 statement ok
 SET threads=1;
 
