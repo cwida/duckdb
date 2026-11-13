@@ -1,5 +1,4 @@
 #include "duckdb/parser/tableref/column_data_ref.hpp"
-#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
@@ -9,8 +8,10 @@ ColumnDataRef::ColumnDataRef(optionally_owned_ptr<ColumnDataCollection> collecti
 }
 
 string ColumnDataRef::ToString() const {
-	auto result = collection->ToString();
-	return BaseToString(result, expected_names);
+	// the collection only exists in this process, so no SQL reproduces it. Rendering the rows would copy client data
+	// into the statement text, and naming it would bind against whatever else carries that name, so describe it
+	// instead. The alias is left out on purpose: a caller-supplied one containing */ would close the comment.
+	return "/* client-side data */";
 }
 
 bool ColumnDataRef::Equals(const TableRef &other_p) const {

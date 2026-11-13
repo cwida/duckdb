@@ -37,7 +37,8 @@ unique_ptr<QueryNode> InsertRelation::GetQueryNode() {
 }
 
 string InsertRelation::GetQuery() {
-	return string();
+	auto name = QualifiedName(catalog_name, schema_name, table_name);
+	return "INSERT INTO " + name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA) + " " + child->GetQuery();
 }
 
 const vector<ColumnDefinition> &InsertRelation::Columns() {

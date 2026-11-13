@@ -25,7 +25,14 @@ unique_ptr<QueryNode> ExplainRelation::GetQueryNode() {
 }
 
 string ExplainRelation::GetQuery() {
-	return string();
+	// reuse the statement's option rendering so ANALYZE and FORMAT stay in sync
+	ExplainStatement explain(nullptr, type, format);
+	auto options = explain.OptionsToString();
+	string result = "EXPLAIN";
+	if (!options.empty()) {
+		result += " " + options;
+	}
+	return result + " " + child->GetQuery();
 }
 
 const vector<ColumnDefinition> &ExplainRelation::Columns() {

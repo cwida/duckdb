@@ -23,6 +23,8 @@ public:
 	unique_ptr<SelectStatement> select_stmt;
 	string query;
 	string alias;
+	//! Whether binding resolved a name in `query` to a client-side object rather than to a catalog entry
+	bool client_side_object = false;
 	vector<ColumnDefinition> columns;
 
 public:

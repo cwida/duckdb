@@ -4,6 +4,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
 
@@ -40,7 +41,18 @@ unique_ptr<QueryNode> UpdateRelation::GetQueryNode() {
 }
 
 string UpdateRelation::GetQuery() {
-	return string();
+	auto name = QualifiedName(catalog_name, schema_name, table_name);
+	string result = "UPDATE " + name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA) + " SET ";
+	for (idx_t i = 0; i < expressions.size(); i++) {
+		if (i > 0) {
+			result += ", ";
+		}
+		result += SQLIdentifier(update_columns[i]) + " = " + expressions[i]->ToString();
+	}
+	if (condition) {
+		result += " WHERE " + condition->ToString();
+	}
+	return result;
 }
 
 const vector<ColumnDefinition> &UpdateRelation::Columns() {
@@ -48,17 +60,7 @@ const vector<ColumnDefinition> &UpdateRelation::Columns() {
 }
 
 string UpdateRelation::ToString(idx_t depth) {
-	string str =
-	    RenderWhitespace(depth) + "UPDATE " +
-	    QualifiedName(catalog_name, schema_name, table_name).ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA) +
-	    " SET\n";
-	for (idx_t i = 0; i < expressions.size(); i++) {
-		str += update_columns[i] + " = " + expressions[i]->ToString() + "\n";
-	}
-	if (condition) {
-		str += "WHERE " + condition->ToString() + "\n";
-	}
-	return str;
+	return RenderWhitespace(depth) + GetQuery();
 }
 
 } // namespace duckdb

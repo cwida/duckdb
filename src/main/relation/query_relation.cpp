@@ -50,6 +50,11 @@ unique_ptr<QueryNode> QueryRelation::GetQueryNode() {
 }
 
 string QueryRelation::GetQuery() {
+	if (client_side_object) {
+		// `query` names an object that only exists in this process, so it is no longer faithful SQL: anywhere else
+		// that name binds to whatever happens to carry it. Describe it instead - see ColumnDataRef::ToString.
+		return "SELECT * FROM /* client-side data */";
+	}
 	return query;
 }
 
@@ -74,6 +79,8 @@ BoundStatement QueryRelation::Bind(Binder &binder) {
 				// This makes sure replacement scans for files (parquet/csv/json etc) are not transformed into a CTE
 				continue;
 			}
+			// the name resolves to a client-side object, so `query` no longer describes what runs
+			client_side_object = true;
 
 			auto select = make_uniq<SelectStatement>();
 			auto select_node = make_uniq<SelectNode>();

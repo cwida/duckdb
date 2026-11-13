@@ -3,6 +3,7 @@
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
 
@@ -30,7 +31,11 @@ unique_ptr<QueryNode> WriteParquetRelation::GetQueryNode() {
 }
 
 string WriteParquetRelation::GetQuery() {
-	return string();
+	CopyInfo info;
+	info.format = "parquet";
+	info.is_format_auto_detected = false;
+	info.options = options;
+	return "COPY (" + child->GetQuery() + ") TO " + SQLString(parquet_file) + info.CopyOptionsToString();
 }
 
 const vector<ColumnDefinition> &WriteParquetRelation::Columns() {

@@ -31,7 +31,12 @@ unique_ptr<QueryNode> DeleteRelation::GetQueryNode() {
 }
 
 string DeleteRelation::GetQuery() {
-	return string();
+	auto name = QualifiedName(catalog_name, schema_name, table_name);
+	string result = "DELETE FROM " + name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+	if (condition) {
+		result += " WHERE " + condition->ToString();
+	}
+	return result;
 }
 
 const vector<ColumnDefinition> &DeleteRelation::Columns() {
@@ -39,13 +44,7 @@ const vector<ColumnDefinition> &DeleteRelation::Columns() {
 }
 
 string DeleteRelation::ToString(idx_t depth) {
-	string str =
-	    RenderWhitespace(depth) + "DELETE FROM " +
-	    QualifiedName(catalog_name, schema_name, table_name).ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
-	if (condition) {
-		str += " WHERE " + condition->ToString();
-	}
-	return str;
+	return RenderWhitespace(depth) + GetQuery();
 }
 
 } // namespace duckdb

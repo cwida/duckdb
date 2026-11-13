@@ -3,12 +3,25 @@
 #include "duckdb/common/enums/joinref_type.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/literal.hpp"
 #include "duckdb/main/relation/value_relation.hpp"
 #include "iostream"
 #include "test_helpers.hpp"
 #include "duckdb/main/relation/materialized_relation.hpp"
+#include "duckdb/main/relation/delete_relation.hpp"
+#include "duckdb/main/relation/update_relation.hpp"
+#include "duckdb/main/relation/create_view_relation.hpp"
+#include "duckdb/main/relation/explain_relation.hpp"
+#include "duckdb/parser/statement/relation_statement.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/function/replacement_scan.hpp"
+#include "duckdb/main/external_dependencies.hpp"
 
 #include <cstdlib>
+#include <cstring>
 
 using namespace duckdb;
 
@@ -1178,4 +1191,248 @@ TEST_CASE("Test create table with empty name", "[relation_api]") {
 
 	auto values = con.Values("(42)");
 	REQUIRE_THROWS_AS(values->Create(""), ParserException);
+}
+
+TEST_CASE("Test query text of relation API statements", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE dest(i INTEGER)"));
+
+	auto tbl = con.Table("integers");
+	// compose expectations from the child rather than hard-coding its SQL
+	auto child = tbl->GetQuery();
+	REQUIRE(!child.empty());
+
+	// action relations report the SQL they are equivalent to, rather than an empty string
+	REQUIRE(tbl->InsertRel(Identifier::InvalidSchema(), "dest")->GetQuery() == "INSERT INTO dest " + child);
+	REQUIRE(tbl->CreateRel(Identifier::InvalidSchema(), "new_tbl")->GetQuery() == "CREATE TABLE new_tbl AS " + child);
+	REQUIRE(tbl->WriteCSVRel("out.csv")->GetQuery() == "COPY (" + child + ") TO 'out.csv' ( FORMAT 'csv' )");
+	REQUIRE(tbl->WriteParquetRel("out.parquet")->GetQuery() ==
+	        "COPY (" + child + ") TO 'out.parquet' ( FORMAT 'parquet' )");
+
+	auto view_rel = make_shared_ptr<CreateViewRelation>(tbl, Identifier("v"), false, false);
+	REQUIRE(view_rel->GetQuery() == "CREATE VIEW v AS " + child);
+
+	auto explain_rel = make_shared_ptr<ExplainRelation>(tbl);
+	REQUIRE(explain_rel->GetQuery() == "EXPLAIN " + child);
+
+	// the text survives being wrapped in a statement, which is what consumers read
+	auto insert_rel = tbl->InsertRel(Identifier::InvalidSchema(), "dest");
+	RelationStatement insert_stmt(insert_rel);
+	REQUIRE(insert_stmt.query == "INSERT INTO dest " + child);
+
+	// UPDATE / DELETE render their condition and SET list
+	auto delete_rel = make_shared_ptr<DeleteRelation>(
+	    tbl->context, make_uniq<ConstantExpression>(Literal::Boolean(true)), Identifier::InvalidCatalog(),
+	    Identifier::InvalidSchema(), Identifier("integers"));
+	REQUIRE(delete_rel->GetQuery() == "DELETE FROM integers WHERE " + Value::BOOLEAN(true).ToSQLString());
+
+	duckdb::vector<duckdb::unique_ptr<ParsedExpression>> update_expressions;
+	update_expressions.push_back(make_uniq<ConstantExpression>(Literal::Integer(42)));
+	auto update_rel = make_shared_ptr<UpdateRelation>(
+	    tbl->context, nullptr, Identifier::InvalidCatalog(), Identifier::InvalidSchema(), Identifier("integers"),
+	    duckdb::vector<Identifier> {Identifier("i")}, std::move(update_expressions));
+	REQUIRE(update_rel->GetQuery() == "UPDATE integers SET i = 42");
+}
+
+TEST_CASE("Test query text of relation API quotes identifiers", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	// "target" is a keyword and "my table" has a space - both must be quoted to stay valid SQL
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE target(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE \"my table\"(i INTEGER)"));
+
+	auto tbl = con.Table("integers");
+	auto child = tbl->GetQuery();
+
+	REQUIRE(tbl->InsertRel(Identifier::InvalidSchema(), "target")->GetQuery() == "INSERT INTO \"target\" " + child);
+	REQUIRE(tbl->InsertRel(Identifier::InvalidSchema(), "my table")->GetQuery() == "INSERT INTO \"my table\" " + child);
+
+	// the rendered query text is valid SQL that round-trips through the parser
+	Parser parser(*con.context);
+	REQUIRE_NOTHROW(parser.ParseQuery(tbl->InsertRel(Identifier::InvalidSchema(), "my table")->GetQuery()));
+	REQUIRE(parser.statements.size() == 1);
+}
+
+TEST_CASE("Test query text uses canonical CREATE prefix and EXPLAIN options", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	auto tbl = con.Table("integers");
+	auto child = tbl->GetQuery();
+
+	// TEMP, not TEMPORARY - matches CreateInfo::GetCreatePrefix
+	auto temp_tbl = tbl->CreateRel(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), "tmp_tbl", true,
+	                               OnCreateConflict::REPLACE_ON_CONFLICT);
+	REQUIRE(temp_tbl->GetQuery() == "CREATE OR REPLACE TEMP TABLE tmp_tbl AS " + child);
+
+	auto temp_view = make_shared_ptr<CreateViewRelation>(tbl, Identifier("tmp_v"), true, true);
+	REQUIRE(temp_view->GetQuery() == "CREATE OR REPLACE TEMP VIEW tmp_v AS " + child);
+
+	// EXPLAIN carries ANALYZE and FORMAT through
+	auto analyze = make_shared_ptr<ExplainRelation>(tbl, ExplainType::EXPLAIN_ANALYZE);
+	REQUIRE(analyze->GetQuery() == "EXPLAIN (ANALYZE) " + child);
+}
+
+TEST_CASE("Test query text of non-action relations is never truncated", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+
+	// ClientContext forwards `query` to Catalog::RemoteExecute when CONNECT-ed, so relations reporting real SQL
+	// must report all of it - only synthesized text is bounded
+	string long_predicate = "i = 1";
+	while (long_predicate.size() < 8192) {
+		long_predicate += " OR i = " + std::to_string(long_predicate.size());
+	}
+	auto long_sql = "SELECT * FROM integers WHERE " + long_predicate;
+
+	// the relation normalizes the SQL it was given - compare the tail to show nothing was cut off
+	auto last_predicate = long_predicate.substr(long_predicate.rfind("i = "));
+	auto query_rel = con.RelationFromQuery(long_sql);
+	RelationStatement query_stmt(query_rel);
+	REQUIRE(query_stmt.query.size() > 8192);
+	REQUIRE(StringUtil::Contains(query_stmt.query, last_predicate));
+	REQUIRE(!StringUtil::Contains(query_stmt.query, "truncated"));
+
+	// same for a pass-through chain, which renders its child's SQL rather than synthesizing
+	auto filtered = con.Table("integers")->Filter(long_predicate);
+	RelationStatement filtered_stmt(filtered);
+	REQUIRE(filtered_stmt.query.size() > 8192);
+	REQUIRE(StringUtil::Contains(filtered_stmt.query, last_predicate));
+	REQUIRE(!StringUtil::Contains(filtered_stmt.query, "truncated"));
+}
+
+TEST_CASE("Test synthesized query text is never truncated", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE dest(i INTEGER)"));
+
+	// A truncated statement can still parse - cutting a UNION ALL chain after a complete SELECT leaves valid SQL
+	// that inserts fewer rows. ClientContext forwards `query` to Catalog::RemoteExecute when CONNECT-ed, so
+	// shortening it here would silently change what runs remotely. Query text is reported whole or not at all.
+	string sel = "SELECT 1 AS i";
+	for (idx_t i = 2; i <= 600; i++) {
+		sel += " UNION ALL SELECT " + std::to_string(i);
+	}
+	auto ins = con.RelationFromQuery(sel)->InsertRel(Identifier::InvalidSchema(), Identifier("dest"));
+	RelationStatement stmt(ins);
+	REQUIRE(!StringUtil::Contains(stmt.query, "truncated"));
+	REQUIRE(StringUtil::Contains(stmt.query, "SELECT 600"));
+
+	// the reported text runs to the same effect as the relation itself
+	REQUIRE_NO_FAIL(con.Query(stmt.query));
+	auto count = con.Query("SELECT count(*) FROM dest");
+	REQUIRE(CHECK_COLUMN(count, 0, {600}));
+}
+
+TEST_CASE("Test client-side data relations report either faithful or non-SQL text", "[relation_api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE dest(i INTEGER)"));
+
+	// ClientContext forwards `query` to Catalog::RemoteExecute when CONNECT-ed. A value list carries its rows
+	// inside the statement, so its text is reported in full and runs to the same effect anywhere.
+	auto values = con.Values("(42), (84)");
+	RelationStatement direct(values);
+	REQUIRE(StringUtil::Contains(direct.query, "42"));
+	RelationStatement embedded(values->InsertRel(Identifier::InvalidSchema(), Identifier("dest")));
+	REQUIRE(StringUtil::Contains(embedded.query, "42"));
+	REQUIRE_NO_FAIL(con.Query(embedded.query));
+	auto sum_result = con.Query("SELECT sum(i)::INTEGER FROM dest");
+	REQUIRE(CHECK_COLUMN(sum_result, 0, {126}));
+
+	// A materialized collection exists only on the client, so no SQL reproduces it. Naming it by alias would
+	// parse and read whatever the remote side happens to have under that name - describe it instead.
+	auto result = con.Query("SELECT 7 AS i");
+	auto &materialized_result = *result;
+	auto materialized = make_shared_ptr<MaterializedRelation>(con.context, materialized_result.TakeCollection(),
+	                                                          result->GetNames(), duckdb::Identifier("uploaded"));
+	RelationStatement mat(materialized);
+	REQUIRE(mat.query == "SELECT * FROM /* client-side data */");
+	RelationStatement mat_insert(materialized->InsertRel(Identifier::InvalidSchema(), Identifier("dest")));
+	REQUIRE(mat_insert.query == "INSERT INTO dest SELECT * FROM /* client-side data */");
+
+	// the alias never reaches the text, so it cannot close the comment and smuggle in a table reference
+	auto hostile = con.Query("SELECT 7 AS i");
+	auto &hostile_result = *hostile;
+	auto hostile_rel = make_shared_ptr<MaterializedRelation>(con.context, hostile_result.TakeCollection(),
+	                                                         hostile->GetNames(), duckdb::Identifier("x */ dest --"));
+	RelationStatement hostile_stmt(hostile_rel);
+	REQUIRE(hostile_stmt.query == "SELECT * FROM /* client-side data */");
+
+	// wrapping the collection renders it through the same table ref, so the rows stay out of the text there too.
+	// The marker sits where the wrapper expects a table, so dropping the comment leaves a dangling FROM either way.
+	auto wrapped_source = con.Query("SELECT 31337 AS i");
+	auto &wrapped_result = *wrapped_source;
+	auto wrapped_rel =
+	    make_shared_ptr<MaterializedRelation>(con.context, wrapped_result.TakeCollection(), wrapped_source->GetNames(),
+	                                          duckdb::Identifier("x */ dest --"));
+	auto filtered = wrapped_rel->Filter("i > 0")->Project("i");
+	RelationStatement wrapped(filtered);
+	RelationStatement wrapped_insert(filtered->InsertRel(Identifier::InvalidSchema(), Identifier("dest")));
+	for (auto &text : duckdb::vector<string> {wrapped.query, wrapped_insert.query}) {
+		REQUIRE(StringUtil::Contains(text, "/* client-side data */"));
+		REQUIRE(!StringUtil::Contains(text, "31337"));
+	}
+
+	// no form can be mistaken for a runnable statement
+	for (auto &text :
+	     duckdb::vector<string> {mat.query, mat_insert.query, hostile_stmt.query, wrapped.query, wrapped_insert.query}) {
+		Parser parser(*con.context);
+		REQUIRE_THROWS(parser.ParseQuery(text));
+	}
+	// but the relation itself still executes locally
+	REQUIRE_NO_FAIL(materialized->InsertRel(Identifier::InvalidSchema(), Identifier("dest"))->Execute());
+	auto count_result = con.Query("SELECT count(*)::INTEGER FROM dest WHERE i = 7");
+	REQUIRE(CHECK_COLUMN(count_result, 0, {1}));
+}
+
+//! Stands in for a client-side object (a Python DataFrame, say): a name that only this process can resolve.
+static duckdb::unique_ptr<TableRef> ClientObjectReplacementScan(ClientContext &context, ReplacementScanInput &input,
+                                                                optional_ptr<ReplacementScanData> data) {
+	if (input.table_name != "client_object") {
+		return nullptr;
+	}
+	Parser parser(context);
+	parser.ParseQuery("SELECT 99 AS i");
+	auto select = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
+	auto subquery = make_uniq<SubqueryRef>(std::move(select));
+	subquery->external_dependency = make_shared_ptr<ExternalDependency>();
+	return std::move(subquery);
+}
+
+TEST_CASE("Test query text of a relation over a client-side object", "[relation_api]") {
+	DBConfig config;
+	config.replacement_scans.emplace_back(ClientObjectReplacementScan);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE dest(i INTEGER)"));
+
+	// binding rewrites the statement to read the client-side object, so the text captured before binding no longer
+	// describes what runs: elsewhere `client_object` binds to whatever carries that name. Report it as non-SQL.
+	auto client_rel = con.RelationFromQuery("SELECT * FROM client_object");
+	RelationStatement direct(client_rel);
+	REQUIRE(direct.query == "SELECT * FROM /* client-side data */");
+	RelationStatement insert(client_rel->InsertRel(Identifier::InvalidSchema(), Identifier("dest")));
+	REQUIRE(insert.query == "INSERT INTO dest SELECT * FROM /* client-side data */");
+	for (auto &text : duckdb::vector<string> {direct.query, insert.query}) {
+		Parser parser(*con.context);
+		REQUIRE_THROWS(parser.ParseQuery(text));
+	}
+
+	// the relation still runs locally against the object it bound to
+	REQUIRE_NO_FAIL(client_rel->InsertRel(Identifier::InvalidSchema(), Identifier("dest"))->Execute());
+	auto count_result = con.Query("SELECT count(*)::INTEGER FROM dest WHERE i = 99");
+	REQUIRE(CHECK_COLUMN(count_result, 0, {1}));
+
+	// a name that resolves in the catalog is unaffected - that text is faithful SQL
+	auto catalog_rel = con.RelationFromQuery("SELECT * FROM dest");
+	RelationStatement catalog_stmt(catalog_rel);
+	REQUIRE(StringUtil::Contains(catalog_stmt.query, "dest"));
+	REQUIRE_NO_FAIL(con.Query(catalog_stmt.query));
 }
