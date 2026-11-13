@@ -2066,6 +2066,38 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 			TryMoveToNextBuffer();
 		}
 	}
+
+	// Complete a pending row that spans more buffers than the over-buffer protocol supports (two)
+	while (cur_buffer_handle && !cur_buffer_handle->is_last_buffer && result.cur_col_id > 0 &&
+	       !result.current_errors.HasError() && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size) {
+		if (result.current_line_position.end.buffer_idx != iterator.pos.buffer_idx) {
+			// The row started in an earlier buffer, so it spans a full buffer: over max_line_size
+			LinePosition current_pos = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
+			idx_t line_size = current_pos - result.current_line_position.end;
+			// Move the line forward like AddRowInternal does, so the error reports this row, not the previous one
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = current_pos;
+			result.current_errors.Insert(MAXIMUM_LINE_SIZE, 1, result.chunk_col_id, result.last_position, line_size);
+			break;
+		}
+		const auto move_result = TryMoveToNextBuffer();
+		if (move_result == MoveBufferResult::NOT_IN_MEMORY) {
+			suspended = true;
+			return;
+		}
+		if (move_result == MoveBufferResult::NOT_MOVED) {
+			break;
+		}
+		// ProcessOverBufferValue() consumed a single value: keep scanning the row if it continues in this buffer
+		if (result.cur_col_id > 0) {
+			ProcessExtraRow();
+		}
+		if (cur_buffer_handle->is_last_buffer && iterator.pos.buffer_pos >= cur_buffer_handle->actual_size) {
+			// The pending row runs to the end of the file: add it
+			TryMoveToNextBuffer();
+			break;
+		}
+	}
 	const bool found_error =
 	    result.current_errors.HasErrorType(UNTERMINATED_QUOTES) || result.current_errors.HasErrorType(INVALID_STATE);
 	if (states.IsQuotedCurrent() && !found_error) {

@@ -1,0 +1,150 @@
+# name: test/sql/copy/csv/test_buffer_size_final_row.test
+# description: Regression test for duckdb/duckdb#25825: read_csv with an explicit buffer_size silently dropped the final row of the file when that row exceeded buffer_size, instead of raising the proper Maximum line size error
+# group: [csv]
+
+# The exact error classification depends on the scanner boundary layout, which the vector size
+# influences through the sniffer; this test pins exact error messages and requires the default size.
+require vector_size 2048
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2'), (3, '4'), (5, '666666666666666666')) t(a, b)) TO '{TEST_DIR}/bs_final_row.csv' (HEADER);
+
+# Without buffer_size the file reads correctly
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true);
+----
+3
+
+# buffer_size large enough to hold the longest row: all three rows are returned, with their values
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=21) ORDER BY a;
+----
+1	2
+3	4
+5	666666666666666666
+
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=21, parallel=false) ORDER BY a;
+----
+1	2
+3	4
+5	666666666666666666
+
+# Smaller buffer sizes: the final row exceeds max_line_size (which follows buffer_size), so reading
+# must raise the Maximum line size error instead of silently dropping the row
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=11);
+----
+Maximum line size of 11 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=12);
+----
+Maximum line size of 12 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=13);
+----
+Maximum line size of 13 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=16);
+----
+Maximum line size of 16 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=17);
+----
+Maximum line size of 17 bytes exceeded
+
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', header=true, buffer_size=20);
+----
+Maximum line size of 20 bytes exceeded
+
+# The same must hold without auto-detection, which scans the file in parallel right away
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, auto_detect=false, header=true, buffer_size=10);
+----
+Maximum line size of 10 bytes exceeded
+
+# The row spans three buffers, so it is reported by the FinishBoundaryScan branch: the error must
+# name the oversized row itself, not the row before it
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, auto_detect=false, header=true, buffer_size=10);
+----
+Original Line: 5,6666666666666666
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/bs_final_row.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, auto_detect=false, header=true, buffer_size=10, store_rejects=true);
+----
+2
+
+# The reject entry carries the line number, byte position and line text of the oversized row
+query IIIII
+SELECT line, line_byte_position, byte_position, error_type, substr(csv_line, 1, 2) FROM reject_errors;
+----
+4	13	13	LINE SIZE OVER MAXIMUM	5,
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# With ignore_errors the oversized row is skipped and the other rows are returned
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/bs_final_row.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, auto_detect=false, header=true, buffer_size=11, ignore_errors=true) ORDER BY a;
+----
+1	2
+3	4
+
+# With store_rejects the oversized row is recorded in the rejects table
+query II
+SELECT a, b FROM read_csv('{TEST_DIR}/bs_final_row.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR'}, auto_detect=false, header=true, buffer_size=11, store_rejects=true) ORDER BY a;
+----
+1	2
+3	4
+
+query IIIIIIIII
+SELECT * EXCLUDE (scan_id) FROM reject_errors order by all;
+----
+0	4	13	13	NULL	NULL	LINE SIZE OVER MAXIMUM	5,666666666666666666	Maximum line size of 11 bytes exceeded. Actual Size:20 bytes.
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# A row whose middle value spans a buffer boundary and ends at a delimiter, scanned by a scanner whose
+# range ends before the end of its buffer: the row must be completed across the boundary, not dropped.
+# The file has no trailing newline, so the row also runs to the end of the file. store_rejects skips the
+# parallel validator (completing the row makes the scanner overshoot its range) and also checks that the
+# row is not rejected.
+query III
+SELECT a, b, c FROM read_csv('{DATA_DIR}/csv/buffer_size/final_row_moved_buffer.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, auto_detect=false, header=false, buffer_size=100, max_line_size=30, store_rejects=true);
+----
+AAAAAAAAAAAAAAAAAAAA	A	B
+AAAAAAAAAAAAAAAAAAAA	A	B
+AAAAAAAAAAAAAAAAAAAA	A	B
+CCCCCCCCCCCCCCCCCCCC	DDDDD	E
+
+query I
+SELECT count(*) FROM reject_errors;
+----
+0
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+query III
+SELECT a, b, c FROM read_csv('{DATA_DIR}/csv/buffer_size/final_row_moved_buffer.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, auto_detect=false, header=false, buffer_size=100, max_line_size=30, parallel=false);
+----
+AAAAAAAAAAAAAAAAAAAA	A	B
+AAAAAAAAAAAAAAAAAAAA	A	B
+AAAAAAAAAAAAAAAAAAAA	A	B
+CCCCCCCCCCCCCCCCCCCC	DDDDD	E
