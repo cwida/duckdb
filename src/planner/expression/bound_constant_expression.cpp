@@ -3,6 +3,7 @@
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
 
@@ -17,6 +18,17 @@ BoundConstantExpression::BoundConstantExpression(Value value_p, Identifier alias
 	query_location = location;
 }
 
+BoundConstantExpression::~BoundConstantExpression() {
+}
+
+const BaseStatistics &BoundConstantExpression::GetStatistics() const {
+	lock_guard<mutex> guard(statistics_lock);
+	if (!statistics) {
+		statistics = BaseStatistics::FromConstant(value).ToUnique();
+	}
+	return *statistics;
+}
+
 unique_ptr<Expression> BoundConstantExpression::WithValue(Value new_value) const {
 	return make_uniq<BoundConstantExpression>(std::move(new_value), alias, query_location);
 }
@@ -25,6 +37,8 @@ void BoundConstantExpression::SetReturnType(LogicalType type) {
 	D_ASSERT(value.type() == type);
 	value = value.WithType(type);
 	return_type = std::move(type);
+	lock_guard<mutex> guard(statistics_lock);
+	statistics.reset();
 }
 
 string BoundConstantExpression::ToString() const {
