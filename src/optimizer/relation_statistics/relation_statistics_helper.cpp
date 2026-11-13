@@ -242,6 +242,21 @@ static ExpressionBinding GetChildColumnBinding(Expression &expr) {
 	return result;
 }
 
+static bool IsMultiColumnExpression(const Expression &expression) {
+	column_binding_set_t bindings;
+	std::function<void(const Expression &)> collect = [&](const Expression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+			bindings.insert(expr.Cast<BoundColumnRefExpression>().Binding());
+			return;
+		}
+		ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+			collect(child);
+		});
+	};
+	collect(expression);
+	return bindings.size() > 1;
+}
+
 //! Number of values a key computed from base columns (e.g. ts::DATE, year(ts)) can take, from its derived range
 static optional_idx DeriveExpressionDomain(const Expression &expression, const RelationColumnStatsLookup &child_columns,
                                            ClientContext &context) {
@@ -332,6 +347,12 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 						distinct_count = DistinctCount(bound.GetIndex(), source);
 					}
 					current_domain.distinct_count = MinValue(current_domain.distinct_count, bound.GetIndex());
+				} else if (IsMultiColumnExpression(expression)) {
+					// no expression-derived bound and multiple input columns (e.g. COALESCE after
+					// a LEFT join drops base_stats): the single-column estimate is unreliable,
+					// fall back to the projection cardinality
+					distinct_count = DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY);
+					current_domain = distinct_count;
 				}
 			}
 		}
