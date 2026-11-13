@@ -14,29 +14,80 @@ set(ABI_TYPE "" CACHE STRING "Metadata field: the ABI type of the extension")
 set(META6 "" CACHE STRING "Metadata field")
 set(META7 "" CACHE STRING "Metadata field")
 set(META8 "" CACHE STRING "Metadata field")
+set(SIGNATURE_SIZE "256" CACHE STRING "Size in bytes of the trailing signature slot: 256/384/512 for RSA-2048/3072/4096")
+set(SUPPORTED_SIGNATURE_SIZES 256 384 512)
+
+if(NOT SIGNATURE_SIZE IN_LIST SUPPORTED_SIGNATURE_SIZES)
+  message(FATAL_ERROR "SIGNATURE_SIZE must be one of ${SUPPORTED_SIGNATURE_SIZES}, got '${SIGNATURE_SIZE}'")
+endif()
+
+# META7 (reader field 6) holds the signature-size marker: empty for legacy 256, else the size in decimal.
+if(SIGNATURE_SIZE STREQUAL "256")
+  set(SIGNATURE_MARKER "")
+else()
+  set(SIGNATURE_MARKER "${SIGNATURE_SIZE}")
+endif()
+if(NOT META7 STREQUAL "" AND NOT META7 STREQUAL "${SIGNATURE_MARKER}")
+  if(SIGNATURE_MARKER STREQUAL "")
+    message(FATAL_ERROR "META7 is reserved for the signature-size marker; it must be empty, got '${META7}'")
+  else()
+    message(FATAL_ERROR "META7 is reserved for the signature-size marker; it must be empty or '${SIGNATURE_MARKER}', got '${META7}'")
+  endif()
+endif()
+set(META7 "${SIGNATURE_MARKER}")
 
 # null.txt should contain exactly 1 byte of value \x00
 file(READ "${NULL_FILE}" EMPTY_BYTE)
 
 string(REPEAT "${EMPTY_BYTE}" 32 EMPTY_32)
 string(REPEAT "${EMPTY_BYTE}" 256 EMPTY_256)
+string(REPEAT "${EMPTY_BYTE}" ${SIGNATURE_SIZE} EMPTY_SIGNATURE)
+
+# Appended after the WASM header: [meta][sig 256] for legacy, else [M1][sig][M2 = M1][256 zeros].
+if(SIGNATURE_SIZE STREQUAL "256")
+  set(FOOTER_SIZE 512)
+else()
+  math(EXPR FOOTER_SIZE "768 + ${SIGNATURE_SIZE}")
+endif()
+
+# Appends the unsigned LEB128 encoding of VALUE to the variable OUT, which must not hold NUL bytes.
+function(append_uleb128 OUT VALUE)
+  set(encoded "${${OUT}}")
+  while(TRUE)
+    math(EXPR byte "${VALUE} & 127")
+    math(EXPR VALUE "${VALUE} >> 7")
+    if(VALUE GREATER 0)
+      math(EXPR byte "${byte} | 128")
+    endif()
+    string(ASCII ${byte} char)
+    string(APPEND encoded "${char}")
+    if(VALUE EQUAL 0)
+      break()
+    endif()
+  endwhile()
+  set(${OUT} "${encoded}" PARENT_SCOPE)
+endfunction()
+
+set(FOOTER_SIZE_LEB "")
+append_uleb128(FOOTER_SIZE_LEB ${FOOTER_SIZE})
+string(LENGTH "${FOOTER_SIZE_LEB}" FOOTER_SIZE_LEB_LENGTH)
+# Outer section length: 1 (name length) + 16 (name) + inner size field + footer
+math(EXPR SECTION_SIZE "1 + 16 + ${FOOTER_SIZE_LEB_LENGTH} + ${FOOTER_SIZE}")
+set(SECTION_SIZE_LEB "")
+append_uleb128(SECTION_SIZE_LEB ${SECTION_SIZE})
 
 # 0 for custom section
 string(APPEND CUSTOM_SECTION "${EMPTY_BYTE}")
-# 213 in hex = 531 in decimal, total length of what follows (1 + 16 + 2 + 8x32 + 256)
-# [1(continuation) + 0010011(payload) = \x93 -> 147, 0(continuation) + 10(payload) = \x04 -> 4]
+string(APPEND CUSTOM_SECTION "${SECTION_SIZE_LEB}")
 # 10 in hex = 16 in decimal, length of name, 1 byte
-string(ASCII 147 4 16 CUSTOM_SECTION_2)
+string(ASCII 16 CUSTOM_SECTION_2)
 string(APPEND CUSTOM_SECTION "${CUSTOM_SECTION_2}")
 
 # the name of the WebAssembly custom section, 16 bytes
 string(APPEND CUSTOM_SECTION "duckdb_signature")
 
-# 1000 in hex, 512 in decimal
-# [1(continuation) + 0000000(payload) = -> 128, 0(continuation) + 100(payload) -> 4],
-# for a grand total of 2 bytes
-string(ASCII 128 4 CUSTOM_SECTION_3)
-string(APPEND CUSTOM_SECTION "${CUSTOM_SECTION_3}")
+# Inner footer size
+string(APPEND CUSTOM_SECTION "${FOOTER_SIZE_LEB}")
 
 # Second metadata-field is special, since content comes from a file
 file(READ "${PLATFORM_FILE}" META2)
@@ -52,17 +103,23 @@ string(SUBSTRING "${META7}${EMPTY_32}" 0 32 METADATA7)
 string(SUBSTRING "${META8}${EMPTY_32}" 0 32 METADATA8)
 
 # Append metadata fields, backwards
-string(APPEND CUSTOM_SECTION "${METADATA8}")
-string(APPEND CUSTOM_SECTION "${METADATA7}")
-string(APPEND CUSTOM_SECTION "${METADATA6}")
-string(APPEND CUSTOM_SECTION "${METADATA5}")
-string(APPEND CUSTOM_SECTION "${METADATA4}")
-string(APPEND CUSTOM_SECTION "${METADATA3}")
-string(APPEND CUSTOM_SECTION "${METADATA2}")
-string(APPEND CUSTOM_SECTION "${METADATA1}")
+string(APPEND METADATA_BLOCK "${METADATA8}")
+string(APPEND METADATA_BLOCK "${METADATA7}")
+string(APPEND METADATA_BLOCK "${METADATA6}")
+string(APPEND METADATA_BLOCK "${METADATA5}")
+string(APPEND METADATA_BLOCK "${METADATA4}")
+string(APPEND METADATA_BLOCK "${METADATA3}")
+string(APPEND METADATA_BLOCK "${METADATA2}")
+string(APPEND METADATA_BLOCK "${METADATA1}")
+string(APPEND CUSTOM_SECTION "${METADATA_BLOCK}")
 
 # Append signature (yet to be computed)
-string(APPEND CUSTOM_SECTION "${EMPTY_256}")
+string(APPEND CUSTOM_SECTION "${EMPTY_SIGNATURE}")
+
+# Larger signatures repeat the metadata at the fixed tail position, followed by a zeroed legacy slot
+if(NOT SIGNATURE_SIZE STREQUAL "256")
+  string(APPEND CUSTOM_SECTION "${METADATA_BLOCK}${EMPTY_256}")
+endif()
 
 # Append generated custom section to the extension
 file(APPEND "${EXTENSION}" "${CUSTOM_SECTION}")
