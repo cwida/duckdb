@@ -61,11 +61,39 @@ Transaction &MetaTransaction::GetTransaction(AttachedDatabase &db) {
 	if (ValidChecker::IsInvalidated(db)) {
 		throw IOException("%s", ValidChecker::InvalidatedMessage(db));
 	}
-	lock_guard<mutex> guard(lock);
-	auto entry = transactions.find(db);
-	if (entry == transactions.end()) {
-		auto &new_transaction = db.GetTransactionManager().StartTransaction(context);
-		new_transaction.active_query = active_query.load();
+	unique_lock<mutex> guard(lock);
+	while (true) {
+		auto entry = transactions.find(db);
+		if (entry != transactions.end()) {
+			D_ASSERT(entry->second.transaction.active_query == active_query);
+			return entry->second.transaction;
+		}
+		auto starting = starting_transactions.find(db);
+		if (starting == starting_transactions.end()) {
+			break;
+		}
+		if (starting->second == ThreadUtil::GetThreadId()) {
+			throw TransactionException(
+			    "Transaction for database \"%s\" requested while this thread is already starting "
+			    "it. A transaction manager cannot request its own transaction while starting it",
+			    db.GetName());
+		}
+		// another thread is starting the transaction for this database - wait for it to finish
+		transaction_started.wait(guard);
+	}
+	// Starting the transaction may re-enter this function from extension code (e.g. a secret lookup in the system
+	// catalog), so the lock is released meanwhile; the "starting" entry makes concurrent requests for it wait.
+	starting_transactions.emplace(reference<AttachedDatabase>(db), ThreadUtil::GetThreadId());
+	guard.unlock();
+
+	optional_ptr<Transaction> new_transaction;
+	try {
+		new_transaction = db.GetTransactionManager().StartTransaction(context);
+		new_transaction->active_query = active_query.load();
+		auto shared_db = db.shared_from_this();
+		UseDatabase(shared_db);
+
+		guard.lock();
 #ifdef DEBUG
 		VerifyAllTransactionsUnique(db, all_transactions);
 #endif
@@ -73,16 +101,28 @@ Transaction &MetaTransaction::GetTransaction(AttachedDatabase &db) {
 		// reserve first, then insert, so that a failing allocation happens before either is modified and the
 		// push_back that follows cannot allocate.
 		all_transactions.reserve(all_transactions.size() + 1);
-		transactions.insert(make_pair(reference<AttachedDatabase>(db), TransactionReference(new_transaction)));
+		transactions.insert(make_pair(reference<AttachedDatabase>(db), TransactionReference(*new_transaction)));
 		all_transactions.push_back(db);
-		auto shared_db = db.shared_from_this();
-		UseDatabase(shared_db);
-
-		return new_transaction;
-	} else {
-		D_ASSERT(entry->second.transaction.active_query == active_query);
-		return entry->second.transaction;
+	} catch (...) {
+		if (!guard.owns_lock()) {
+			guard.lock();
+		}
+		starting_transactions.erase(db);
+		guard.unlock();
+		transaction_started.notify_all();
+		if (new_transaction) {
+			// the transaction was started but could not be registered. roll it back so that it does not leak
+			try {
+				db.GetTransactionManager().RollbackTransaction(*new_transaction);
+			} catch (...) {
+			}
+		}
+		throw;
 	}
+	starting_transactions.erase(db);
+	guard.unlock();
+	transaction_started.notify_all();
+	return *new_transaction;
 }
 
 void MetaTransaction::RemoveTransaction(AttachedDatabase &db) {

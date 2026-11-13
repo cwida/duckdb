@@ -15,6 +15,8 @@
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/condition_variable.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/main/attached_database.hpp"
 
 namespace duckdb {
@@ -92,6 +94,10 @@ private:
 	mutex lock;
 	//! The set of active transactions for each database.
 	reference_map_t<AttachedDatabase, TransactionReference> transactions;
+	//! Databases for which a transaction is currently being started, and by which thread
+	reference_map_t<AttachedDatabase, thread_id> starting_transactions;
+	//! Signalled whenever a transaction start completes.
+	condition_variable transaction_started;
 	//! The set of referenced databases in invocation order.
 	vector<reference<AttachedDatabase>> all_transactions;
 	//! The database we are modifying. We can only modify one database per meta transaction.
