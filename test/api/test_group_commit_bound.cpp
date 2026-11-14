@@ -189,3 +189,98 @@ TEST_CASE("txid_current stays unique while commits are pending durability", "[ap
 
 	REQUIRE(gated.FinishWriter());
 }
+
+//! Parks writes to the main database file while armed (used to pause automatic checkpoint after WAL-skipping commit)
+class GatedCheckpointWriteFileSystem : public LocalFileSystem {
+public:
+	explicit GatedCheckpointWriteFileSystem(string db_name_p) : db_name(std::move(db_name_p)) {
+	}
+
+	using LocalFileSystem::Write;
+
+	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
+		if (StringUtil::EndsWith(handle.GetPath(), db_name)) {
+			unique_lock<mutex> guard(lock);
+			if (armed) {
+				armed = false;
+				parked = true;
+				cv.notify_all();
+				cv.wait(guard, [&]() { return released; });
+				if (fail_write) {
+					throw IOException("Injected checkpoint write failure");
+				}
+			}
+		}
+		LocalFileSystem::Write(handle, buffer, nr_bytes, location);
+	}
+
+	void Arm(bool fail = false) {
+		lock_guard<mutex> guard(lock);
+		armed = true;
+		parked = false;
+		released = false;
+		fail_write = fail;
+	}
+
+	bool WaitUntilParked() {
+		unique_lock<mutex> guard(lock);
+		return cv.wait_for(guard, std::chrono::seconds(60), [&]() { return parked; });
+	}
+
+	void Release() {
+		{
+			lock_guard<mutex> guard(lock);
+			released = true;
+			armed = false;
+		}
+		cv.notify_all();
+	}
+
+private:
+	string db_name;
+	mutex lock;
+	std::condition_variable cv;
+	bool armed = false;
+	bool parked = false;
+	bool released = false;
+	bool fail_write = false;
+};
+
+TEST_CASE("A commit that skips the WAL is not visible before its checkpoint completes", "[api][group_commit]") {
+	string db_name = "skip_wal_checkpoint_bound.db";
+	auto path = TestCreatePath(db_name);
+	DeleteDatabase(path);
+	auto fs = make_uniq<GatedCheckpointWriteFileSystem>(db_name);
+	auto *gate = fs.get();
+	DBConfig config;
+	config.file_system = make_uniq<VirtualFileSystem>(std::move(fs));
+	DuckDB db(path, &config);
+
+	Connection setup(db);
+	REQUIRE_NO_FAIL(setup.Query("SET checkpoint_threshold='1KB'"));
+	REQUIRE_NO_FAIL(setup.Query("SET auto_checkpoint_skip_wal_threshold='1KB'"));
+	REQUIRE_NO_FAIL(setup.Query("PRAGMA disable_checkpoint_on_shutdown"));
+	REQUIRE_NO_FAIL(setup.Query("CREATE TABLE t(i INTEGER)"));
+
+	gate->Arm(false);
+	bool writer_failed = false;
+	std::thread writer([&]() {
+		Connection con(db);
+		writer_failed = con.Query("INSERT INTO t SELECT * FROM range(" + to_string(ROW_COUNT) + ")")->HasError();
+	});
+	REQUIRE(gate->WaitUntilParked());
+
+	// While the automatic checkpoint is still writing, a newly started transaction must not observe the commit
+	Connection reader(db);
+	REQUIRE_NO_FAIL(reader.Query("BEGIN"));
+	REQUIRE(ScalarValue(reader, "SELECT count(*) FROM t") == 0);
+	REQUIRE_NO_FAIL(reader.Query("COMMIT"));
+
+	gate->Release();
+	writer.join();
+	REQUIRE(!writer_failed);
+
+	// Once the checkpoint finishes, new transactions observe the durable rows
+	REQUIRE(ScalarValue(setup, "SELECT count(*) FROM t") == ROW_COUNT);
+	DeleteDatabase(path);
+}

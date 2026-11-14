@@ -94,7 +94,7 @@ Transaction &DuckTransactionManager::StartTransaction(ClientContext &context) {
 	transaction_t start_time = current_start_timestamp++;
 	transaction_t transaction_id = current_transaction_id++;
 	// snapshots must not observe commits that are not yet durable, nor a newer catalog version
-	auto durable = GetDurableSnapshot();
+	auto durable = GetDurableSnapshot(&context);
 	// the transaction sees its own writes, and every durable commit before its start time
 	SnapshotView view(transaction_id,
 	                  VisibilityBound::Min(VisibilityBound::Before(start_time), durable.visibility_bound));
@@ -119,6 +119,11 @@ void DuckTransactionManager::SetActiveCheckpoint(idx_t checkpoint_id) {
 
 void DuckTransactionManager::ResetActiveCheckpoint() {
 	active_checkpoint = 0;
+}
+
+void DuckTransactionManager::SetStartingCheckpointContext(optional_ptr<ClientContext> context) {
+	lock_guard<mutex> lock(transaction_lock);
+	starting_checkpoint_context = context;
 }
 
 DuckTransactionManager::CheckpointDecision::CheckpointDecision(string reason_p)
@@ -296,7 +301,8 @@ bool DuckTransactionManager::HasUnsyncedCommits() {
 	return false;
 }
 
-DuckTransactionManager::DurableSnapshot DuckTransactionManager::GetDurableSnapshot() {
+DuckTransactionManager::DurableSnapshot
+DuckTransactionManager::GetDurableSnapshot(optional_ptr<ClientContext> context) {
 	DurableSnapshot durable;
 	optional_ptr<DuckTransaction> first_unsynced;
 	for (auto &active_transaction : active_transactions) {
@@ -313,6 +319,11 @@ DuckTransactionManager::DurableSnapshot DuckTransactionManager::GetDurableSnapsh
 		// recorded just before that commit
 		durable.visibility_bound = VisibilityBound::Before(first_unsynced->commit_id);
 		durable.catalog_version = first_unsynced->catalog_version_before_commit;
+	}
+	if (uncheckpointed_commit_id != 0 && (!context || context != starting_checkpoint_context)) {
+		durable.visibility_bound =
+		    VisibilityBound::Min(durable.visibility_bound, VisibilityBound::Before(uncheckpointed_commit_id));
+		durable.catalog_version = MinValue<idx_t>(durable.catalog_version, uncheckpointed_catalog_version);
 	}
 	return durable;
 }
@@ -473,6 +484,11 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 				transaction.wal_sync_offset = info.wal_sync_offset;
 				transaction.catalog_version_before_commit = last_committed_version;
 			}
+		} else if (skip_wal_write_due_to_checkpoint && should_write_to_wal) {
+			// published without a WAL write: not durable until the checkpoint below completes
+			D_ASSERT(info.commit_id >= durable_bound);
+			uncheckpointed_commit_id = info.commit_id;
+			uncheckpointed_catalog_version = last_committed_version;
 		}
 
 		// check if catalog changes were made
@@ -482,8 +498,46 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	}
 	OnCommitCheckpointDecision(checkpoint_decision, transaction);
 
+	struct UncheckpointedCommitGuard {
+	public:
+		UncheckpointedCommitGuard(DuckTransactionManager &tm_p, mutex &lock_p, bool active_p)
+		    : tm(tm_p), t_lock(lock_p), active(active_p) {
+		}
+		void CompleteUnderLock(bool advance_durable_bound) {
+			ResetUnderLock(advance_durable_bound);
+		}
+		void Complete(bool advance_durable_bound) {
+			if (!active) {
+				return;
+			}
+			lock_guard<mutex> guard(t_lock);
+			ResetUnderLock(advance_durable_bound);
+		}
+		~UncheckpointedCommitGuard() {
+			Complete(false);
+		}
+
+	private:
+		void ResetUnderLock(bool advance_durable_bound) {
+			if (!active) {
+				return;
+			}
+			if (advance_durable_bound && tm.uncheckpointed_commit_id >= tm.durable_bound) {
+				tm.durable_bound = VisibilityBound::Through(tm.uncheckpointed_commit_id);
+			}
+			tm.uncheckpointed_commit_id = 0;
+			tm.uncheckpointed_catalog_version = DConstants::INVALID_INDEX;
+			active = false;
+		}
+
+		DuckTransactionManager &tm;
+		mutex &t_lock;
+		bool active;
+	} uncheckpointed_guard(*this, transaction_lock, uncheckpointed_commit_id != 0);
+
 	if (!checkpoint_decision.can_checkpoint && lock) {
 		// we won't checkpoint after all due to an error during commit: unlock the checkpoint lock again
+		uncheckpointed_guard.CompleteUnderLock(false);
 		skip_wal_write_due_to_checkpoint = false;
 		lock.reset();
 	}
@@ -546,7 +600,8 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 
 	CleanupTransactions();
 
-	if (checkpoint_decision.can_checkpoint && (undo_properties.has_updates || undo_properties.has_dropped_entries) &&
+	if (checkpoint_decision.can_checkpoint && !skip_wal_write_due_to_checkpoint &&
+	    (undo_properties.has_updates || undo_properties.has_dropped_entries) &&
 	    GetLastCommit() >= LowestVisibilityBound()) {
 		// GetCheckpointType does not checkpoint while another transaction might still need the state
 		// from before this commit. That check ran before the sync; transactions that started during
@@ -573,8 +628,10 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 		options.type = checkpoint_decision.type;
 		options.commit_lock = held_commit_lock.owns_lock() ? &held_commit_lock : nullptr;
 		auto &storage_manager = db.GetStorageManager();
+		bool checkpoint_succeeded = false;
 		try {
 			storage_manager.CreateCheckpoint(context, options);
+			checkpoint_succeeded = true;
 		} catch (std::exception &ex) {
 			if (wal_written) {
 				context.transaction.SetAutocheckpointError(BuildAutocheckpointError(db, ex));
@@ -582,6 +639,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 				error.Merge(ErrorData(ex));
 			}
 		}
+		uncheckpointed_guard.Complete(checkpoint_succeeded);
 	}
 
 	return error;

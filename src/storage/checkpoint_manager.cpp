@@ -73,6 +73,15 @@ ActiveCheckpointWrapper::~ActiveCheckpointWrapper() {
 void ActiveCheckpointWrapper::Begin(CheckpointOptions &options) {
 	if (checkpoint_context) {
 		// the start time of the checkpoint transaction defines the visibility for checkpointing
+		struct CheckpointContextScope {
+			DuckTransactionManager &tm;
+			CheckpointContextScope(DuckTransactionManager &tm_p, ClientContext &ctx) : tm(tm_p) {
+				tm.SetStartingCheckpointContext(&ctx);
+			}
+			~CheckpointContextScope() {
+				tm.SetStartingCheckpointContext(nullptr);
+			}
+		} context_scope(transaction_manager, *checkpoint_context);
 		checkpoint_context->transaction.BeginTransaction();
 		checkpoint_context->transaction.SetReadOnly();
 		auto &transaction = DuckTransaction::Get(*checkpoint_context, db);
