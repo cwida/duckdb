@@ -68,6 +68,7 @@ public:
 	}
 	void SetActiveCheckpoint(idx_t checkpoint_id);
 	void ResetActiveCheckpoint();
+	void SetStartingCheckpointContext(optional_ptr<ClientContext> context);
 
 	bool IsDuckTransactionManager() override {
 		return true;
@@ -140,7 +141,7 @@ private:
 		idx_t catalog_version = DConstants::INVALID_INDEX;
 	};
 	//! The most recent snapshot that contains only durable commits; unbounded when none is pending
-	DurableSnapshot GetDurableSnapshot();
+	DurableSnapshot GetDurableSnapshot(optional_ptr<ClientContext> context = nullptr);
 
 private:
 	//! The current start timestamp used by transactions
@@ -173,6 +174,11 @@ private:
 	//! active_transactions until its commit is durable, so new snapshots are bounded below commits
 	//! that are not yet durable
 	VisibilityBound durable_bound;
+	//! Commit that skipped the WAL and is not durable until its automatic checkpoint completes
+	transaction_t uncheckpointed_commit_id = 0;
+	idx_t uncheckpointed_catalog_version = DConstants::INVALID_INDEX;
+	//! Context starting the checkpoint transaction (which must observe uncheckpointed_commit_id)
+	optional_ptr<ClientContext> starting_checkpoint_context;
 	//! Signalled (under transaction_lock) when no active transaction awaits its WAL sync
 	std::condition_variable durability_cv;
 
