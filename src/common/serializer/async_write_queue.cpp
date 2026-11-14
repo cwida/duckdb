@@ -355,11 +355,16 @@ void AsyncWriteQueue::WriteBuffer(data_ptr_t buffer, idx_t size, idx_t offset) {
 	}
 	try {
 		target.Write(buffer, size, offset);
-	} catch (const IOException &ex) {
-		throw IOException("Async write failed for range [offset=%llu, size=%llu]: %s", offset, size, ex.what());
-	} catch (const HTTPException &ex) {
-		throw HTTPException(Exception::ConstructMessage("Async write failed for range [offset=%llu, size=%llu]: %s",
-		                                                offset, size, ex.what()));
+	} catch (const std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() == ExceptionType::IO) {
+			throw IOException("Async write failed for range [offset=%llu, size=%llu]: %s", offset, size, ex.what());
+		}
+		if (error.Type() == ExceptionType::HTTP) {
+			throw HTTPException(Exception::ConstructMessage("Async write failed for range [offset=%llu, size=%llu]: %s",
+			                                                offset, size, ex.what()));
+		}
+		throw;
 	}
 }
 

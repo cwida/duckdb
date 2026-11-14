@@ -46,14 +46,14 @@ TEST_CASE("Test that reverting an append to a row in a gap of the column segment
 	REQUIRE(end == 100);
 
 	// the row lies in the gap before the appended segment
-	REQUIRE_THROWS_AS(column.RevertAppend(UnsafeNumericCast<row_t>(end)), DataCorruptionException);
+	REQUIRE_THROWS_WITH(column.RevertAppend(UnsafeNumericCast<row_t>(end)), Catch::Contains("Corrupted segment tree"));
 	{
 		auto &segment_tree = column.GetSegmentTree();
 		auto lock = segment_tree.Lock();
 		REQUIRE(segment_tree.GetSegmentCount(lock) == 2);
 		idx_t segment_index;
 		REQUIRE(!segment_tree.TryGetSegmentIndex(lock, end, segment_index));
-		REQUIRE_THROWS_AS(segment_tree.GetSegmentIndex(lock, end), DataCorruptionException);
+		REQUIRE_THROWS_WITH(segment_tree.GetSegmentIndex(lock, end), Catch::Contains("Corrupted segment tree"));
 	}
 	REQUIRE(column.count == 100);
 	REQUIRE_NO_FAIL(con.Query("ROLLBACK"));

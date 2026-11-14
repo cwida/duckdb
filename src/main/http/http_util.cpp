@@ -472,15 +472,16 @@ HTTPUtil::RunRequestWithRetry(const std::function<unique_ptr<HTTPResponse>(void)
 			    if (response) {
 				    response->url = request.url;
 			    }
-		    } catch (IOException &e) {
+		    } catch (const std::exception &e) {
+			    caught_error = ErrorData(e);
+			    if (caught_error.Type() != ExceptionType::IO && caught_error.Type() != ExceptionType::HTTP) {
+				    throw;
+			    }
 			    exception_error = e.what();
 			    caught_e = std::current_exception();
-			    caught_error = ErrorData(e);
-		    } catch (HTTPException &e) {
-			    exception_error = e.what();
-			    caught_e = std::current_exception();
-			    caught_error = ErrorData(e);
-			    caught_response = ResponseFromError(caught_error);
+			    if (caught_error.Type() == ExceptionType::HTTP) {
+				    caught_response = ResponseFromError(caught_error);
+			    }
 		    }
 
 		    if (response) {

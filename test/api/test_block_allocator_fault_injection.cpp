@@ -19,7 +19,7 @@ TEST_CASE("BlockAllocator preserves ownership under allocation failures", "[bloc
 	auto separator = executable.find_last_of('/');
 	REQUIRE(separator != std::string::npos);
 	executable.resize(separator + 1);
-	executable += "block_allocator_fault_injection";
+	executable += "test/block_allocator_fault_injection";
 	INFO(executable);
 
 	auto parent = std::to_string(getpid());

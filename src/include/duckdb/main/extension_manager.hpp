@@ -56,11 +56,14 @@ public:
 class ExtensionManager {
 public:
 	explicit ExtensionManager(DatabaseInstance &db);
+	~ExtensionManager();
 
 	DUCKDB_API bool ExtensionIsLoaded(const string &name);
 	DUCKDB_API vector<string> GetExtensions();
 	DUCKDB_API shared_ptr<ExtensionInfo> GetExtensionInfo(const string &name);
 	DUCKDB_API unique_ptr<ExtensionActiveLoad> BeginLoad(const ExtensionLoadOptions &options);
+	DUCKDB_API void RegisterService(const string &name, void *service, void (*delete_callback)(void *));
+	DUCKDB_API void *GetService(const string &name);
 
 	DUCKDB_API static ExtensionManager &Get(DatabaseInstance &db);
 	DUCKDB_API static ExtensionManager &Get(ClientContext &context);
@@ -68,9 +71,15 @@ public:
 	void RemoveExtensionInfo(const string &name);
 
 private:
+	struct ExtensionService {
+		void *service;
+		void (*delete_callback)(void *);
+	};
+
 	DatabaseInstance &db;
 	mutex lock;
 	identifier_map_t<shared_ptr<ExtensionInfo>> loaded_extensions_info;
+	unordered_map<string, ExtensionService> services;
 	string extension_load_prefix;
 };
 

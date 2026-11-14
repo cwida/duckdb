@@ -32,8 +32,7 @@ EXE_SUFFIX :=
 ifeq ($(OS),Windows_NT)
 EXE_SUFFIX := .exe
 endif
-UNITTEST_BINARY ?= test/unittest$(EXE_SUFFIX)
-SMOKE_UNITTEST ?= build/relassert/$(UNITTEST_BINARY)
+TEST_RUNNER ?= test/run
 SMOKE_RUNNER ?= build/relassert/test/run
 UNITTEST_SLOW_FLAGS ?= --track-runtime=100
 UNITTEST_HUGE_FLAGS ?= --workers=50% $(UNITTEST_SLOW_FLAGS)
@@ -636,7 +635,8 @@ test_table_scan:
 	./build/release/test/run --test-flags='--on-init "SET debug_physical_table_scan_execution_strategy=SYNCHRONOUS;"'
 
 test_storage:
-	$(PYTHON) scripts/test_storage_compatibility.py --versions "1.2.1|1.3.2|1.4.3" --new-unittest build/release/$(UNITTEST_BINARY)
+	$(PYTHON) scripts/test_storage_compatibility.py --versions "1.2.1|1.3.2|1.4.3" \
+		--new-unittest build/release/$(TEST_RUNNER) --new-cli build/release/duckdb
 
 .PHONY: alltest_release_tag test_release_tag
 alltest_release_tag:

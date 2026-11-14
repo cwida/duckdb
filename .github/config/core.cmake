@@ -4,6 +4,9 @@ if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFI
     duckdb_extension_load(icu)
     duckdb_extension_load(tpcds)
     duckdb_extension_load(tpch)
+    if (NOT EMSCRIPTEN)
+        duckdb_extension_load(test)
+    endif()
 
     # Test extension for the upcoming C CAPI extensions
     duckdb_extension_load(demo_capi)

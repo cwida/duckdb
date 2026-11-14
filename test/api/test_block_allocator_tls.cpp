@@ -1035,7 +1035,7 @@ TEST_CASE("BufferAllocator accounts for ordinary and huge backing operations", "
 
 	SECTION("Ordinary reallocation") {
 		control.fail_allocate = true;
-		REQUIRE_THROWS_AS(allocator.Allocate(SIZE), OutOfMemoryException);
+		REQUIRE_THROWS_WITH(allocator.Allocate(SIZE), Catch::Matchers::Contains("Failed to allocate block"));
 		REQUIRE(manager.GetUsedMemory() == initial_memory);
 		control.fail_allocate = false;
 		auto owned = allocator.Allocate(SIZE);
@@ -1045,7 +1045,8 @@ TEST_CASE("BufferAllocator accounts for ordinary and huge backing operations", "
 		pointer[SIZE - 1] = 84;
 		control.fail_reallocate = true;
 		for (auto new_size : {SIZE / 2, SIZE * 2}) {
-			REQUIRE_THROWS_AS(owner.ReallocateData(pointer, SIZE, new_size), OutOfMemoryException);
+			REQUIRE_THROWS_WITH(owner.ReallocateData(pointer, SIZE, new_size),
+			                    Catch::Matchers::Contains("Failed to re-allocate block"));
 			REQUIRE(manager.GetUsedMemory() == initial_memory + SIZE);
 			REQUIRE(owned.get() == pointer);
 			REQUIRE(owned.GetAllocator().get() == &owner);
@@ -1082,7 +1083,7 @@ TEST_CASE("BufferAllocator accounts for ordinary and huge backing operations", "
 	}
 	SECTION("Huge replacement") {
 		control.fail_allocate = true;
-		REQUIRE_THROWS_AS(allocator.AllocateHuge(SIZE), OutOfMemoryException);
+		REQUIRE_THROWS_WITH(allocator.AllocateHuge(SIZE), Catch::Matchers::Contains("Failed to allocate block"));
 		REQUIRE(manager.GetUsedMemory() == initial_memory);
 		REQUIRE(live_bytes.load() == 0);
 		control.fail_allocate = false;
@@ -1092,7 +1093,8 @@ TEST_CASE("BufferAllocator accounts for ordinary and huge backing operations", "
 		pointer[SIZE - 1] = 84;
 		control.fail_allocate = true;
 		for (auto new_size : {SIZE / 2, SIZE * 2}) {
-			REQUIRE_THROWS_AS(owned = allocator.AllocateHuge(new_size), OutOfMemoryException);
+			REQUIRE_THROWS_WITH(owned = allocator.AllocateHuge(new_size),
+			                    Catch::Matchers::Contains("Failed to allocate block"));
 			REQUIRE(manager.GetUsedMemory() == initial_memory + SIZE);
 			REQUIRE(live_bytes.load() == SIZE);
 			REQUIRE(owned.GetSize() == SIZE);
@@ -1102,7 +1104,8 @@ TEST_CASE("BufferAllocator accounts for ordinary and huge backing operations", "
 		}
 		control.fail_allocate = false;
 		REQUIRE_NO_FAIL(connection.Query("SET memory_limit='12MiB'"));
-		REQUIRE_THROWS_AS(owned = allocator.AllocateHuge(2 * SIZE), OutOfMemoryException);
+		REQUIRE_THROWS_WITH(owned = allocator.AllocateHuge(2 * SIZE),
+		                    Catch::Matchers::Contains("failed to allocate data"));
 		REQUIRE(manager.GetUsedMemory() == initial_memory + SIZE);
 		REQUIRE(live_bytes.load() == SIZE);
 		REQUIRE(owned.get() == pointer);

@@ -130,30 +130,31 @@ TEST_CASE("Malformed RLE batches fail before unchecked run access", "[storage][c
 	Vector result(LogicalType::INTEGER, row_count);
 
 	SECTION("scan") {
-		REQUIRE_THROWS_AS(segment->Scan(state, row_count, result, 0, ScanVectorType::SCAN_ENTIRE_VECTOR),
-		                  DataCorruptionException);
+		REQUIRE_THROWS_WITH(segment->Scan(state, row_count, result, 0, ScanVectorType::SCAN_ENTIRE_VECTOR),
+		                    Catch::Contains("Corrupted RLE segment:"));
 	}
 	SECTION("partial scan") {
-		REQUIRE_THROWS_AS(segment->Scan(state, row_count, result, 0, ScanVectorType::SCAN_FLAT_VECTOR),
-		                  DataCorruptionException);
+		REQUIRE_THROWS_WITH(segment->Scan(state, row_count, result, 0, ScanVectorType::SCAN_FLAT_VECTOR),
+		                    Catch::Contains("Corrupted RLE segment:"));
 	}
 	SECTION("selection validates its unselected tail") {
 		SelectionVector selection(1);
 		selection.set_index(0, 0);
-		REQUIRE_THROWS_AS(segment->Select(state, row_count, result, selection, 1, 0, ScanVectorType::SCAN_FLAT_VECTOR),
-		                  DataCorruptionException);
+		REQUIRE_THROWS_WITH(
+		    segment->Select(state, row_count, result, selection, 1, 0, ScanVectorType::SCAN_FLAT_VECTOR),
+		    Catch::Contains("Corrupted RLE segment:"));
 	}
 	SECTION("skip") {
 		state.offset_in_column = row_count;
-		REQUIRE_THROWS_AS(segment->Skip(state), DataCorruptionException);
+		REQUIRE_THROWS_WITH(segment->Skip(state), Catch::Contains("Corrupted RLE segment:"));
 	}
 	SECTION("filter validates beyond the requested vector") {
 		auto filter = ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_GREATERTHAN, Value::INTEGER(0));
 		auto filter_state = TableFilterState::Initialize(*con.context, *filter);
 		SelectionVector selection;
 		idx_t selected_count = 1;
-		REQUIRE_THROWS_AS(segment->Filter(state, 1, result, selection, selected_count, *filter, *filter_state),
-		                  DataCorruptionException);
+		REQUIRE_THROWS_WITH(segment->Filter(state, 1, result, selection, selected_count, *filter, *filter_state),
+		                    Catch::Contains("Corrupted RLE segment:"));
 	}
 }
 

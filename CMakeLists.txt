@@ -666,8 +666,9 @@ option(
   CLANG_TIDY
   "Enable build for clang-tidy, this disables all source files excluding the core database. This does not produce a working build."
   FALSE)
-option(BUILD_UNITTESTS "Build the unittest runner." TRUE)
-option(ENABLE_UNITTEST_CPP_TESTS "Build the C++ Unit Tests." TRUE)
+option(BUILD_UNITTESTS "Build the test extension, C++ test bundle, and runner."
+       TRUE)
+option(ENABLE_UNITTEST_CPP_TESTS "Build the C++ test bundle." TRUE)
 option(NATIVE_LTO_STATIC_LIBRARIES
        "Run LTO before writing static libraries so non-LTO linkers can use them"
        OFF)
@@ -1355,23 +1356,21 @@ if(PREBUILT_BINARY)
                    src/main/extension/local_extension_repository)
 
   foreach(
-    DUCKDB_PREBUILT_LINK_LIBRARY
-    duckdb_fastpforlib
-    duckdb_fmt
-    duckdb_fsst
-    duckdb_hyperloglog
-    duckdb_mbedtls
-    duckdb_miniz
-    duckdb_re2
-    duckdb_skiplistlib
-    duckdb_utf8proc
-    duckdb_yyjson
-    duckdb_zstd)
-    if(NOT TARGET ${DUCKDB_PREBUILT_LINK_LIBRARY})
-      add_library(${DUCKDB_PREBUILT_LINK_LIBRARY} INTERFACE IMPORTED GLOBAL)
-      target_link_libraries(${DUCKDB_PREBUILT_LINK_LIBRARY}
-                            INTERFACE duckdb_static)
-    endif()
+    DUCKDB_PREBUILT_THIRD_PARTY
+    fastpforlib
+    fmt
+    fsst
+    hyperloglog
+    mbedtls
+    miniz
+    re2
+    skiplist
+    utf8proc
+    yyjson
+    zstd)
+    add_subdirectory(
+      third_party/${DUCKDB_PREBUILT_THIRD_PARTY}
+      third_party/${DUCKDB_PREBUILT_THIRD_PARTY} EXCLUDE_FROM_ALL)
   endforeach()
 
   add_subdirectory(tools)
@@ -1386,7 +1385,7 @@ duckdb_link_deferred_extension_libraries()
 
 if(NOT EXTENSION_CONFIG_BUILD)
   if(PREBUILT_BINARY)
-    message(STATUS "Skipping third_party/ because PREBUILT_BINARY is set")
+    message(STATUS "Prebuilt DuckDB helper libraries are built on demand")
   else()
     add_third_party(fastpforlib)
     add_third_party(fmt)
@@ -1442,6 +1441,10 @@ if(NOT CLANG_TIDY)
       add_subdirectory(benchmark)
     endif()
   endif()
+endif()
+
+if(TARGET test_loadable_extension AND TARGET shell)
+  set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
 endif()
 
 duckdb_apply_architecture_flags()

@@ -431,8 +431,8 @@ TEST_CASE("A retained result in a format keeps its units in order", "[api][query
 		REQUIRE(expected == 200000);
 		REQUIRE(handle.RowCount() == 200000);
 		// The units are the format's, so the chunk accessors refuse this result
-		REQUIRE_THROWS_AS(handle.Collection(), InvalidInputException);
-		REQUIRE_THROWS_AS(handle.Fetch(), InvalidInputException);
+		REQUIRE_THROWS_WITH(handle.Collection(), Catch::Contains("asked for the"));
+		REQUIRE_THROWS_WITH(handle.Fetch(), Catch::Contains("asked for the"));
 	};
 
 	SECTION("Materialize, then run it out to a terminal Poll") {
@@ -520,9 +520,10 @@ TEST_CASE("TakeCollection hands over the whole format store, fetched units inclu
 	}
 	REQUIRE(total_rows == 10000);
 
-	REQUIRE_THROWS_AS(handle->TakeCollection<TestFormat>(), InvalidInputException);
-	REQUIRE_THROWS_AS(handle->Collection<TestFormat>(), InvalidInputException);
-	REQUIRE_THROWS_AS(handle->Fetch<TestFormat>(), InvalidInputException);
+	auto unavailable = Catch::Contains("no longer holds a collection");
+	REQUIRE_THROWS_WITH(handle->TakeCollection<TestFormat>(), unavailable);
+	REQUIRE_THROWS_WITH(handle->Collection<TestFormat>(), unavailable);
+	REQUIRE_THROWS_WITH(handle->Fetch<TestFormat>(), unavailable);
 	handle.reset();
 	// The taken collection outlives the handle it came from
 	idx_t total_rows_after_reset = 0;
@@ -601,27 +602,28 @@ TEST_CASE("A stream and an accessor refuse a format that is not the settled one"
 
 	SECTION("a chunk stream on a formatted result") {
 		auto handle = SubmitFormatted(con, "SELECT i FROM range(1000) t(i)", 1024);
-		REQUIRE_THROWS_AS(QueryResultStream<>(std::move(handle)), InvalidInputException);
+		REQUIRE_THROWS_WITH(QueryResultStream<>(std::move(handle)), Catch::Contains("Attempting to open a"));
 	}
 	SECTION("a formatted stream on a chunk result") {
 		auto handle = con.Submit("SELECT i FROM range(1000) t(i)");
-		REQUIRE_THROWS_AS(QueryResultStream<TestFormat>(std::move(handle)), InvalidInputException);
+		REQUIRE_THROWS_WITH(QueryResultStream<TestFormat>(std::move(handle)), Catch::Contains("Attempting to open a"));
 	}
 	SECTION("a formatted fetch on a chunk result") {
 		auto handle = con.Submit("SELECT i FROM range(1000) t(i)");
 		DrainWatchdog watchdog(con);
-		REQUIRE_THROWS_AS(handle->Fetch<TestFormat>(), InvalidInputException);
+		REQUIRE_THROWS_WITH(handle->Fetch<TestFormat>(), Catch::Contains("asked for the"));
 	}
 	SECTION("a stream of another format that declares the same payload type") {
 		auto handle = SubmitFormatted(con, "SELECT i FROM range(1000) t(i)", 1024);
-		REQUIRE_THROWS_AS(QueryResultStream<OtherTestFormat>(std::move(handle)), InvalidInputException);
+		REQUIRE_THROWS_WITH(QueryResultStream<OtherTestFormat>(std::move(handle)),
+		                    Catch::Contains("Attempting to open a"));
 	}
 	SECTION("a fetch in another format that declares the same payload type") {
 		auto handle = SubmitFormatted(con, "SELECT i FROM range(1000) t(i)", 1024);
 		DrainWatchdog watchdog(con);
-		REQUIRE_THROWS_AS(handle->Fetch<OtherTestFormat>(), InvalidInputException);
-		REQUIRE_THROWS_AS(handle->Collection<OtherTestFormat>(), InvalidInputException);
-		REQUIRE_THROWS_AS(handle->FormatState<OtherTestFormat>(), InvalidInputException);
+		REQUIRE_THROWS_WITH(handle->Fetch<OtherTestFormat>(), Catch::Contains("asked for the"));
+		REQUIRE_THROWS_WITH(handle->Collection<OtherTestFormat>(), Catch::Contains("asked for the"));
+		REQUIRE_THROWS_WITH(handle->FormatState<OtherTestFormat>(), Catch::Contains("asked for the"));
 	}
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
@@ -730,7 +732,7 @@ TEST_CASE("RowCount throws after TakeCollection for a format", "[api][query_resu
 	REQUIRE(collection);
 	// RowCount used to report 0 once the collection was taken, same as a result closed before it was
 	// ever collected; it now throws so a taken result is distinguishable from an empty one
-	REQUIRE_THROWS_AS(handle->RowCount(), InvalidInputException);
+	REQUIRE_THROWS_WITH(handle->RowCount(), Catch::Contains("no longer holds a collection"));
 }
 
 TEST_CASE("Fetch resumes where it left off across a Collection call, and stays null after exhaustion, for a format",
@@ -777,9 +779,9 @@ TEST_CASE("ToString, ToBox, Equals and FetchRaw on a retained TestFormat result 
 
 	auto other = SubmitFormatted(con, "SELECT i FROM range(1000) t(i)", 4096);
 	other->Complete();
-	REQUIRE_THROWS_AS(handle->Equals(*other), InvalidInputException);
+	REQUIRE_THROWS_WITH(handle->Equals(*other), Catch::Contains("only be compared in the chunk format"));
 
-	REQUIRE_THROWS_AS(handle->FetchRaw(), InvalidInputException);
+	REQUIRE_THROWS_WITH(handle->FetchRaw(), Catch::Contains("asked for the"));
 }
 
 TEST_CASE("Retained unordered and source-ordered TestFormat plans complete with every row",

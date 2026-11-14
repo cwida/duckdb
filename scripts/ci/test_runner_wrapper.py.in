@@ -1,14 +1,40 @@
 #!/usr/bin/env python3
 import sys
+from pathlib import Path
 
-SOURCE_ROOT = r"@PROJECT_SOURCE_DIR@"
-if SOURCE_ROOT not in sys.path:
-    sys.path.insert(0, SOURCE_ROOT)
+
+def find_source_root():
+    configured_source_root = Path(r"@PROJECT_SOURCE_DIR@")
+    for candidate in [*Path(__file__).resolve().parents, configured_source_root]:
+        if (candidate / "scripts" / "ci" / "test_runner_wrapper.py").is_file():
+            return candidate
+    raise RuntimeError("Could not locate the DuckDB source directory")
+
+
+SOURCE_ROOT = find_source_root()
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from scripts.ci.test_runner_wrapper import main
 
+CONFIGURED_TEST_ROOT = r"@UNITTEST_ROOT_DIRECTORY@"
+TEST_ROOT_DIRECTORY = Path(CONFIGURED_TEST_ROOT) if CONFIGURED_TEST_ROOT else SOURCE_ROOT
+TEST_ROOTS = [
+    str(TEST_ROOT_DIRECTORY / "test"),
+    str(TEST_ROOT_DIRECTORY / "third_party" / "sqllogictest" / "test"),
+    *filter(None, r"@RUN_WRAPPER_TEST_ROOTS@".split(";")),
+]
+DEFAULT_ARGS = [*filter(None, r"@RUN_WRAPPER_DEFAULT_ARGS@".split(";"))]
+DUCKDB_NAME = "@RUN_WRAPPER_DUCKDB_NAME@"
 
 if __name__ == "__main__":
     raise SystemExit(
-        main(sys.argv[1:], wrapper_path=__file__, source_root=SOURCE_ROOT, unittest_name="@RUN_WRAPPER_UNITTEST_NAME@")
+        main(
+            [*DEFAULT_ARGS, *sys.argv[1:]],
+            wrapper_path=__file__,
+            source_root=SOURCE_ROOT,
+            duckdb_name=DUCKDB_NAME,
+            test_roots=TEST_ROOTS,
+            test_root_directory=TEST_ROOT_DIRECTORY,
+        )
     )

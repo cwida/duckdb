@@ -35,7 +35,7 @@ SELECT * FROM t;
 
 statement ok
 CREATE TABLE expected_reservoir AS
-WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0)) AS (
+WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0, 16)) AS (
 	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
 	UNION
 	SELECT n.k, r.v + 1
@@ -61,7 +61,7 @@ SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_approx)),
 0	0
 
 query II
-WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0)) AS (
+WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0, 16)) AS (
 	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
 	UNION
 	SELECT n.k, r.v + 1

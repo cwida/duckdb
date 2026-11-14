@@ -20,7 +20,7 @@ fi
 
 rm -rf "$ARTIFACT_ROOT"
 rm -f "$ARTIFACT_TARBALL"
-mkdir -p "$ARTIFACT_DIR/test/extension" "$ARTIFACT_DIR/src" "$(dirname "$ARTIFACT_TARBALL")"
+mkdir -p "$ARTIFACT_DIR/test/extensions" "$ARTIFACT_DIR/src" "$(dirname "$ARTIFACT_TARBALL")"
 
 copy_file() {
 	local source_path="$1"
@@ -47,7 +47,7 @@ copy_by_basename() {
 shopt -s nullglob
 
 cli_path=""
-# Required by CI jobs that run the CLI from build/<type>/duckdb.
+# The test runner starts a fresh CLI process for every test batch.
 for candidate in "$BUILD_DIR/duckdb" "$BUILD_DIR/duckdb.exe"; do
 	if [[ -f "$candidate" ]]; then
 		cli_path="$(basename "$candidate")"
@@ -55,18 +55,8 @@ for candidate in "$BUILD_DIR/duckdb" "$BUILD_DIR/duckdb.exe"; do
 		break
 	fi
 done
-
-unittest_path=""
-# Required by CI test jobs that run the prebuilt unittest binary and runner.
-for candidate in "$BUILD_DIR/test/unittest" "$BUILD_DIR/test/unittest.exe"; do
-	if [[ -f "$candidate" ]]; then
-		unittest_path="test/$(basename "$candidate")"
-		copy_file "$candidate" "$unittest_path"
-		break
-	fi
-done
-if [[ -z "$unittest_path" ]]; then
-	echo "No unittest executable found in $BUILD_DIR/test" >&2
+if [[ -z "$cli_path" ]]; then
+	echo "No DuckDB CLI executable found in $BUILD_DIR" >&2
 	exit 1
 fi
 if [[ -f "$BUILD_DIR/test/block_allocator_fault_injection" ]]; then
@@ -75,7 +65,7 @@ if [[ -f "$BUILD_DIR/test/block_allocator_fault_injection" ]]; then
 fi
 
 runner_path=""
-for runner_name in run run.py run.bat; do
+for runner_name in run run.py run.bat unittest unittest.py unittest.bat; do
 	if [[ -f "$BUILD_DIR/test/$runner_name" ]]; then
 		copy_file "$BUILD_DIR/test/$runner_name" "test/$runner_name"
 		if [[ -z "$runner_path" || "$runner_name" == "run.py" ]]; then
@@ -84,7 +74,7 @@ for runner_name in run run.py run.bat; do
 	fi
 done
 if [[ -z "$runner_path" ]]; then
-	echo "No unittest runner wrapper found in $BUILD_DIR/test" >&2
+	echo "No test runner wrapper found in $BUILD_DIR/test" >&2
 	exit 1
 fi
 
@@ -105,7 +95,20 @@ for extension_library in "$BUILD_DIR"/extension/*/lib*_extension.a "$BUILD_DIR"/
 	extension_name="$(basename "$(dirname "$extension_library")")"
 	copy_file "$extension_library" "extension/$extension_name/$(basename "$extension_library")"
 done
-# Required by extension tests using build/<type>/test/extension/*.duckdb_extension.
+# The runner loads test from the repository, and can load core_functions when
+# the shell was built without it statically linked.
+for extension in \
+	"$BUILD_DIR"/extension/core_functions/core_functions.duckdb_extension; do
+	extension_name="$(basename "$(dirname "$extension")")"
+	copy_file "$extension" "extension/$extension_name/$(basename "$extension")"
+done
+
+# C++ tests are independent loadable test bundles discovered by scan_tests.
+for extension in "$BUILD_DIR"/test/extensions/*.duckdb_extension; do
+	copy_file "$extension" "test/extensions/$(basename "$extension")"
+done
+
+# SQL and C++ tests load these fixture extensions from {BUILD_DIRECTORY}.
 for extension in "$BUILD_DIR"/test/extension/*.duckdb_extension; do
 	copy_file "$extension" "test/extension/$(basename "$extension")"
 done
@@ -130,10 +133,7 @@ for candidate in "$BUILD_DIR/benchmark/benchmark_runner" "$BUILD_DIR/benchmark/b
 done
 
 # Executables travel in the tarball so their modes survive GitHub's artifact transport.
-chmod 755 "$ARTIFACT_DIR/$unittest_path" "$ARTIFACT_DIR/$runner_path"
-if [[ -n "$cli_path" ]]; then
-	chmod 755 "$ARTIFACT_DIR/$cli_path"
-fi
+chmod 755 "$ARTIFACT_DIR/$cli_path" "$ARTIFACT_DIR/$runner_path"
 if [[ -n "$benchmark_path" ]]; then
 	chmod 755 "$ARTIFACT_DIR/$benchmark_path"
 fi

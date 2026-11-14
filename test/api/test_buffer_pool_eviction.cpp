@@ -352,7 +352,8 @@ TEST_CASE("Hash buffer unpin restores an entry consumed while pinned", "[storage
 	auto block = pin.GetBlockHandle();
 	pin.Destroy();
 	pin = manager.Pin(block);
-	REQUIRE_THROWS_AS(manager.Allocate(MemoryTag::HASH_TABLE, size, true), OutOfMemoryException);
+	REQUIRE_THROWS_WITH(manager.Allocate(MemoryTag::HASH_TABLE, size, true),
+	                    Catch::Matchers::Contains("could not allocate block"));
 	{
 		auto lock = block->GetMemory().GetLock();
 		REQUIRE_FALSE(block->GetMemory().HasLiveQueueEntry(lock));

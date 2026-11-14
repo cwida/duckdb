@@ -40,6 +40,14 @@ DatabaseInstance &ExtensionLoader::GetDatabaseInstance() const {
 	return db;
 }
 
+void ExtensionLoader::RegisterService(const string &name, void *service, void (*delete_callback)(void *)) {
+	ExtensionManager::Get(db).RegisterService(name, service, delete_callback);
+}
+
+void *ExtensionLoader::GetService(const string &name) const {
+	return ExtensionManager::Get(db).GetService(name);
+}
+
 void ExtensionLoader::SetDescription(const string &description) {
 	loader_info.extension_description = description;
 }

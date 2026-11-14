@@ -103,7 +103,7 @@ public:
 	atomic<idx_t> test_stat_passes {0};
 	atomic<idx_t> test_stat_fails {0};
 	atomic<idx_t> test_stat_skip_mode {0};
-	//! Whole-test verdict, set at the terminal (test_sqllogictest.cpp) before this runner is destroyed.
+	//! Whole-test verdict, set by the SQL test executor before this runner is destroyed.
 	//! The destructor's DB cleanup consults it for --database-destroy on-success. Defaults to false so
 	//! an abort/unwind path that never reaches the terminal retains DB files (treated as a failure).
 	bool test_succeeded = false;
@@ -143,6 +143,7 @@ public:
 	//! Statement tallies and lifecycle JSON events emitted under --emit-test-events.
 	void CountStatement(bool passed);
 	void CountSkipMode();
+	vector<string> GetPartialSkipReasons() const;
 	void EmitBegin(const string &test_name);
 	void EmitExecutionComplete(const string &test_name, const string &status, const string &data);
 	static void EmitError(const string &test_name, const string &data);

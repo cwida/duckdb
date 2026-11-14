@@ -44,6 +44,14 @@ void ExtensionActiveLoad::LoadFail(const ErrorData &error) {
 ExtensionManager::ExtensionManager(DatabaseInstance &db) : db(db) {
 }
 
+ExtensionManager::~ExtensionManager() {
+	for (auto &entry : services) {
+		if (entry.second.delete_callback) {
+			entry.second.delete_callback(entry.second.service);
+		}
+	}
+}
+
 ExtensionManager &ExtensionManager::Get(DatabaseInstance &db) {
 	return db.GetExtensionManager();
 }
@@ -84,6 +92,25 @@ bool ExtensionManager::ExtensionIsLoaded(const string &name) {
 		return false;
 	}
 	return info->is_loaded;
+}
+
+void ExtensionManager::RegisterService(const string &name, void *service, void (*delete_callback)(void *)) {
+	if (!service) {
+		throw InvalidInputException("Cannot register null extension service '%s'", name);
+	}
+	lock_guard<mutex> guard(lock);
+	if (!services.emplace(name, ExtensionService {service, delete_callback}).second) {
+		throw InvalidInputException("Extension service '%s' is already registered", name);
+	}
+}
+
+void *ExtensionManager::GetService(const string &name) {
+	lock_guard<mutex> guard(lock);
+	auto entry = services.find(name);
+	if (entry == services.end()) {
+		return nullptr;
+	}
+	return entry->second.service;
 }
 
 unique_ptr<ExtensionActiveLoad> ExtensionManager::BeginLoad(const ExtensionLoadOptions &options) {

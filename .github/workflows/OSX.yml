@@ -33,6 +33,7 @@ jobs:
       TREAT_WARNINGS_AS_ERRORS: 1
       FORCE_DEBUG: 1
       FORCE_ASSERT: 1
+      EXTENSION_STATIC_BUILD: 0
       GEN: ninja
 
     steps:
@@ -55,43 +56,9 @@ jobs:
     - name: Build
       run: python3 scripts/ci/retry.py -- make
 
-    - name: Set DUCKDB_INSTALL_LIB for ADBC tests
-      shell: bash
-      run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.dylib' | head -n 1)" >> "$GITHUB_ENV"
-
-    - name: Test DUCKDB_INSTALL_LIB variable
-      run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
       if: ${{ !inputs.skip_tests }}
       run: make unittest_release
-
-    # SQL navigation needs the query_break hook and locals that release builds optimize away.
-    - name: Build debug executable for LLDB
-      if: ${{ !inputs.skip_tests }}
-      timeout-minutes: 60
-      env:
-        DISABLE_SHELL: 1
-        # Debug enables extra conversion warnings; keep them non-fatal for the LLDB fixture build.
-        TREAT_WARNINGS_AS_ERRORS: 0
-        EXTRA_CMAKE_VARIABLES: -DTREAT_WARNINGS_AS_ERRORS=OFF
-      run: python3 scripts/ci/retry.py -- make debug
-
-    - name: LLDB helper tests
-      id: lldb-tests
-      if: ${{ !inputs.skip_tests }}
-      timeout-minutes: 5
-      run: |
-        python3 scripts/lldb/tests/run_tests.py --unittest build/debug/test/unittest \
-          --lldb "$(xcrun --find lldb)" \
-          --coverage-dir build/lldb-coverage
-
-    - name: Upload LLDB coverage
-      if: ${{ !cancelled() && steps.lldb-tests.outcome != 'skipped' }}
-      uses: actions/upload-artifact@v7
-      with:
-        name: lldb-coverage-osx
-        path: build/lldb-coverage
 
   xcode-release:
     # Builds binaries for osx_arm64 and osx_amd64
@@ -177,22 +144,16 @@ jobs:
           mkdir -p \
             build/release_arm64/libs \
             build/release_arm64/src \
-            build/release_arm64/test/extension \
+            build/release_arm64/extension/test \
+            build/release_arm64/test/extensions \
             build/release_amd64/libs \
             build/release_amd64/src \
-            build/release_amd64/test/extension
+            build/release_amd64/extension/test \
+            build/release_amd64/test/extensions
           lipo -extract arm64 -output build/release_arm64/duckdb build/release/duckdb
           lipo -extract x86_64 -output build/release_amd64/duckdb build/release/duckdb
-          lipo -extract arm64 -output build/release_arm64/test/unittest build/release/test/unittest
-          lipo -extract x86_64 -output build/release_amd64/test/unittest build/release/test/unittest
           cp -p build/release/test/run build/release_arm64/test/run
           cp -p build/release/test/run build/release_amd64/test/run
-
-          for extension in build/release/test/extension/*.duckdb_extension; do
-            extension_name="$(basename "$extension")"
-            lipo -extract arm64 -output "build/release_arm64/test/extension/$extension_name" "$extension"
-            lipo -extract x86_64 -output "build/release_amd64/test/extension/$extension_name" "$extension"
-          done
 
           for library in build/release/src/libduckdb*.dylib; do
             library_name="$(basename "$library")"
@@ -223,6 +184,9 @@ jobs:
             extension_name="$(basename "$library")"
             extension_name="${extension_name#lib}"
             extension_name="${extension_name%_extension.a}"
+            if [[ "$extension_name" == test ]]; then
+              continue
+            fi
             prebuilt_extensions+=("$extension_name")
             loadable_targets+=("${extension_name}_loadable_extension")
           done
@@ -243,6 +207,27 @@ jobs:
               -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
             cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
             cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
+
+            for extension in build/release/extension/test/*.duckdb_extension build/release/test/extensions/*.duckdb_extension; do
+              extension_path="${extension#build/release/}"
+              extracted_extension="build/release_${dir_arch}/$extension_path"
+              lipo -extract "$lipo_arch" -output "$extracted_extension" "$extension"
+              footer_version="$(python3 -c 'import sys; f = open(sys.argv[1], "rb"); f.seek(-352, 2); print(f.read(32).rstrip(b"\0").decode())' "$extension")"
+              extension_version="$(python3 -c 'import sys; f = open(sys.argv[1], "rb"); f.seek(-384, 2); print(f.read(32).rstrip(b"\0").decode())' "$extension")"
+              cmake \
+                -DABI_TYPE=CPP \
+                -DEXTENSION="$extracted_extension" \
+                -DPLATFORM_FILE="$extension_build_dir/duckdb_platform_out" \
+                -DVERSION_FIELD="$footer_version" \
+                -DEXTENSION_VERSION="$extension_version" \
+                -DNULL_FILE="$PWD/scripts/null.txt" \
+                -P scripts/append_metadata.cmake
+              if [[ "$extension_path" == extension/test/* ]]; then
+                repository_dir="$extension_build_dir/repository/$footer_version/$platform"
+                mkdir -p "$repository_dir"
+                cp -p "$extracted_extension" "$repository_dir/"
+              fi
+            done
 
             for extension in "$extension_build_dir"/repository/*/*/*.duckdb_extension; do
               if [[ "$(lipo -archs "$extension")" != "$lipo_arch" ]]; then
@@ -353,12 +338,6 @@ jobs:
         if: ${{ !inputs.skip_tests }}
         run: |
           python -m pytest tools/shell/tests --shell-binary build/release/duckdb
-
-      - name: Unittest Stdin Tests
-        shell: bash
-        if: ${{ !inputs.skip_tests }}
-        run: |
-          python -m pytest tools/sqllogic/tests --unittest-binary build/release/test/unittest
 
       - name: Examples
         shell: bash

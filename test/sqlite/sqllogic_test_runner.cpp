@@ -137,6 +137,10 @@ void SQLLogicTestRunner::CountSkipMode() {
 	test_stat_skip_mode++;
 }
 
+vector<string> SQLLogicTestRunner::GetPartialSkipReasons() const {
+	return vector<string>(partial_skip_reasons.begin(), partial_skip_reasons.end());
+}
+
 void SQLLogicTestRunner::EmitBegin(const string &test_name) {
 	// Snapshotted before the enabled check and before the body runs: this is the dir the harness just
 	// assigned, and it must survive any test-env rewrite so end still reports what begin did.
@@ -847,7 +851,7 @@ void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &data
 	auto temp_directory_name = StringUtil::Replace(normalized_script, "/", "_");
 	// an absolute Windows path has a drive colon, which a directory name cannot contain
 	temp_directory_name = StringUtil::Replace(temp_directory_name, ":", "_");
-	auto temp_directory = TestJoinPath(TestDirectoryPath(), "sqllogic_temp_" + temp_directory_name);
+	auto temp_directory = TestJoinPath(environment_variables["TEMP_DIR"], "sqllogic_temp_" + temp_directory_name);
 	db_config.SetOption(database.instance.get(), *DBConfig::GetOptionByName("temp_directory"), temp_directory);
 }
 

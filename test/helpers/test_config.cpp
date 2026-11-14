@@ -20,9 +20,14 @@ struct TestConfigOption {
 	on_set_option_t on_set_option;
 };
 
+static void SetEmitTestEventsOption(const Value &input) {
+	SetEmitTestEvents(BooleanValue::Get(input));
+}
+
 static const TestConfigOption test_config_options[] = {
     {"description", "Config description", LogicalType::VARCHAR, nullptr},
     {"comment", "Extra free form comment line", LogicalType::VARCHAR, nullptr},
+    {"emit_test_events", "Emit JSON test lifecycle events", LogicalType::BOOLEAN, SetEmitTestEventsOption},
     {"initial_db", "Initial database path", LogicalType::VARCHAR, nullptr},
     {"data_dir",
      "Root dir for test data (DATA_DIR / {DATA_DIR}); default {WORKING_DIR}/data. Relative values "

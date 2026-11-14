@@ -2,6 +2,7 @@ import os
 import argparse
 import subprocess
 import shutil
+import shlex
 
 parser = argparse.ArgumentParser(
     description='''Runs storage tests both with explicit one-initialization and with explicit zero-initialization, and verifies that the final storage files are the same.
@@ -163,11 +164,7 @@ success = True
 for test in test_list:
     print(f"Running test {test}")
     clear_directories(test_dirs)
-    # TEMP_DIR must BE the given dir exactly and survive for the post-run byte diff below,
-    # so pin the root with both levels off and destroy=never (the dirs are pre-rmtree'd
-    # above, so the default create=on-absent is fine). --database-destroy off keeps the
-    # generated DB files (otherwise the harness deletes loaded DBs under TEMP_DIR, leaving
-    # the retained dir empty and the compare with nothing to diff).
+    # Retain the exact TEMP_DIR and its database files for the post-run byte comparison.
     temp_dir_flags = lambda d: [
         '--temp-dir-root',
         d,
@@ -180,14 +177,10 @@ for test in test_list:
         '--database-destroy',
         'off',
     ]
-    standard_args = [args.unittest, *temp_dir_flags(args.standard_dir), '--one-initialize', '--single-threaded', test]
-    zero_init_args = [
-        args.unittest,
-        *temp_dir_flags(args.zero_init_dir),
-        '--zero-initialize',
-        '--single-threaded',
-        test,
-    ]
+    standard_flags = [*temp_dir_flags(args.standard_dir), '--one-initialize', '--single-threaded']
+    zero_init_flags = [*temp_dir_flags(args.zero_init_dir), '--zero-initialize', '--single-threaded']
+    standard_args = [args.unittest, '--test-flags=' + shlex.join(standard_flags), test]
+    zero_init_args = [args.unittest, '--test-flags=' + shlex.join(zero_init_flags), test]
     print(f"Running test in one-initialize mode")
     run_test(standard_args)
     print(f"Running test in zero-initialize mode")
@@ -197,7 +190,7 @@ for test in test_list:
 
 for test in one_initialize_test_list:
     print(f"Running test {test} in one-initialize mode")
-    run_test([args.unittest, '--one-initialize', '--single-threaded', test])
+    run_test([args.unittest, '--test-flags=--one-initialize --single-threaded', test])
 
 clear_directories(test_dirs)
 

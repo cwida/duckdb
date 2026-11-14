@@ -1,5 +1,6 @@
 #include "shell_state.hpp"
 #include "shell_highlight.hpp"
+#include "shell_thread_stack_size.hpp"
 #include "terminal.hpp"
 
 namespace duckdb_shell {
@@ -394,6 +395,8 @@ static const CommandLineOption command_line_options[] = {
     {"storage-version", 1, "VER", SetStorageVersion, nullptr,
      "database storage compatibility version to use. Default: 'v0.10.0'"},
     {"table", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::TABLE>, "set output mode to 'table'"},
+    {"thread-stack-size", 1, "BYTES", SetThreadStackSize, nullptr,
+     "set the default worker thread stack size (Linux/glibc only)"},
     {"ui", 0, "", nullptr, LaunchUI, "launches a web interface using the ui extension (configurable with .ui_command)"},
     {"unredacted", 0, "", AllowUnredacted, nullptr, "allow printing unredacted secrets"},
     {"unsigned", 0, "", AllowUnsigned, nullptr, "allow loading of unsigned extensions"},

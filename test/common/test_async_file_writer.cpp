@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <stdexcept>
 #include <thread>
 
 using namespace duckdb;
@@ -922,6 +923,38 @@ TEST_CASE("AsyncWriteQueue writes synchronously without async threads", "[async_
 	REQUIRE(completion_offsets[0] == 7);
 	REQUIRE(completion_sizes[0] == 3);
 	REQUIRE(!saw_error);
+}
+
+TEST_CASE("AsyncWriteQueue classifies serialized write errors without exception RTTI", "[async_write_queue]") {
+	class SerializedErrorWriteTarget : public AsyncWriteTarget {
+	public:
+		void Write(data_ptr_t, idx_t, idx_t) override {
+			throw std::runtime_error(message);
+		}
+
+		string message;
+	};
+
+	const auto error_type = GENERATE(ExceptionType::IO, ExceptionType::HTTP, ExceptionType::PERMISSION);
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithNoAsyncThreads(db);
+	SerializedErrorWriteTarget target;
+	target.message = Exception(error_type, "Injected serialized write failure").what();
+	AsyncWriteQueue queue(con->context->GetContext(), target);
+	ErrorData completion_error;
+	auto completion = [&](idx_t offset, idx_t size, optional_ptr<const ErrorData> error) {
+		REQUIRE(offset == 7);
+		REQUIRE(size == 3);
+		REQUIRE(error);
+		completion_error = *error;
+	};
+
+	REQUIRE_THROWS_WITH(queue.Submit(AsyncWriteRequest(make_uniq<StringAsyncWriteBuffer>("abc"), 7, completion)),
+	                    Catch::Contains("Injected serialized write failure"));
+	REQUIRE(completion_error.HasError());
+	CHECK(completion_error.Type() == error_type);
+	CHECK(StringUtil::Contains(completion_error.RawMessage(), "Async write failed for range [offset=7, size=3]") ==
+	      (error_type == ExceptionType::IO || error_type == ExceptionType::HTTP));
 }
 
 TEST_CASE("AsyncWriteQueue drains positional requests on multiple async threads", "[async_write_queue]") {
@@ -1951,8 +1984,9 @@ TEST_CASE("AsyncFileWriter rethrows non-positional async write errors on close",
 	try {
 		writer.Close();
 		FAIL("Expected async write failure");
-	} catch (const Exception &ex) {
+	} catch (const std::exception &ex) {
 		string error = ex.what();
+		CAPTURE(error);
 		REQUIRE(error.find("Async write failed for range [offset=0, size=") != string::npos);
 		REQUIRE(error.find("Injected async write failure") != string::npos);
 	}
@@ -1997,8 +2031,9 @@ TEST_CASE("AsyncFileWriter rethrows asynchronous write errors on close", "[async
 		writer.WriteData(make_uniq<StringAsyncWriteBuffer>("abcd"));
 		writer.Close();
 		FAIL("Expected async write failure");
-	} catch (const Exception &ex) {
+	} catch (const std::exception &ex) {
 		string error = ex.what();
+		CAPTURE(error);
 		REQUIRE(error.find("Async write failed for range [offset=0, size=4]") != string::npos);
 		REQUIRE(error.find("Injected async write failure") != string::npos);
 	}
@@ -2082,8 +2117,9 @@ TEST_CASE("AsyncFileWriter close discards unscheduled writes after async write e
 	try {
 		writer.Close();
 		FAIL("Expected async write failure");
-	} catch (const Exception &ex) {
+	} catch (const std::exception &ex) {
 		string error = ex.what();
+		CAPTURE(error);
 		REQUIRE(error.find("Async write failed for range [offset=0, size=") != string::npos);
 		REQUIRE(error.find("Injected async write failure") != string::npos);
 	}

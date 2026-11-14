@@ -877,7 +877,7 @@ TEST_CASE("exclusive create fails when the file exists", "[file_system]") {
 			if (null_if_exists) {
 				REQUIRE(fs->OpenFile(fname, flags) == nullptr);
 			} else {
-				REQUIRE_THROWS_AS(fs->OpenFile(fname, flags), IOException);
+				REQUIRE_THROWS_WITH(fs->OpenFile(fname, flags), Catch::Contains("Cannot open file"));
 			}
 
 			// A collision must not truncate or alter the existing file.
@@ -889,7 +889,7 @@ TEST_CASE("exclusive create fails when the file exists", "[file_system]") {
 			read_handle.reset();
 
 			// A regular file cannot be a parent directory; NULL_IF_EXISTS must not hide this error.
-			REQUIRE_THROWS_AS(fs->OpenFile(fs->JoinPath(fname, "child"), flags), IOException);
+			REQUIRE_THROWS_WITH(fs->OpenFile(fs->JoinPath(fname, "child"), flags), Catch::Contains("Cannot open file"));
 
 			auto reopen = fs->OpenFile(fname, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
 			REQUIRE(reopen != nullptr);

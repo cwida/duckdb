@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -69,9 +70,9 @@ summarize_failures = not args.no_summarize_failures
 workers = resolve_workers(args.workers)
 repo_root = os.getcwd()
 
-# Use the '-l' parameter to output the list of tests to run
+# Ask the extension runner to output the tests selected by the storage config.
 proc = subprocess.run(
-    [unittest_program, '--test-config', test_config, '-l'] + extra_args,
+    [unittest_program, '--test-config', test_config, '--list-tests'] + extra_args,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
 )
@@ -211,14 +212,19 @@ def execute_test(i, test):
             unittest_program,
             '--test-config',
             worker_test_config,
-            '--temp-dir-root',
-            test_temp_dir,
-            '--temp-dir-run-id',
-            'off',
-            '--temp-dir-test-id',
-            'off',
-            '--temp-dir-destroy',
-            'never',
+            '--test-flags',
+            shlex.join(
+                [
+                    '--temp-dir-root',
+                    test_temp_dir,
+                    '--temp-dir-run-id',
+                    'off',
+                    '--temp-dir-test-id',
+                    'off',
+                    '--temp-dir-destroy',
+                    'never',
+                ]
+            ),
             test,
         ]
         failure = run_program(

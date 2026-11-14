@@ -10976,6 +10976,9 @@ namespace Catch {
         { SIGILL,  "SIGILL - Illegal instruction signal" },
         { SIGFPE,  "SIGFPE - Floating point error signal" },
         { SIGSEGV, "SIGSEGV - Segmentation violation signal" },
+#ifdef SIGBUS
+        { SIGBUS,  "SIGBUS - Bus error signal" },
+#endif
         { SIGTERM, "SIGTERM - Termination request signal" },
         { SIGABRT, "SIGABRT - Abort (abnormal termination) signal" }
     };

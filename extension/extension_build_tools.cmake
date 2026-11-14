@@ -162,7 +162,13 @@ function(link_extension_libraries LIBRARY LINKAGE)
         set_property(GLOBAL APPEND PROPERTY DUCKDB_DEFERRED_EXTENSION_LINKS "${LIBRARY}" "${LINKAGE}")
         return()
     endif()
-    duckdb_link_extensions(${LIBRARY} ${LINKAGE} ${DUCKDB_STATICALLY_LINKED_CAPABILITIES} ${DUCKDB_STATICALLY_LINKED_EXTENSIONS})
+    set(LINKED_EXTENSIONS ${DUCKDB_STATICALLY_LINKED_EXTENSIONS})
+    foreach(EXT_NAME IN LISTS DUCKDB_STATICALLY_LINKED_EXTENSIONS)
+        if("${LIBRARY}" STREQUAL "${EXT_NAME}_loadable_extension")
+            list(REMOVE_ITEM LINKED_EXTENSIONS "${EXT_NAME}")
+        endif()
+    endforeach()
+    duckdb_link_extensions(${LIBRARY} ${LINKAGE} ${DUCKDB_STATICALLY_LINKED_CAPABILITIES} ${LINKED_EXTENSIONS})
 endfunction()
 
 # Called by the top-level CMakeLists once every target exists
@@ -258,11 +264,8 @@ endfunction()
 
 function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTENSION_VERSION CAPI_VERSION PARAMETERS)
     set(TARGET_NAME ${NAME}_loadable_extension)
-    set(PREBUILT_EXTENSION FALSE)
-    if(TARGET ${NAME}_extension)
-        get_property(PREBUILT_EXTENSION TARGET ${NAME}_extension PROPERTY DUCKDB_PREBUILT_EXTENSION)
-    endif()
-    if (LOCAL_EXTENSION_REPO AND NOT PREBUILT_EXTENSION)
+    string(FIND "${PARAMETERS}" "-host-bound" HOST_BOUND)
+    if (LOCAL_EXTENSION_REPO)
         add_dependencies(duckdb_local_extension_repo ${NAME}_loadable_extension)
     endif()
     # all parameters after output_directory
@@ -284,7 +287,7 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
     set_target_properties(${TARGET_NAME} PROPERTIES DEFINE_SYMBOL "")
     set_target_properties(${TARGET_NAME} PROPERTIES OUTPUT_NAME ${NAME})
     set_target_properties(${TARGET_NAME} PROPERTIES PREFIX "")
-    if(NOT EXTENSION_STATIC_BUILD)
+    if(${HOST_BOUND} GREATER -1 OR NOT EXTENSION_STATIC_BUILD)
         set_property(TARGET ${TARGET_NAME} PROPERTY DUCKDB_DYNAMIC_LOADABLE_EXTENSION TRUE)
     endif()
     if(${IGNORE_WARNINGS} GREATER -1)
@@ -303,6 +306,10 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
         set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sSIDE_MODULE=1 -DWASM_LOADABLE_EXTENSIONS")
     elseif(${ABI_TYPE} STREQUAL "C_STRUCT" OR ${ABI_TYPE} STREQUAL "C_STRUCT_UNSTABLE")
         # TODO strip all symbols except the capi init
+    elseif(${HOST_BOUND} GREATER -1)
+        if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang$" AND APPLE)
+            set_target_properties(${TARGET_NAME} PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
+        endif()
     elseif (EXTENSION_STATIC_BUILD)
         if (WIN32)
             target_link_libraries(${TARGET_NAME} duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
@@ -394,7 +401,7 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
             ${CMAKE_COMMAND} -DABI_TYPE=${ABI_TYPE} -DEXTENSION=$<TARGET_FILE:${TARGET_NAME}>${EXTENSION_POSTFIX} -DPLATFORM_FILE=${DuckDB_BINARY_DIR}/duckdb_platform_out -DVERSION_FIELD="${FOOTER_VERSION_VALUE}" -DEXTENSION_VERSION="${EXTENSION_VERSION}" -DNULL_FILE=${DUCKDB_MODULE_BASE_DIR}/scripts/null.txt -P ${DUCKDB_MODULE_BASE_DIR}/scripts/append_metadata.cmake
     )
     add_dependencies(${TARGET_NAME} duckdb_platform)
-    if (NOT ${EXTENSION_CONFIG_BUILD} AND NOT ${EXTENSION_TESTS_ONLY} AND NOT CLANG_TIDY AND NOT PREBUILT_EXTENSION)
+    if (NOT ${EXTENSION_CONFIG_BUILD} AND NOT ${EXTENSION_TESTS_ONLY} AND NOT CLANG_TIDY)
         add_dependencies(duckdb_local_extension_repo ${TARGET_NAME})
     endif()
 endfunction()
@@ -406,6 +413,39 @@ function(build_loadable_extension NAME PARAMETERS)
     string(TOUPPER ${NAME} EXTENSION_NAME_UPPERCASE)
 
     build_loadable_extension_directory(${NAME} "CPP" "extension/${NAME}" "${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_EXT_VERSION}" "" "${PARAMETERS}" ${FILES})
+endfunction()
+
+# Builds a Catch-based C++ test bundle without requiring an extension source
+# directory. The caller supplies existing test object libraries or sources.
+function(duckdb_add_test_bundle NAME)
+    cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "SOURCES;LINK_LIBRARIES")
+    set(TEST_BUNDLE_PARAMETERS "-warnings -host-bound")
+    if(WIN32)
+        set(TEST_BUNDLE_PARAMETERS "-warnings")
+    endif()
+    build_loadable_extension_directory(
+        ${NAME}
+        "CPP"
+        test/extensions
+        "default-version"
+        ""
+        "${TEST_BUNDLE_PARAMETERS}"
+        "${DUCKDB_MODULE_BASE_DIR}/extension/test/test_bundle_extension.cpp"
+        ${ARG_SOURCES})
+    target_compile_definitions(
+        ${NAME}_loadable_extension
+        PRIVATE DUCKDB_TEST_BUNDLE_IDENTIFIER=${NAME}
+                DUCKDB_TEST_BUNDLE_NAME="${NAME}")
+    target_include_directories(
+        ${NAME}_loadable_extension
+        PRIVATE "${DUCKDB_MODULE_BASE_DIR}/extension/test/include")
+    target_link_libraries(
+        ${NAME}_loadable_extension test_helpers duckdb_cpp_api
+        ${ARG_LINK_LIBRARIES})
+    set_target_properties(
+        ${NAME}_loadable_extension
+        PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/extensions"
+                   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/extensions")
 endfunction()
 
 function(build_loadable_extension_capi NAME CAPI_VERSION_MAJOR CAPI_VERSION_MINOR CAPI_VERSION_PATCH PARAMETERS)
@@ -530,11 +570,14 @@ endfunction()
 # Compiles a C++ extension once into lib<NAME>_extension.a and links its loadable from that archive.
 # NO_LOADABLE builds the archive only; NO_WARNINGS silences compiler warnings.
 function(build_extension_library NAME)
-    cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_LOADABLE;NO_WARNINGS;DEFAULT_VISIBILITY" "" "")
+    cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_LOADABLE;NO_WARNINGS;DEFAULT_VISIBILITY;HOST_BOUND" "" "")
     set(FILES ${ARG_UNPARSED_ARGUMENTS})
     set(PARAMETERS "-warnings")
     if(ARG_NO_WARNINGS)
         set(PARAMETERS "-no-warnings")
+    endif()
+    if(ARG_HOST_BOUND AND NOT WIN32)
+        string(APPEND PARAMETERS " -host-bound")
     endif()
 
     build_static_extension(${NAME} ${FILES})
@@ -643,7 +686,7 @@ function(register_extension NAME DONT_BUILD LOAD_TESTS PATH INCLUDE_PATH TEST_PA
     # Allows explicitly disabling extensions that may be specified in other configurations
     if (NOT ${DONT_BUILD} AND NOT ${EXTENSION_TESTS_ONLY})
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD TRUE PARENT_SCOPE)
-    elseif(NOT ${GENERATE_EXTENSION_ENTRIES} AND ${EXTENSION_NAME_UPPERCASE} STREQUAL "CORE_FUNCTIONS")
+    elseif(NOT GENERATE_EXTENSION_ENTRIES AND "${EXTENSION_NAME_UPPERCASE}" STREQUAL "CORE_FUNCTIONS")
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD TRUE PARENT_SCOPE)
     else()
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD FALSE PARENT_SCOPE)

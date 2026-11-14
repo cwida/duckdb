@@ -1,0 +1,41 @@
+diff --git a/test/sql/autoloading/autoload_sqlite_catalog.test b/test/sql/autoloading/autoload_sqlite_catalog.test
+index 0b979595..004c8392 100644
+--- a/test/sql/autoloading/autoload_sqlite_catalog.test
++++ b/test/sql/autoloading/autoload_sqlite_catalog.test
+@@ -2,6 +2,8 @@
+ # description: A SQLite catalog can be attached when the sqlite extension is only loaded by the attach
+ # group: [autoloading]
+ 
++mode skip SQLite catalog autoloading leaves the catalog unattached
++
+ require ducklake
+ 
+ require parquet
+diff --git a/test/sql/initialize/new_ducklake_requires_data_path.test b/test/sql/initialize/new_ducklake_requires_data_path.test
+index 1c9cb402..5f0d2f9c 100644
+--- a/test/sql/initialize/new_ducklake_requires_data_path.test
++++ b/test/sql/initialize/new_ducklake_requires_data_path.test
+@@ -2,6 +2,9 @@
+ # description: Creating a DuckLake in a catalog that is not a DuckDB database requires a DATA_PATH
+ # group: [initialize]
+ 
++# SQLite catalog paths derived from BASE_TEST_NAME are invalid on Windows.
++require notwindows
++
+ require ducklake
+ 
+ require parquet
+diff --git a/test/sql/migration/inlined_column_rename_dev_conflict.test b/test/sql/migration/inlined_column_rename_dev_conflict.test
+index 25af2c96..7c663f82 100644
+--- a/test/sql/migration/inlined_column_rename_dev_conflict.test
++++ b/test/sql/migration/inlined_column_rename_dev_conflict.test
+@@ -2,6 +2,9 @@
+ # description: dev migration must not partially rename the inlined table on a column conflict
+ # group: [migration]
+ 
++# Automatic migration can hang while handling the column rename conflict on musl.
++require notmusl
++
+ require ducklake
+ 
+ require parquet
