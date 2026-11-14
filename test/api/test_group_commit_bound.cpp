@@ -258,7 +258,7 @@ TEST_CASE("A commit that skips the WAL is not visible before its checkpoint comp
 
 	Connection setup(db);
 	REQUIRE_NO_FAIL(setup.Query("SET checkpoint_threshold='1KB'"));
-	REQUIRE_NO_FAIL(setup.Query("SET auto_checkpoint_skip_wal_threshold='1KB'"));
+	REQUIRE_NO_FAIL(setup.Query("SET auto_checkpoint_skip_wal_threshold=1024"));
 	REQUIRE_NO_FAIL(setup.Query("PRAGMA disable_checkpoint_on_shutdown"));
 	REQUIRE_NO_FAIL(setup.Query("CREATE TABLE t(i INTEGER)"));
 
