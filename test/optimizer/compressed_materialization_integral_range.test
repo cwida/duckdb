@@ -1,0 +1,72 @@
+# name: test/optimizer/compressed_materialization_integral_range.test
+# description: Compressed materialization over integral columns whose min/max span overflows the column type
+# group: [optimizer]
+
+foreach col tinyint smallint int bigint hugeint
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT "{col}" AS i FROM test_all_types() WHERE "{col}" IS NOT NULL;
+
+query I
+SELECT count(*) FROM (SELECT i FROM t ORDER BY i)
+----
+2
+
+query I
+SELECT i = (SELECT min(i) FROM t) FROM t ORDER BY i
+----
+true
+false
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT i FROM t)
+----
+2
+
+endloop
+
+statement ok
+CREATE TABLE s(i SMALLINT);
+
+statement ok
+INSERT INTO s VALUES (-23360), (29130);
+
+statement ok
+INSERT INTO s SELECT i FROM s ORDER BY i;
+
+query I
+SELECT i FROM s ORDER BY i
+----
+-23360
+-23360
+29130
+29130
+
+query I
+SELECT DISTINCT i FROM s ORDER BY i
+----
+-23360
+29130
+
+# span that still fits in the column type keeps being compressed
+statement ok
+CREATE TABLE h(i HUGEINT);
+
+statement ok
+INSERT INTO h VALUES (170141183460469231731687303715884105000), (170141183460469231731687303715884105700);
+
+query I
+SELECT i FROM h ORDER BY i DESC
+----
+170141183460469231731687303715884105700
+170141183460469231731687303715884105000
+
+query TT
+EXPLAIN SELECT i FROM h ORDER BY i
+----
+physical_plan	<REGEX>:.*__internal_compress_integral_usmallint.*
+
+query TT
+EXPLAIN SELECT i FROM s ORDER BY i
+----
+physical_plan	<!REGEX>:.*__internal_compress.*
